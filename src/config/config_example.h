@@ -10,7 +10,7 @@
 #define ENABLE_LOGGING_LCD
 
 
-#define VERSION "0.1.0"           // version of the software
+#define VERSION "0.1.1"           // version of the software
 #define VERSION_DATE "2025.04.19" // date of the version
 
 
@@ -39,12 +39,12 @@ struct GeneralSettings
 {
   bool dirtybit = false;           // dirty bit to indicate if the message has changed
   bool enableController = true;    // set to false to disable the controller and use Maximum power output
-  int maxOutput = 1130;            // edit this to limit TOTAL power output in watts
+  int maxOutput = 1100;            // edit this to limit TOTAL power output in watts
   int minOutput = 500;             // minimum output power in watts
   int inputCorrectionOffset = 150; // ( -80) Current clamp sensors have poor accuracy at low load, a buffer ensures some current flow in the import direction to ensure no exporting. Adjust according to accuracy of meter.
-  float MQTTPublischPeriod = 10.5;  // check all x seconds if there is a new MQTT message to publish
-  float MQTTListenPeriod = 0.3;    // check x seconds if there is a new MQTT message to listen to
-  float RS232PublishPeriod = 1.1;  // send the RS485 Data all x seconds
+  float MQTTPublischPeriod = 5.5;  // check all x seconds if there is a new MQTT message to publish
+  float MQTTListenPeriod = 0.5;    // check x seconds if there is a new MQTT message to listen to
+  float RS232PublishPeriod = 1.5;  // send the RS485 Data all x seconds
 };
 
 class Config

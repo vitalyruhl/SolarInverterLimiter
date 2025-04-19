@@ -10,7 +10,6 @@
 #include <Ticker.h>
 #include "logging/logging.h" // for logging
 
-
 /*
 Todo:
  - Add periodicly send MQTT Settings (every 10 minutes or so), to get Values in HomeAssistant
@@ -20,7 +19,6 @@ Todo:
  - make MQTT-Hostname and other settings configurable via MQTT, and or Webinterface
 
 */
-
 
 #pragma region configuratio variables
 RS485Settings rs485settings;
@@ -34,7 +32,6 @@ Config config; // create an instance of the config class
 Ticker PublischMQTTTicker;
 Ticker ListenMQTTTicker;
 Ticker RS485Ticker;
-bool tickersAttached = false;
 
 // WiFi-Setup
 char ssid[] = WIFI_SSID;
@@ -53,6 +50,8 @@ struct MQTTMessage // MQTT Message structure
   float MQTTPublischPeriod; // seconds
   float MQTTListenPeriod;   // seconds
   float RS232PublishPeriod; // seconds
+  String Version;           // version of the firmware
+  String Version_Date;      // date of the firmware
 };
 
 MQTTMessage mqttMessage; // declare the variable here to make it accessible in other files
@@ -80,6 +79,7 @@ void cb_BlinkerPublishToMQTT();
 void cb_BlinkerMQTTListener();
 void cb_BlinkerRS485Listener();
 void testRS232();
+void fillBufferOnStart(int newValue);
 //----------------------------------------
 // MAIN FUNCTIONS
 //----------------------------------------
@@ -117,6 +117,10 @@ void setup()
   jsonDoc.MQTTPublischPeriod = generalSettings.MQTTPublischPeriod;
   jsonDoc.MQTTListenPeriod = generalSettings.MQTTListenPeriod;
   jsonDoc.RS232PublishPeriod = generalSettings.RS232PublishPeriod;
+  jsonDoc.Version = VERSION;
+  jsonDoc.Version_Date = VERSION_DATE;
+
+  fillBufferOnStart(generalSettings.minOutput);
 
   setup_wifi(); // Connect to WiFi
 
@@ -132,17 +136,15 @@ void setup()
 
   // rs485packet.header(0x1234); // Optional
   // rs485packet.command(0x0033); // Optional
-  logv("Start rs232 test...");
   testRS232();
-  logv("End rs232 test...");
 
-  logv("rs485 --> begin rs485settings");
-  logv("Testing RS232 connection... shorting RX and TX pins!");
-  logv("Baudrate: %d", rs485settings.baudRate);
-  logv("RX Pin: %d", rs485settings.rxPin);
-  logv("TX Pin: %d", rs485settings.txPin);
-  logv("DE Pin: %d", rs485settings.dePin);
-  logv("now get initialized...[rs485.Init(rs485settings);]");
+  // logv("rs485 --> begin rs485settings");
+  // logv("Testing RS232 connection... shorting RX and TX pins!");
+  // logv("Baudrate: %d", rs485settings.baudRate);
+  // logv("RX Pin: %d", rs485settings.rxPin);
+  // logv("TX Pin: %d", rs485settings.txPin);
+  // logv("DE Pin: %d", rs485settings.dePin);
+  // logv("now get initialized...[rs485.Init(rs485settings);]");
   rs485.Init(rs485settings);
   logv("rs485 --> End rs485settings");
   //----------------------------------------
@@ -152,13 +154,12 @@ void setup()
   client.setServer(MQTT_SERVER, MQTT_PORT);
   client.setCallback(cb_MQTT);
   generalSettings.dirtybit = true; // send the settings to the mqtt broker on startup
-  reconnectMQTT();                 // connect to MQTT broker
 
   log("Attaching tickers...");
   PublischMQTTTicker.attach(generalSettings.MQTTPublischPeriod, cb_BlinkerPublishToMQTT);
   ListenMQTTTicker.attach(generalSettings.MQTTListenPeriod, cb_BlinkerMQTTListener);
   RS485Ticker.attach(generalSettings.RS232PublishPeriod, cb_BlinkerRS485Listener);
-
+  reconnectMQTT(); // connect to MQTT broker
   logv("System setup completed.");
 }
 
@@ -184,7 +185,7 @@ void loop()
     log("MQTT Not Connected!");
     reconnectMQTT();
   }
-   delay(200);
+  delay(200);
 }
 
 //----------------------------------------
@@ -205,7 +206,7 @@ void reconnectMQTT()
     delay(2000);
     if (client.connected())
       break; // Exit the loop if connected successfully
-    
+
     // disconnect from MQTT broker if not connected
     client.disconnect();
     delay(500);
@@ -219,7 +220,7 @@ void reconnectMQTT()
     // if we dont get a actual value from the grid, reduce the acktual value step by 1 up to 0
     if (AktualImportFromGrid > 0)
     {
-      AktualImportFromGrid--;
+      AktualImportFromGrid = AktualImportFromGrid - 10;
       inverterSetValue = smoothValue(AktualImportFromGrid);
     }
     // AktualImportFromGrid
@@ -296,6 +297,9 @@ void publishToMQTT(MQTTMessage msg)
       jsonDoc["PubDelay"] = msg.MQTTPublischPeriod;
       jsonDoc["ListenDelay"] = msg.MQTTListenPeriod;
       jsonDoc["RS485Delay"] = msg.RS232PublishPeriod;
+      jsonDoc["Version"] = msg.Version;
+      jsonDoc["V_Date"] = msg.Version_Date;
+
 
       char buffer[200]; // max 200 bytes for for mqtt!!!!
       size_t bytesWritten = serializeJson(jsonDoc, buffer, sizeof(buffer));
@@ -327,6 +331,17 @@ void cb_MQTT(char *topic, byte *message, unsigned int length)
   helpers.blinkBuidInLED(1, 100); // blink the LED once to indicate that the loop is running
   if (strcmp(topic, MQTT_SENSOR_POWERUSAGE_TOPIC) == 0)
   {
+    // check if it is a number, if not set it to 0
+    if (messageTemp.equalsIgnoreCase("null") ||
+        messageTemp.equalsIgnoreCase("undefined") ||
+        messageTemp.equalsIgnoreCase("NaN") ||
+        messageTemp.equalsIgnoreCase("Infinity") ||
+        messageTemp.equalsIgnoreCase("-Infinity"))
+    {
+      log("Received invalid value from MQTT: %s", messageTemp.c_str());
+      messageTemp = "0";
+    }
+
     AktualImportFromGrid = messageTemp.toInt();
   }
   else if (strcmp(topic, MQTT_PUBLISH_SETTINGS) == 0)
@@ -436,8 +451,9 @@ void cb_BlinkerRS485Listener()
   inverterSetValue = smoothValue(AktualImportFromGrid);
   if (generalSettings.enableController)
   {
-    // logv("cb_BlinkerRS485Listener(%d)...",inverterSetValue);
-    rs485.sendToRS485(rs485settings, rs485packet, static_cast<uint16_t>(inverterSetValue));
+    logv("cb_BlinkerRS485Listener(%d)...", inverterSetValue);
+    // rs485.sendToRS485(rs485settings, rs485packet, static_cast<uint16_t>(inverterSetValue));
+    rs485.sendToRS485(rs485settings, static_cast<uint16_t>(inverterSetValue));
     // RS485Packet incoming;
     // incoming = rs485.reciveFromRS485Packet(); // read the data from RS485
     // logv("Received-Packet.power: %d", incoming.power);
@@ -450,37 +466,14 @@ void cb_BlinkerRS485Listener()
   {
     logv("controller is didabled!");
     logl("MAX-POWER!");
-    rs485.sendToRS485(rs485settings, rs485packet, 0);
+    // rs485.sendToRS485(rs485settings, rs485packet, generalSettings.maxOutput); // send the maxOutput to the RS485 module
+    rs485.sendToRS485(rs485settings, generalSettings.maxOutput); // send the maxOutput to the RS485 module
   }
 }
 
 int smoothValue(int newValue)
 {
   int returnValue = 0;
-  // logv("entry smoothValue: %d", newValue);
-  // add the current value to the buffer
-  if (newValue == 0)
-  {
-    newValue = limiter(newValue);
-  }
-
-  // foreach the entire buffer and if all is 0 then fill it with the new value
-  bool allZero = true;
-  for (int i = 0; i < SMOOTHING_BUFFER_SIZE; i++)
-  {
-    if (SmoothingBuffer[i] != 0)
-    {
-      allZero = false;
-      break;
-    }
-  }
-  if (allZero)
-  {
-    for (int i = 0; i < SMOOTHING_BUFFER_SIZE; i++)
-    {
-      SmoothingBuffer[i] = newValue + generalSettings.inputCorrectionOffset;
-    }
-  }
 
   SmoothingBuffer[bufferIndex] = newValue + generalSettings.inputCorrectionOffset;
   bufferIndex = (bufferIndex + 1) % SMOOTHING_BUFFER_SIZE;
@@ -533,5 +526,13 @@ void testRS232()
   if (Serial2.available())
   {
     Serial.println("Received on Serial2!");
+  }
+}
+
+void fillBufferOnStart(int newValue)
+{
+  for (int i = 0; i < SMOOTHING_BUFFER_SIZE; i++)
+  {
+    SmoothingBuffer[i] = newValue + generalSettings.inputCorrectionOffset;
   }
 }
