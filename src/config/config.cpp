@@ -18,8 +18,8 @@ void Config::loadSettingsFromEEPROM()
     Preferences prefs;
     prefs.begin("config", true);
 
-    wifi.ssid = prefs.getString("wifi_ssid", wifi.ssid);
-    wifi.pass = prefs.getString("wifi_pass", wifi.pass);
+    wifi_config.ssid = prefs.getString("wifi_ssid", wifi_config.ssid);
+    wifi_config.pass = prefs.getString("wifi_pass", wifi_config.pass);
 
     mqtt.mqtt_server = prefs.getString("mqtt_server", mqtt.mqtt_server);
     mqtt.mqtt_username = prefs.getString("mqtt_user", mqtt.mqtt_username);
@@ -43,8 +43,8 @@ void Config::saveSettingsToEEPROM()
     Preferences prefs;
     prefs.begin("config", false);
 
-    prefs.putString("wifi_ssid", wifi.ssid);
-    prefs.putString("wifi_pass", wifi.pass);
+    prefs.putString("wifi_ssid", wifi_config.ssid);
+    prefs.putString("wifi_pass", wifi_config.pass);
 
     prefs.putString("mqtt_server", mqtt.mqtt_server);
     prefs.putString("mqtt_user", mqtt.mqtt_username);
@@ -68,8 +68,8 @@ String Config::toJSON()
 {
     JsonDocument doc;
 
-    doc["wifi"]["ssid"] = wifi.ssid;
-    doc["wifi"]["pass"] = wifi.pass;
+    doc["wifi"]["ssid"] = wifi_config.ssid;
+    doc["wifi"]["pass"] = wifi_config.pass;
 
     doc["mqtt"]["mqtt_server"] = mqtt.mqtt_server;
     doc["mqtt"]["mqtt_user"] = mqtt.mqtt_username;
@@ -96,8 +96,8 @@ void Config::fromJSON(const String &json)
     JsonDocument doc;
     deserializeJson(doc, json);
 
-    wifi.ssid = doc["wifi"]["ssid"].as<String>();
-    wifi.pass = doc["wifi"]["pass"].as<String>();
+    wifi_config.ssid = doc["wifi"]["ssid"].as<String>();
+    wifi_config.pass = doc["wifi"]["pass"].as<String>();
 
     mqtt.mqtt_server = doc["mqtt"]["mqtt_server"].as<String>();
     mqtt.mqtt_username = doc["mqtt"]["mqtt_user"].as<String>();
@@ -182,7 +182,7 @@ void Config::printSettings()
     log(" ");
     log("------------------");
     log("WiFi-Settings:");
-    log("WiFi-SSID: %s", wifi.ssid.c_str());
+    log("WiFi-SSID: %s", wifi_config.ssid.c_str());
     log("WiFi-Pass:***");
 
     log("saveSettingsFlag: %s", saveSettingsFlag ? "true" : "false");
@@ -190,118 +190,3 @@ void Config::printSettings()
     log("------------------");
     log(" ");
 }
-
-//// - OLD Version::::
-
-// void Config::loadSettings(GeneralSettings &generalSettings)
-// {
-//     logv("-------------> Loading configuration settings...");
-//     loadSettingsFromEEPROM(generalSettings);
-//     generalSettings.dirtybit = true;
-//     delay(1000);
-//     printSettings(generalSettings);
-// }
-
-// void Config::saveSettings(GeneralSettings &generalSettings)
-// {
-//     logv("-------------> Saving configuration settings...");
-//     saveSettingsToEEPROM(generalSettings);
-//     delay(2000);
-//     printSettings(generalSettings);
-// }
-
-// //-----------------------------------------------------
-// // private functions
-
-// void Config::printSettings(GeneralSettings &generalSettings)
-// {
-//     log(" ");
-//     log("------------------");
-//     log("Settings:");
-//     log("dirtybit: %s", generalSettings.dirtybit ? "true" : "false");
-//     log("maxOutput: %d", generalSettings.maxOutput);
-//     log("minOutput: %d", generalSettings.minOutput);
-//     log("inputCorrectionOffset: %d", generalSettings.inputCorrectionOffset);
-//     log("enableController: %s", generalSettings.enableController ? "true" : "false");
-//     log("MQTT-Sensor for actual powerusage: %s", MQTT_SENSOR_POWERUSAGE_TOPIC);
-//     log("MQTTPublischPeriod: %f", generalSettings.MQTTPublischPeriod);
-//     log("MQTTListenPeriod: %f", generalSettings.MQTTListenPeriod);
-//     log("RS232PublishPeriod: %f", generalSettings.RS232PublishPeriod);
-//     log("saveSettingsFlag: %s", saveSettingsFlag ? "true" : "false");
-//     log("------------------");
-//     log(" ");
-// }
-
-// void Config::saveSettingsToEEPROM(GeneralSettings &settings)
-// {
-//     Preferences prefs;
-//     if (prefs.begin("config", false)) // false = read & write mode
-//     {
-//         prefs.putBool("enableCtrl", settings.enableController);
-//         prefs.putInt("maxOutput", settings.maxOutput);
-//         prefs.putInt("minOutput", settings.minOutput);
-//         prefs.putInt("offset", settings.inputCorrectionOffset);
-//         prefs.putFloat("Pub", settings.MQTTPublischPeriod);
-//         prefs.putFloat("Listen", settings.MQTTListenPeriod);
-//         prefs.putFloat("RS232Pub", settings.RS232PublishPeriod);
-
-//         prefs.end();
-//         saveSettingsFlag = false; // reset the saveSettings flag after saving
-//         log("Settings saved to EEPROM.");
-//     }
-//     else
-//     {
-//         log("Failed to open Preferences for writing.");
-//     }
-// }
-
-// void Config::loadSettingsFromEEPROM(GeneralSettings &settings)
-// {
-//     Preferences prefs;
-//     if (prefs.begin("config", true)) // true = read-only mode
-//     {
-//         settings.enableController = prefs.getBool("enableCtrl", settings.enableController);
-//         settings.maxOutput = prefs.getInt("maxOutput", settings.maxOutput);
-//         settings.minOutput = prefs.getInt("minOutput", settings.minOutput);
-//         settings.inputCorrectionOffset = prefs.getInt("offset", settings.inputCorrectionOffset);
-
-//         // settings.MQTTPublischPeriod = prefs.getFloat("MQTTPublischPeriod", settings.MQTTPublischPeriod);
-//         // settings.MQTTListenPeriod = prefs.getFloat("MQTTListenPeriod", settings.MQTTListenPeriod);
-//         // settings.RS232PublishPeriod = prefs.getFloat("RS232PublishPeriod", settings.RS232PublishPeriod);
-//         if (prefs.isKey("Pub"))
-//             settings.MQTTPublischPeriod = prefs.getFloat("Pub");
-
-//         if (prefs.isKey("Listen"))
-//             settings.MQTTListenPeriod = prefs.getFloat("Listen");
-
-//         if (prefs.isKey("RS232Pub"))
-//             settings.RS232PublishPeriod = prefs.getFloat("RS232Pub");
-//         else {
-//             saveSettingsToEEPROM(settings); // save the settings to EEPROM if not present
-//         }
-//         prefs.end();
-//         log("Settings loaded from EEPROM.");
-//     }
-//     else
-//     {
-//         log("Failed to open Preferences for reading.");
-//     }
-// }
-
-// void Config::removeSettings(char *Name)
-// {
-//     Preferences prefs;
-//     prefs.begin("config", false);
-//     prefs.remove(Name);
-//     prefs.end();
-//     log("Removed setting from EEPROM: %s", Name);
-// }
-
-// void Config::removeAllSettings()
-// {
-//     Preferences prefs;
-//     prefs.begin("config", false);
-//     prefs.clear(); // Löscht ALLE Werte im Namespace
-//     prefs.end();
-//     log("Removed ALL setting from EEPROM:");
-// }

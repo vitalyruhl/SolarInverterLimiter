@@ -36,12 +36,7 @@ Ticker PublischMQTTTSettingsTicker;
 Ticker ListenMQTTTicker;
 Ticker RS485Ticker;
 
-
-// WiFi-Setup
-WiFiManager wifiManager;
 WiFiClient espClient;
-Config_wifi wifiConfig; // create an instance of the wifi config class
-
 PubSubClient client(espClient);
 config_mqtt mqtt; // create an instance of the mqtt config class
 
@@ -52,6 +47,9 @@ Smoother powerSmoother(
   generalSettings.minOutput,
   generalSettings.maxOutput
 );
+
+WiFiManager* wifiManager;
+
 
 // globale helpers variables
 int AktualImportFromGrid = 0; // amount of electricity being imported from grid
@@ -109,9 +107,8 @@ void setup()
 
   rs485.Init(rs485settings);
 
-  wifiManager.begin(wifiConfig.ssid, wifiConfig.pass); // Start the WiFi manager with the stored SSID and password
-  wifiManager.loop(); // Run the WiFi manager loop to handle WiFi connections
-
+  wifiManager = new WiFiManager(config.wifi_config);
+    wifiManager->begin();
 
   logv("rs485 --> End rs485settings");
   //----------------------------------------
@@ -144,10 +141,10 @@ void loop()
   if (WiFi.status() != WL_CONNECTED)
   {
     log("Wifi Not Connected!");
-    wifiManager.begin(wifiConfig.ssid, wifiConfig.pass); // Start the WiFi manager with the stored SSID and password
+    // wifiManager.begin(); // Start the WiFi manager with the stored SSID and password
   }
 
-  wifiManager.loop(); // Run the WiFi manager loop to handle WiFi connections
+  // wifiManager.loop(); // Run the WiFi manager loop to handle WiFi connections
 
 
   if (!client.connected())

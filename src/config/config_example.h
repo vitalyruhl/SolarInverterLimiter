@@ -3,62 +3,95 @@
 
 #pragma once
 #include <Arduino.h>
+#include <Preferences.h>
+#include <WebServer.h>
+#include <ArduinoJson.h>
+#include <esp_task_wdt.h>
+#include "WiFiManager/WiFiManager.h"
+
+#define VERSION "0.2.1"           // version of the software
+#define VERSION_DATE "2025.04.19" // date of the version
 
 // Logging-Setup --> comment this out to disable logging to serial console
 #define ENABLE_LOGGING
-// #define ENABLE_LOGGING_VERBOSE
+#define ENABLE_LOGGING_VERBOSE
 #define ENABLE_LOGGING_LCD
 
+#define BUTTON_PIN_RESET_TO_DEFAULTS 15 // GPIO pin for the button (D0 on ESP8266, GPIO 0 on ESP32)
 
-#define VERSION "0.1.1"           // version of the software
-#define VERSION_DATE "2025.04.19" // date of the version
+#define WDT_TIMEOUT 60 // in seconds, if esp32 is not responding within this time, the ESP32 will reboot automatically
 
+// WiFi-Setup
 
-// WiFi configuration
-#define WIFI_SSID "YourWifiSSID" // SSID of the WiFi network
-#define WIFI_PASSWORD "YourWifiPassword" // Password of the WiFi network
+struct wifi_config
+{
+    String ssid = "YourSSID";     // WiFi SSID
+    String pass = "YourPassword"; // WiFi password
+    String failover_ssid = "YourFailoverSSIS";     // WiFi SSID
+    String failover_pass = "YourFailoverPasswort"; // WiFi password
+    String apSSID = "HouseBattery_AP"; // Access Point SSID
+    bool use_static_ip = false;
+    String staticIP = "192.178.0.22";      // Static IP address
+    String staticSubnet = "255.255.255.0";  // Static subnet mask
+    String staticGateway = "192.168.0.1"; // Static gateway
+    String staticDNS = "192.168.0.1";     // Static DNS server
+};
 
 // MQTT-Setup
-#define MQTT_SERVER "192.178.1.30" // IP address of the MQTT broker (Mosquitto)
-#define MQTT_USERNAME "mqttBrokerUsername"
-#define MQTT_PASSWORD "mqttsecret"
-#define MQTT_HOSTNAME "HouseBattery_Controller" // hostname (will appear in wifi router connected devices list etc)
-#define MQTT_PORT 1883 // MQTT port number default is 1883
-#define MQTT_WDT_TIMEOUT 20 // in seconds, if no MQTT message is received within this time, the ESP8266 will reboot
+// String mqtt_username = "thomas";
+// String mqtt_password = "Molly#TJ2005";
 
-#define MQTT_SENSOR_POWERUSAGE_TOPIC "emon/emonpi/power1"
-#define MQTT_PUBLISH_SETVALUE_TOPIC "HouseBattery_Controller/SetValue"
-#define MQTT_PUBLISH_GETVALUE_TOPIC "HouseBattery_Controller/GetValue"
-#define MQTT_PUBLISH_SETTINGS "HouseBattery_Controller/Settings"
-#define MQTT_PUBLISH_SAVE_SETTINGS "HouseBattery_Controller/SaveSettings"
-
-#define BUTTON_PIN_RESET_TO_DEFAULTS 15 // GPIO pin for the Reset to defaults (this Settings) button (D0 on ESP8266, GPIO 0 on ESP32) --> will be only checked on Startup
+struct config_mqtt
+{
+  int mqtt_port = 1883;
+  String mqtt_server = "192.168.2.3"; // IP address of the MQTT broker (Mosquitto)
+  String mqtt_username = "mqttuser";
+  String mqtt_password = "password";
+  String mqtt_hostname = "HouseBattery_Controller_Test";
+  String mqtt_sensor_powerusage_topic = "emon/emonpi/power1";
+  String mqtt_publish_setvalue_topic = "HouseBattery_Controller_Test/SetValue"; // topic to publish the set value to
+  String mqtt_publish_getvalue_topic = "HouseBattery_Controller_Test/GetValue"; // topic to publish the get value to
+};
 
 // General configuration (default Settings)
 struct GeneralSettings
 {
-  bool dirtybit = false;           // dirty bit to indicate if the message has changed
-  bool enableController = true;    // set to false to disable the controller and use Maximum power output
-  int maxOutput = 1100;            // edit this to limit TOTAL power output in watts
-  int minOutput = 500;             // minimum output power in watts
-  int inputCorrectionOffset = 150; // ( -80) Current clamp sensors have poor accuracy at low load, a buffer ensures some current flow in the import direction to ensure no exporting. Adjust according to accuracy of meter.
-  float MQTTPublischPeriod = 5.5;  // check all x seconds if there is a new MQTT message to publish
-  float MQTTListenPeriod = 0.5;    // check x seconds if there is a new MQTT message to listen to
-  float RS232PublishPeriod = 1.5;  // send the RS485 Data all x seconds
+  bool dirtybit = false;                    // dirty bit to indicate if the message has changed
+  bool enableController = true;             // set to false to disable the controller and use Maximum power output
+  int maxOutput = 1100;                     // edit this to limit TOTAL power output in watts
+  int minOutput = 500;                      // minimum output power in watts
+  int inputCorrectionOffset = 150;          // ( -80) Current clamp sensors have poor accuracy at low load, a buffer ensures some current flow in the import direction to ensure no exporting. Adjust according to accuracy of meter.
+  float MQTTPublischPeriod = 5.5;           // check all x seconds if there is a new MQTT message to publish
+  float MQTTSettingsPublischPeriod = 300.0; // send the settings to the MQTT broker every x seconds
+  float MQTTListenPeriod = 0.5;             // check x seconds if there is a new MQTT message to listen to
+  float RS232PublishPeriod = 1.5;           // send the RS485 Data all x seconds
+  int smoothingSize = 8;                    // size of the buffer for smoothing
 };
+
 
 class Config
 {
 public:
-  void loadSettings(GeneralSettings &generalSettings);  // Helper function to load settings from ESP32 flash memory
-  void saveSettings(GeneralSettings &generalSettings);  // save settings to ESP32 flash memory
-  bool saveSettingsFlag = false;                        // set to true to save settings to esp32 flash memory
-  void removeAllSettings();                             // remove all settings from esp32 flash memory
-  void removeSettings(char *Name);                      // remove a specific setting from esp32 flash memory (not used yet)
-  void printSettings(GeneralSettings &generalSettings); // print settings if ENABLE_LOGGING_VERBOSE is defined
+  Config_wifi wifi_config;
+  config_mqtt mqtt;
+  GeneralSettings general;
+
+  bool saveSettingsFlag = false;
+
+  void load();
+  void save();
+  void removeSettings(char *Name);
+  void removeAllSettings();
+  void printSettings();
+
+  String toJSON();
+  void fromJSON(const String &json);
+
+  void attachWebEndpoint(WebServer &server);
 
 private:
-  void saveSettingsToEEPROM(GeneralSettings &generalSettings);   // save settings to EEPROM
-  void loadSettingsFromEEPROM(GeneralSettings &generalSettings); // load settings from EEPROM
+  void loadSettingsFromEEPROM();
+  void saveSettingsToEEPROM();
 };
+
 #endif // CONFIG_H

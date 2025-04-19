@@ -1,32 +1,41 @@
+#ifndef WIFI_MANAGER_H
+#define WIFI_MANAGER_H
+
 #pragma once
 
-#include <WiFi.h>
-#include <WebServer.h>
-#include <ArduinoJson.h>
-#include <Preferences.h>
-#include "config/config.h"
-#include "logging/logging.h"
+#include <Arduino.h>
+
+struct Config_wifi
+{
+    String ssid = "YourSSID";     // WiFi SSID
+    String pass = "YourPassword"; // WiFi password
+
+    String failover_ssid = "YourFailoverSSID";
+    String failover_pass = "YourFailoverPassword";
+
+    String apSSID = "HouseBattery_AP"; // Access Point SSID
+
+    bool use_static_ip = false;
+    String staticIP = "192.168.0.22";
+    String staticSubnet = "255.255.255.0";
+    String staticGateway = "192.168.0.1";
+    String staticDNS = "192.168.0.1";
+};
 
 class WiFiManager
 {
 public:
-    WiFiManager(const char *apName = "ESP32_ConfigAP");
-    void begin(const char *ssid = nullptr, const char *password = nullptr);
-    void begin(const String &ssid, const String &password);
-    void loop();
+    WiFiManager(Config_wifi &config) : _config(config) {}
+    void begin();
+    bool isConnected();
+    String getLocalIP();
+    String getSSID();
+    bool connectToWiFi();
+    void startAccessPoint();
 
 private:
-    void startAccessPoint();
-    void handleRoot();
-    void handleFormSubmit();
-    void connectToWiFi();
-    bool loadWiFiCredentials();
-    void saveWiFiCredentials(const String &ssid, const String &password);
-
-    const char *_apName;
-    WebServer _server;
-    Preferences _preferences;
-
-    String _storedSSID;
-    String _storedPassword;
+    Config_wifi &_config;
+    bool connected;
 };
+
+#endif

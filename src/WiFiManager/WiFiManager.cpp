@@ -1,160 +1,59 @@
 #include "WiFiManager/WiFiManager.h"
+#include <WiFi.h>
+#include <WebServer.h>
+#include "config/config.h"
+#include "logging/logging.h"
 
-WiFiManager::WiFiManager(const char *apName)
-    : _apName(apName), _server(80) {}
 
+#include "WiFiManager.h"
 
-
-void WiFiManager::begin(const char *ssid, const char *password)
-{
-    if (ssid != nullptr && password != nullptr)
-    {
-        Serial.println("Trying to connect using provided credentials...");
-        _storedSSID = ssid;
-        _storedPassword = password;
-
-        connectToWiFi();
-
-        if (WiFi.status() == WL_CONNECTED)
-        {
-            Serial.println("Connected with provided credentials.");
-
-            // Laden, um zu prüfen ob Änderungen vorliegen
-            String oldSSID, oldPass;
-            _preferences.begin("wifi", true); // read-only
-            oldSSID = _preferences.getString("ssid", "");
-            oldPass = _preferences.getString("password", "");
-            _preferences.end();
-
-            if (_storedSSID != oldSSID || _storedPassword != oldPass)
-            {
-                Serial.println("Credentials changed. Saving new ones.");
-                saveWiFiCredentials(_storedSSID, _storedPassword);
-            }
-            else
-            {
-                Serial.println("Credentials unchanged. Skipping save.");
-            }
-
-            return;
-        }
-        else
-        {
-            Serial.println("Provided credentials failed. Starting AP...");
-            startAccessPoint();
-            return;
-        }
-    }
-
-    // Try stored credentials
-    if (!loadWiFiCredentials())
-    {
-        Serial.println("No stored credentials. Starting AP...");
-        startAccessPoint();
-        return;
-    }
-
-    connectToWiFi();
-
-    if (WiFi.status() != WL_CONNECTED)
-    {
-        Serial.println("Stored credentials failed. Starting AP...");
+void WiFiManager::begin() {
+    if (!connectToWiFi()) {
         startAccessPoint();
     }
 }
 
-/// Overloaded method to accept String parameters
-void WiFiManager::begin(const String& ssid, const String& password) {
-    begin(ssid.c_str(), password.c_str());
-}
-
-
-void WiFiManager::loop()
-{
-    _server.handleClient();
-}
-
-void WiFiManager::connectToWiFi()
-{
-    WiFi.begin(_storedSSID.c_str(), _storedPassword.c_str());
-    Serial.printf("Connecting to %s...\n", _storedSSID.c_str());
-
-    for (int i = 0; i < 20 && WiFi.status() != WL_CONNECTED; ++i)
-    {
-        delay(500);
-        Serial.print(".");
+bool WiFiManager::connectToWiFi() {
+    if (_config.use_static_ip) {
+        IPAddress ip, gateway, subnet, dns;
+        ip.fromString(_config.staticIP);
+        gateway.fromString(_config.staticGateway);
+        subnet.fromString(_config.staticSubnet);
+        dns.fromString(_config.staticDNS);
+        WiFi.config(ip, gateway, subnet, dns);
     }
 
-    if (WiFi.status() == WL_CONNECTED)
-    {
-        Serial.println("\nConnected!");
-        Serial.println(WiFi.localIP());
+    WiFi.begin(_config.ssid.c_str(), _config.pass.c_str());
+    if (WiFi.waitForConnectResult() != WL_CONNECTED) {
+        WiFi.begin(_config.failover_ssid.c_str(), _config.failover_pass.c_str());
+        return WiFi.waitForConnectResult() == WL_CONNECTED;
+    }
+
+    return true;
+}
+
+
+void WiFiManager::startAccessPoint() {
+    WiFi.mode(WIFI_AP);
+    bool result = WiFi.softAP(_config.apSSID.c_str());
+
+    if (result) {
+        log("Access Point gestartet:");
+        log("SSID: %s", _config.apSSID.c_str());
+        log("IP-Adresse: %s", WiFi.softAPIP());
+    } else {
+        log("Fehler beim Starten des Access Points.");
     }
 }
 
-bool WiFiManager::loadWiFiCredentials()
-{
-    _preferences.begin("wifi", true); // read-only
-    _storedSSID = _preferences.getString("ssid", "");
-    _storedPassword = _preferences.getString("password", "");
-    _preferences.end();
-
-    return !_storedSSID.isEmpty() && !_storedPassword.isEmpty();
+bool WiFiManager::isConnected() {
+    return connected;
 }
 
-void WiFiManager::saveWiFiCredentials(const String &ssid, const String &password)
-{
-    _preferences.begin("wifi", false); // write-mode
-    _preferences.putString("ssid", ssid);
-    _preferences.putString("password", password);
-    _preferences.end();
+String WiFiManager::getLocalIP() {
+    return connected ? WiFi.localIP().toString() : WiFi.softAPIP().toString();
 }
 
-void WiFiManager::startAccessPoint()
-{
-    WiFi.softAP(_apName);
-    Serial.printf("AP started: %s\n", _apName);
-    Serial.println(WiFi.softAPIP());
-
-    _server.on("/", HTTP_GET, std::bind(&WiFiManager::handleRoot, this));
-    _server.on("/submit", HTTP_POST, std::bind(&WiFiManager::handleFormSubmit, this));
-    _server.begin();
-}
-
-void WiFiManager::handleRoot()
-{
-    String html = R"rawliteral(
-        <html>
-            <body>
-                <h2>WiFi Config</h2>
-                <form action="/submit" method="post">
-                    SSID: <input name="ssid"><br>
-                    Password: <input name="password" type="password"><br>
-                    <input type="submit" value="Save">
-                </form>
-            </body>
-        </html>
-    )rawliteral";
-    _server.send(200, "text/html", html);
-}
-
-void WiFiManager::handleFormSubmit()
-{
-    if (_server.hasArg("ssid") && _server.hasArg("password"))
-    {
-        String ssid = _server.arg("ssid");
-        String password = _server.arg("password");
-
-        saveWiFiCredentials(ssid, password);
-
-        String response = "Saved. Restarting...";
-        _server.send(200, "text/plain", response);
-
-        delay(1000);
-        ESP.restart();
-    }
-    else
-    {
-        _server.send(400, "text/plain", "Missing SSID or Password");
-    }
+String WiFiManager::getSSID() {
+    return connected ? WiFi.SSID() : WiFi.softAPSSID();
 }
