@@ -8,10 +8,11 @@
 
 struct RS485Settings
 {
+    bool useExtraSerial = false; // set to true to use Serial2 for RS485 communication
     int baudRate = 4800;
-    int rxPin = 16;
-    int txPin = 17;
-    int dePin = 4;
+    int rxPin = 16; // onl<y for Serial2, not used for Serial
+    int txPin = 17; // onl<y for Serial2, not used for Serial
+    int dePin = 4; // DE pin for RS485 communication (direction control)
     bool enableRS485 = true; // set to false to disable RS485 communication
 };
 
@@ -34,7 +35,7 @@ public:
     RS485Packet reciveFromRS485Packet();
 
     // -- Serial data --
-    // 19.04.2025 viru - that will not working??? --> get it from internet
+    // 19.04.2025 viru - packet will not working??? --> get this from internet
     byte byte0 = 36;
     byte byte1 = 86;
     byte byte2 = 0;
@@ -46,6 +47,7 @@ public:
 
 private:
     byte serialpacket[8];
+    HardwareSerial* RS485serial = &Serial; // Zeiger auf die serielle Schnittstelle // default to Serial, can be changed to Serial2 if needed
 };
 
 #endif // RS485_MODULE_H

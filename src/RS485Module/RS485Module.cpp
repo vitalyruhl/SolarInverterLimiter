@@ -21,9 +21,15 @@ void RS485Module::Init(RS485Settings &settings)
     serialpacket[6] = byte6;
     serialpacket[7] = byte7;
 
-    Serial2.begin(settings.baudRate, SERIAL_8N1, settings.rxPin, settings.txPin);
-    pinMode(settings.dePin, OUTPUT);
-    digitalWrite(settings.dePin, LOW); // recivemod (DE = LOW)
+    
+    if (settings.useExtraSerial) {
+        RS485serial = &Serial2;
+        RS485serial->begin(settings.baudRate, SERIAL_8N1, settings.rxPin, settings.txPin);
+        pinMode(settings.dePin, OUTPUT);
+        digitalWrite(settings.dePin, LOW);
+    } else {
+        RS485serial = &Serial; // Optional fallback
+    }
 }
 
 void RS485Module::sendToRS485(RS485Settings &settings, RS485Packet &packet, uint16_t demand)
@@ -47,8 +53,8 @@ void RS485Module::sendToRS485(RS485Settings &settings, RS485Packet &packet, uint
 
     digitalWrite(settings.dePin, HIGH); // Aktivate send mode
     delayMicroseconds(100);
-    Serial2.write((uint8_t *)&packet, sizeof(packet));
-    Serial2.flush(); // wait for send to finish
+    RS485serial->write((uint8_t *)&packet, sizeof(packet));
+    RS485serial->flush(); // wait for send to finish
     delayMicroseconds(100);
     digitalWrite(settings.dePin, LOW); // aktivate recive mode
 
@@ -94,8 +100,8 @@ void RS485Module::sendToRS485(RS485Settings &settings, uint16_t demand)
 
     digitalWrite(settings.dePin, HIGH); // Aktivate send mode
     delayMicroseconds(100);
-    Serial2.write(serialpacket, 8);
-    Serial2.flush(); // wait for send to finish
+    RS485serial->write(serialpacket, 8);
+    RS485serial->flush(); // wait for send to finish
     delayMicroseconds(100);
     digitalWrite(settings.dePin, LOW); // aktivate recive mode
 
@@ -112,9 +118,9 @@ void RS485Module::sendToRS485(RS485Settings &settings, uint16_t demand)
 String RS485Module::reciveFromRS485()
 {
     String recivedData;
-    while (Serial2.available())
+    while (RS485serial->available())
     {
-        uint8_t byte = Serial2.read();
+        uint8_t byte = RS485serial->read();
         char hexByte[4];
         snprintf(hexByte, sizeof(hexByte), "%02X ", byte);
         recivedData += hexByte;
@@ -126,9 +132,9 @@ String RS485Module::reciveFromRS485()
 RS485Packet RS485Module::reciveFromRS485Packet()
 {
     RS485Packet incoming;
-    if (Serial2.available() >= sizeof(RS485Packet))
+    if (RS485serial->available() >= sizeof(RS485Packet))
     {
-        Serial2.readBytes((char *)&incoming, sizeof(RS485Packet));
+        RS485serial->readBytes((char *)&incoming, sizeof(RS485Packet));
         // logv("Received Packet - Header: %04X, Command: %04X, Power: %04X, Checksum: %02X",
         //      incoming.header, incoming.command, incoming.power, incoming.checksum);
     }
