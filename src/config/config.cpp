@@ -3,6 +3,10 @@
 #include <Preferences.h>
 #include "config/settings.h"
 
+Config::Config() {
+    wifi_config = default_wifi_settings;
+}
+
 void Config::load()
 {
     loadSettingsFromEEPROM();

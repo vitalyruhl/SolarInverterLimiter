@@ -2,26 +2,28 @@
 #define SETTINGS_H
 
 #pragma once
-
+#include "WiFiManager/WiFiManager.h"
 // Logging-Setup --> comment this out to disable logging to serial console
 #define ENABLE_LOGGING
 #define ENABLE_LOGGING_VERBOSE
 #define ENABLE_LOGGING_LCD
 
-struct wifi_config
-{
-    String ssid = "YourSSID";     // WiFi SSID
-    String pass = "YourPassword"; // WiFi password
-    String failover_ssid = "YourFailoverSSIS";     // WiFi SSID
-    String failover_pass = "YourFailoverPasswort"; // WiFi password
-    String apSSID = "HouseBattery_AP"; // Access Point SSID
 
-    bool use_static_ip = false;
-    String staticIP = "192.178.0.22";      // Static IP address
-    String staticSubnet = "255.255.255.0";  // Static subnet mask
-    String staticGateway = "192.168.0.1"; // Static gateway
-    String staticDNS = "192.168.0.1";     // Static DNS server
-};
+const Config_wifi default_wifi_settings = []() {
+  Config_wifi cfg;
+  cfg.ssid = "HausNetz";
+  cfg.pass = "Geheim123";
+  cfg.failover_ssid = "HausNetz2";
+  cfg.failover_pass = "FailoverPass";
+  cfg.apSSID = "HausBatteryAP";
+  cfg.staticIP = "192.168.0.22";
+  cfg.staticSubnet = "255.255.255.0";
+  cfg.staticGateway = "192.168.0.1";
+  cfg.staticDNS = "192.168.0.1";
+  cfg.use_static_ip = true;
+  return cfg;
+}();
+
 
 struct config_mqtt
 {

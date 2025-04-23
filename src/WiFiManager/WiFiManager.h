@@ -22,7 +22,8 @@ struct Config_wifi
 class WiFiManager
 {
 public:
-    WiFiManager(Config_wifi &config) : _config(config) {}
+    // WiFiManager(Config_wifi &config) : _config(config) {}
+    WiFiManager(Config_wifi* config);
     void begin();
     bool isConnected();
     String getLocalIP();
@@ -31,7 +32,8 @@ public:
     void startAccessPoint();
 
 private:
-    Config_wifi &_config;
+    // Config_wifi &_config;
+    Config_wifi* _config;
     bool connected;
 };
 

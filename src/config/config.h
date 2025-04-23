@@ -23,11 +23,10 @@ public:
   GeneralSettings general;
   Config_wifi wifi_config;
 
-  // Config_wifi wifi_config;
-  // rs485Settings rs485settings;
+  rs485Settings rs485settings;
 
   bool saveSettingsFlag = false;
-
+  Config(); // constructor
   void load();
   void save();
   void removeSettings(char *Name);

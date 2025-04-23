@@ -104,8 +104,10 @@ void setup()
 
   rs485.Init(rs485settings);
   
-  wifiManager = new WiFiManager(config.wifi_config);
-  wifiManager->begin();
+  // wifiManager = new WiFiManager(config.wifi_config);
+  WiFiManager wifiManager(&config.wifi_config); 
+  // wifiManager->begin();
+  wifiManager.begin();
 
   logv("rs485 --> End rs485settings");
   //----------------------------------------
