@@ -1,4 +1,5 @@
 #include <Arduino.h>
+#include "config/settings.h"
 #include "config/config.h"
 #include "RS485Module/RS485Module.h"
 #include "helpers/helpers.h"
@@ -42,21 +43,16 @@ config_mqtt mqtt; // create an instance of the mqtt config class
 
 // Smoothing Values
 Smoother powerSmoother(
-  generalSettings.smoothingSize,
-  generalSettings.inputCorrectionOffset,
-  generalSettings.minOutput,
-  generalSettings.maxOutput
-);
+    generalSettings.smoothingSize,
+    generalSettings.inputCorrectionOffset,
+    generalSettings.minOutput,
+    generalSettings.maxOutput);
 
-WiFiManager* wifiManager;
-
+WiFiManager *wifiManager;
 
 // globale helpers variables
 int AktualImportFromGrid = 0; // amount of electricity being imported from grid
 int inverterSetValue = 0;     // current power inverter should deliver (default to zero)
-
-
-
 
 #pragma endregion configuration variables
 
@@ -78,6 +74,8 @@ void setup()
 
 #if defined(ENABLE_LOGGING) || defined(ENABLE_LOGGING_VERBOSE)
   Serial.begin(9600); // Debug-Modus
+#else
+  Serial.begin(4800); // send to RS485 over serial
 #endif
   logv("System setup start...");
 
@@ -102,13 +100,12 @@ void setup()
 
   config.printSettings(); // Print the settings to the serial console
 
-  
   testRS232();
 
   rs485.Init(rs485settings);
-
+  
   wifiManager = new WiFiManager(config.wifi_config);
-    wifiManager->begin();
+  wifiManager->begin();
 
   logv("rs485 --> End rs485settings");
   //----------------------------------------
@@ -145,7 +142,6 @@ void loop()
   }
 
   // wifiManager.loop(); // Run the WiFi manager loop to handle WiFi connections
-
 
   if (!client.connected())
   {
@@ -211,7 +207,6 @@ void reconnectMQTT()
     {
       log("❌ Subscription to Topic[%s] failed!", mqtt.mqtt_sensor_powerusage_topic.c_str());
     }
-   
   }
 }
 

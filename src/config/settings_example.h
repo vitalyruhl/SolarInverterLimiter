@@ -1,27 +1,12 @@
-#ifndef CONFIG_H
-#define CONFIG_H
+#ifndef SETTINGS_H
+#define SETTINGS_H
 
 #pragma once
-#include <Arduino.h>
-#include <Preferences.h>
-#include <WebServer.h>
-#include <ArduinoJson.h>
-#include <esp_task_wdt.h>
-#include "WiFiManager/WiFiManager.h"
-
-#define VERSION "0.2.1"           // version of the software
-#define VERSION_DATE "2025.04.19" // date of the version
 
 // Logging-Setup --> comment this out to disable logging to serial console
 #define ENABLE_LOGGING
 #define ENABLE_LOGGING_VERBOSE
 #define ENABLE_LOGGING_LCD
-
-#define BUTTON_PIN_RESET_TO_DEFAULTS 15 // GPIO pin for the button (D0 on ESP8266, GPIO 0 on ESP32)
-
-#define WDT_TIMEOUT 60 // in seconds, if esp32 is not responding within this time, the ESP32 will reboot automatically
-
-// WiFi-Setup
 
 struct wifi_config
 {
@@ -30,16 +15,13 @@ struct wifi_config
     String failover_ssid = "YourFailoverSSIS";     // WiFi SSID
     String failover_pass = "YourFailoverPasswort"; // WiFi password
     String apSSID = "HouseBattery_AP"; // Access Point SSID
+
     bool use_static_ip = false;
     String staticIP = "192.178.0.22";      // Static IP address
     String staticSubnet = "255.255.255.0";  // Static subnet mask
     String staticGateway = "192.168.0.1"; // Static gateway
     String staticDNS = "192.168.0.1";     // Static DNS server
 };
-
-// MQTT-Setup
-// String mqtt_username = "thomas";
-// String mqtt_password = "Molly#TJ2005";
 
 struct config_mqtt
 {
@@ -69,29 +51,15 @@ struct GeneralSettings
 };
 
 
-class Config
+struct rs485Settings
 {
-public:
-  Config_wifi wifi_config;
-  config_mqtt mqtt;
-  GeneralSettings general;
-
-  bool saveSettingsFlag = false;
-
-  void load();
-  void save();
-  void removeSettings(char *Name);
-  void removeAllSettings();
-  void printSettings();
-
-  String toJSON();
-  void fromJSON(const String &json);
-
-  void attachWebEndpoint(WebServer &server);
-
-private:
-  void loadSettingsFromEEPROM();
-  void saveSettingsToEEPROM();
+    bool useExtraSerial = true; // set to true to use Serial2 for RS485 communication
+    int baudRate = 4800;
+    int rxPin = 16; // onl<y for Serial2, not used for Serial
+    int txPin = 17; // onl<y for Serial2, not used for Serial
+    int dePin = 4; // DE pin for RS485 communication (direction control)
+    bool enableRS485 = true; // set to false to disable RS485 communication
 };
+
 
 #endif // CONFIG_H

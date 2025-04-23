@@ -9,17 +9,14 @@ struct Config_wifi
 {
     String ssid = "YourSSID";     // WiFi SSID
     String pass = "YourPassword"; // WiFi password
-
     String failover_ssid = "YourFailoverSSID";
     String failover_pass = "YourFailoverPassword";
-
     String apSSID = "HouseBattery_AP"; // Access Point SSID
-
-    bool use_static_ip = false;
     String staticIP = "192.168.0.22";
     String staticSubnet = "255.255.255.0";
     String staticGateway = "192.168.0.1";
     String staticDNS = "192.168.0.1";
+    bool use_static_ip = false;
 };
 
 class WiFiManager

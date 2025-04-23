@@ -1,6 +1,7 @@
 #include "config/config.h"
 #include "logging/logging.h"
 #include <Preferences.h>
+#include "config/settings.h"
 
 void Config::load()
 {
