@@ -8,14 +8,14 @@
 #define ENABLE_LOGGING_VERBOSE
 #define ENABLE_LOGGING_LCD
 
-
-const Config_wifi default_wifi_settings = []() {
+const Config_wifi default_wifi_settings = []
+{
   Config_wifi cfg;
   cfg.ssid = "HausNetz";
   cfg.pass = "Geheim123";
   cfg.failover_ssid = "HausNetz2";
   cfg.failover_pass = "FailoverPass";
-  cfg.apSSID = "HausBatteryAP";
+  cfg.apSSID = "SolarLimiterAP";
   cfg.staticIP = "192.168.0.22";
   cfg.staticSubnet = "255.255.255.0";
   cfg.staticGateway = "192.168.0.1";
@@ -24,17 +24,24 @@ const Config_wifi default_wifi_settings = []() {
   return cfg;
 }();
 
-
 struct config_mqtt
 {
   int mqtt_port = 1883;
-  String mqtt_server = "192.168.2.3"; // IP address of the MQTT broker (Mosquitto)
+  String mqtt_server = "192.168.2.3"; // IP address of the MQTT broker (eg. Mosquitto / HomeAssistant)
   String mqtt_username = "mqttuser";
   String mqtt_password = "password";
-  String mqtt_hostname = "HouseBattery_Controller_Test";
+  String mqtt_hostname = "SolarLimiter";
+
   String mqtt_sensor_powerusage_topic = "emon/emonpi/power1";
-  String mqtt_publish_setvalue_topic = "HouseBattery_Controller_Test/SetValue"; // topic to publish the set value to
-  String mqtt_publish_getvalue_topic = "HouseBattery_Controller_Test/GetValue"; // topic to publish the get value to
+  String mqtt_publish_setvalue_topic;
+  String mqtt_publish_getvalue_topic;
+
+  // constructor for setting dependent fields
+  config_mqtt()
+  {
+    mqtt_publish_setvalue_topic = mqtt_hostname + "/SetValue";
+    mqtt_publish_getvalue_topic = mqtt_hostname + "/GetValue";
+  }
 };
 
 // General configuration (default Settings)
@@ -52,16 +59,14 @@ struct GeneralSettings
   int smoothingSize = 8;                    // size of the buffer for smoothing
 };
 
-
 struct rs485Settings
 {
-    bool useExtraSerial = true; // set to true to use Serial2 for RS485 communication
-    int baudRate = 4800;
-    int rxPin = 16; // onl<y for Serial2, not used for Serial
-    int txPin = 17; // onl<y for Serial2, not used for Serial
-    int dePin = 4; // DE pin for RS485 communication (direction control)
-    bool enableRS485 = true; // set to false to disable RS485 communication
+  bool useExtraSerial = true; // set to true to use Serial2 for RS485 communication
+  int baudRate = 4800;
+  int rxPin = 16;          // only for Serial2, not used for Serial
+  int txPin = 17;          // only for Serial2, not used for Serial
+  int dePin = 4;           // DE pin for RS485 communication (direction control)
+  bool enableRS485 = true; // set to false to disable RS485 communication
 };
-
 
 #endif // CONFIG_H

@@ -1,6 +1,7 @@
 #include <Arduino.h>
-#include "config/settings.h"
+#include "logging/logging.h" // for logging
 #include "config/config.h"
+#include "config/settings.h"
 #include "RS485Module/RS485Module.h"
 #include "helpers/helpers.h"
 #include <PubSubClient.h> // for MQTT
@@ -8,7 +9,6 @@
 #include <esp_task_wdt.h> // for watchdog timer
 #include <stdarg.h>       // for variadische Funktionen (printf-Stil)
 #include <Ticker.h>
-#include "logging/logging.h" // for logging
 #include "WiFiManager/WiFiManager.h"
 #include "Smoother/Smoother.h"
 
@@ -84,8 +84,10 @@ void setup()
 
   if (digitalRead(BUTTON_PIN_RESET_TO_DEFAULTS) == LOW)
   {
-    Serial.println("Button gedrückt beim Start! Lösche Einstellungen...");
+    Serial.println("Reset beim Start ausgelöst! Lösche Einstellungen...");
     config.removeAllSettings();
+    delay(10000);  // Wait for 10 seconds to avoid multiple resets
+    config.save(); // Save the default settings to EEPROM
     delay(10000);  // Wait for 10 seconds to avoid multiple resets
     ESP.restart(); // Restart the ESP32
   }
@@ -103,11 +105,16 @@ void setup()
   testRS232();
 
   rs485.Init(rs485settings);
-  
+
   // wifiManager = new WiFiManager(config.wifi_config);
-  WiFiManager wifiManager(&config.wifi_config); 
+  if (config.wifi_config.ssid.length() == 0)
+  {
+    log("⚠️ SETUP: config.wifi_config.ssid.ssid ist leer!");
+  }
+  wifiManager = new WiFiManager(&config.wifi_config);
+  // WiFiManager wifiManager(&config.wifi_config);
   // wifiManager->begin();
-  wifiManager.begin();
+  wifiManager->begin();
 
   logv("rs485 --> End rs485settings");
   //----------------------------------------
@@ -151,6 +158,10 @@ void loop()
     reconnectMQTT();
   }
 
+  if (wifiManager->hasAPServer())
+  {
+    wifiManager->handleClient();
+  }
   delay(100);
 }
 

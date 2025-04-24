@@ -4,7 +4,7 @@
 #pragma once
 // #include <string.h>       //for string functions like strcmp
 #include <stdarg.h>       // for variadische Funktionen (printf-Stil)
-
+#include "config/config.h" // for config settings
 
 // #define ENABLE_LOGGING
 // #define ENABLE_LOGGING_VERBOSE
