@@ -4,10 +4,12 @@
 #pragma once
 #include <WebServer.h>
 #include <Arduino.h>
-// #include "config/config.h"
-#include "WiFiManager/cConfig_wifi.h"
+#include <WiFi.h>
+#include "config/html/html_content.h"
 
-struct Config_wifi 
+class Webconfig;
+
+struct Config_wifi
 {
     String ssid = "YourSSID";     // WiFi SSID
     String pass = "YourPassword"; // WiFi password
@@ -27,6 +29,7 @@ class WiFiManager
 public:
     // WiFiManager(Config_wifi &config) : _config(config) {}
     WiFiManager(Config_wifi *config);
+    ~WiFiManager() = default;
     void begin();
     bool isConnected();
     String getLocalIP();
@@ -40,9 +43,14 @@ private:
     // Config_wifi &_config;
     bool connected;
     
+    // id do not knowing what this is, but it was in examples... todo: learn more about this
+    std::unique_ptr<Webconfig> webconfig; // Use smart pointer to manage memory automatically
+    std::unique_ptr<WebServer> _server;
+    // std::unique_ptr<Config_wifi> _config;
     Config_wifi* _config = nullptr;
-    WebServer* _server = nullptr;
-
+    // WebServer* _server = nullptr;
+    void StartWebApp();
+    WebHTML webhtml;
 };
 
 #endif

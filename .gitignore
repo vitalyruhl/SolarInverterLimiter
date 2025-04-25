@@ -4,4 +4,3 @@
 .vscode/launch.json
 .vscode/ipch
 /.pio/build
-/src/config/settings.h

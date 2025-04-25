@@ -1,18 +1,14 @@
-#include <WiFi.h>
-#include <WebServer.h>
 #include "WiFiManager/WiFiManager.h"
-#include "config/config.h"
 #include "logging/logging.h"
+#include "config/webconfig.h"
 
-WiFiManager::WiFiManager(Config_wifi *config)
+
+
+WiFiManager::WiFiManager(Config_wifi *config) : _config(config)
 {
-    if (!config)
-    {
-        log("💣 ERROR!!!config pointer is null!");
-        return;
-    }
-    _config = config;
+    // do nothing, constructor initializes _config
 }
+
 
 void WiFiManager::begin()
 {
@@ -21,9 +17,14 @@ void WiFiManager::begin()
         log("💣 ERROR!!! _config pointer is null!");
         return;
     }
+
+    // webconfig = new Webconfig(); // Erstellen Sie das Objekt hier
+    webconfig.reset(new Webconfig());
+
     log("Config-WiFi values:");
     log("SSID: %s", _config->ssid);
     log("Use Static IP: %s", String(_config->use_static_ip));
+
     if (!connectToWiFi())
     {
         startAccessPoint();
@@ -32,6 +33,9 @@ void WiFiManager::begin()
 
 bool WiFiManager::connectToWiFi()
 {
+    // todo: add try it 3 times
+    // todo: add check and try to connect with the failover credentials
+
     if (_config->use_static_ip)
     {
         IPAddress ip, gateway, subnet, dns;
@@ -49,7 +53,9 @@ bool WiFiManager::connectToWiFi()
         return WiFi.waitForConnectResult() == WL_CONNECTED;
     }
 
-    return true;
+    connected = (WiFi.waitForConnectResult() == WL_CONNECTED);
+    StartWebApp();
+    return connected;
 }
 
 bool WiFiManager::hasAPServer()
@@ -59,30 +65,20 @@ bool WiFiManager::hasAPServer()
 
 void WiFiManager::handleClient()
 {
+    // todo: add check for avaibility of wifi stored credentials, and restart, if there if we are not connected to the wifi, or running in AP mode
     if (_server)
         _server->handleClient();
 }
 
 void WiFiManager::startAccessPoint()
 {
-
     WiFi.mode(WIFI_AP);
-    bool result = WiFi.softAP(_config->apSSID.c_str());
-
-    if (result)
+    if (WiFi.softAP(_config->apSSID.c_str()))
     {
-        log("Access Point gestartet:");
-        log("SSID: %s", _config->apSSID.c_str());
-        log("IP-Adresse: %s", WiFi.softAPIP());
-
-        _server = new WebServer(80);
-        Config.attachWebEndpoint(*_server);
-
-        _server->on("/", HTTP_GET, [&]()
-                    { _server->send(200, "text/html", "<h1>ESP32 Konfiguration</h1><p>API: <code>/config</code></p>"); });
-
-        _server->begin();
+        log("AP gestartet: IP %s", WiFi.softAPIP().toString().c_str());
+        StartWebApp();
     }
+
     else
     {
         log("Fehler beim Starten des Access Points.");
@@ -103,3 +99,11 @@ String WiFiManager::getSSID()
 {
     return connected ? WiFi.SSID() : WiFi.softAPSSID();
 }
+
+
+void WiFiManager::StartWebApp() {
+    _server->on("/", HTTP_GET, [this]() {
+        _server->send_P(200, "text/html", webhtml.getWebHTML());
+    });
+}
+

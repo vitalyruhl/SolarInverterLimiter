@@ -1,0 +1,38 @@
+#pragma once
+#include <Arduino.h>
+
+const char WEB_HTML[] PROGMEM = R"rawliteral(
+    <!DOCTYPE html>
+    <html>
+    <!DOCTYPE html>
+    <html>
+    <head>
+        <title>SolarLimiter</title>
+        <meta name="viewport" content="width=device-width, initial-scale=1">
+        <style>
+            button { 
+                padding: 12px; 
+                font-size: 1.2rem; 
+                margin: 10px;
+                background-color: #4CAF50;
+                color: white;
+                border: none;
+                border-radius: 4px;
+            }
+        </style>
+    </head>
+    <body>
+        <h1>SolarLimiter Config</h1>
+        <button onclick="location.href='/config'">Show Config</button>
+        <button onclick="fetch('/reboot').then(() => alert('Rebooting!'))">Reboot</button>
+    </body>
+    </html>
+    </html>
+    )rawliteral";
+
+
+class WebHTML
+{
+public:
+    const char* getWebHTML();
+};
