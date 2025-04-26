@@ -54,14 +54,14 @@ void Config::loadSettingsFromEEPROM()
 
     wifi_config.ssid = prefs.getString("wifi_ssid", wifi_config.ssid);
     wifi_config.pass = prefs.getString("wifi_pass", wifi_config.pass);
-    wifi_config.ssid = prefs.getString("wifi_fo_ssid", wifi_config.failover_ssid);
-    wifi_config.pass = prefs.getString("wifi_fo_pass", wifi_config.failover_pass);
-    wifi_config.ssid = prefs.getString("wifi_AP_ssid", wifi_config.apSSID);
-    wifi_config.pass = prefs.getString("wifi_IP", wifi_config.staticIP);
-    wifi_config.pass = prefs.getString("wifi_SN", wifi_config.staticSubnet);
-    wifi_config.pass = prefs.getString("wifi_GW", wifi_config.staticGateway);
-    wifi_config.pass = prefs.getString("wifi_DNS", wifi_config.staticDNS);
-    wifi_config.pass = prefs.getBool("wifi_use_sp", wifi_config.use_static_ip);
+    wifi_config.failover_ssid = prefs.getString("wifi_fo_ssid", wifi_config.failover_ssid);
+    wifi_config.failover_pass = prefs.getString("wifi_fo_pass", wifi_config.failover_pass);
+    wifi_config.apSSID = prefs.getString("wifi_AP_ssid", wifi_config.apSSID);
+    wifi_config.staticIP = prefs.getString("wifi_IP", wifi_config.staticIP);
+    wifi_config.staticSubnet = prefs.getString("wifi_SN", wifi_config.staticSubnet);
+    wifi_config.staticGateway = prefs.getString("wifi_GW", wifi_config.staticGateway);
+    wifi_config.staticDNS = prefs.getString("wifi_DNS", wifi_config.staticDNS);
+    wifi_config.use_static_ip = prefs.getBool("wifi_use_sp", wifi_config.use_static_ip);
 
     mqtt.mqtt_server = prefs.getString("mqtt_server", mqtt.mqtt_server);
     mqtt.mqtt_username = prefs.getString("mqtt_user", mqtt.mqtt_username);

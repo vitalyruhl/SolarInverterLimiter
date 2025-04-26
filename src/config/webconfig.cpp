@@ -81,19 +81,23 @@ void Webconfig::fromJSON(const String &json)
 }
 
 void Webconfig::attachWebEndpoint(WebServer &server) {
-    // GET-Handler
-    server.on("/", HTTP_GET, [&]() {
-        server.send(200, "application/json", toJSON());
+    // GET-Handler mit explizitem Capture
+    server.on("/", HTTP_GET, [this, &server]() {
+        server.send(200, "application/json", this->toJSON());
     });
 
-    // POST-Handler (für Konfigurations-Updates)
-    server.on("/", HTTP_POST, [&]() {
+    // server.on("/", HTTP_GET, [this](WebServer* srv) {
+    //     srv->send(200, "application/json", this->toJSON());
+    // });
+
+    // POST-Handler mit safe Capture
+    server.on("/", HTTP_POST, [this, &server]() {
         if (!server.hasArg("plain")) {
             server.send(400, "text/plain", "Missing body");
             return;
         }
-        fromJSON(server.arg("plain"));
-        configuration.save();
+        this->fromJSON(server.arg("plain"));
+        this->configuration.save();
         server.send(200, "text/plain", "Configuration saved.");
     });
 }

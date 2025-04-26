@@ -66,8 +66,8 @@ struct rs485Settings
 {
     bool useExtraSerial = true; // set to true to use Serial2 for RS485 communication
     int baudRate = 4800;
-    int rxPin = 16;          // only for Serial2, not used for Serial
-    int txPin = 17;          // only for Serial2, not used for Serial
+    int rxPin = 18;          // only for Serial2, not used for Serial
+    int txPin = 19;          // only for Serial2, not used for Serial
     int dePin = 4;           // DE pin for RS485 communication (direction control)
     bool enableRS485 = true; // set to false to disable RS485 communication
     //todo: add settings for Inverter eg, headder, checksum, etc.

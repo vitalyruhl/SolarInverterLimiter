@@ -84,7 +84,7 @@ void setup()
 
   if (digitalRead(BUTTON_PIN_RESET_TO_DEFAULTS) == LOW)
   {
-    Serial.println("Reset beim Start ausgelöst! Lösche Einstellungen...");
+    Serial.println("Reset-Pin is (LOW) -> Resett all settings...");
     config.removeAllSettings();
     delay(10000);  // Wait for 10 seconds to avoid multiple resets
     config.save(); // Save the default settings to EEPROM

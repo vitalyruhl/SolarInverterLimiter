@@ -102,8 +102,13 @@ String WiFiManager::getSSID()
 
 
 void WiFiManager::StartWebApp() {
+    logv("Init Server...");
+    _server.reset(new WebServer());
+    
+    logv("Apply Route \\ ...");
     _server->on("/", HTTP_GET, [this]() {
         _server->send_P(200, "text/html", webhtml.getWebHTML());
     });
+    logv("Start server on port 80 (http://) ...");
+    _server->begin(); // Server starten
 }
-
