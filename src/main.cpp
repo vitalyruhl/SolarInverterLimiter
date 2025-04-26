@@ -53,6 +53,7 @@ WiFiManager *wifiManager;
 // globale helpers variables
 int AktualImportFromGrid = 0; // amount of electricity being imported from grid
 int inverterSetValue = 0;     // current power inverter should deliver (default to zero)
+bool tickerActive = false;    // flag to indicate if the ticker is active
 
 #pragma endregion configuration variables
 
@@ -73,7 +74,7 @@ void setup()
 {
 
 #if defined(ENABLE_LOGGING) || defined(ENABLE_LOGGING_VERBOSE)
-  Serial.begin(9600); // Debug-Modus
+  Serial.begin(9600); // Debug-Mode: send to serial console
 #else
   Serial.begin(4800); // send to RS485 over serial
 #endif
@@ -129,6 +130,7 @@ void setup()
   PublischMQTTTicker.attach(generalSettings.MQTTPublischPeriod, cb_BlinkerPublishToMQTT);
   ListenMQTTTicker.attach(generalSettings.MQTTListenPeriod, cb_BlinkerMQTTListener);
   RS485Ticker.attach(generalSettings.RS232PublishPeriod, cb_BlinkerRS485Listener);
+  tickerActive = true; // Set the flag to indicate that the ticker is active
   reconnectMQTT(); // connect to MQTT broker
   logv("System setup completed.");
 }
@@ -146,22 +148,39 @@ void loop()
 
   if (WiFi.status() != WL_CONNECTED)
   {
-    log("Wifi Not Connected!");
+    logv("Wifi Not Connected!");
     // wifiManager.begin(); // Start the WiFi manager with the stored SSID and password
   }
 
-  // wifiManager.loop(); // Run the WiFi manager loop to handle WiFi connections
+  if (WiFi.status() != WL_CONNECTED || WiFi.getMode() == WIFI_AP)
+  {
+    if (tickerActive) // Check if the ticker is already active
+    {
+      log("WiFi not connected or in AP mode! deactivate ticker.");
+      PublischMQTTTicker.detach(); // Stop the ticker if WiFi is not connected or in AP mode
+      ListenMQTTTicker.detach();   // Stop the ticker if WiFi is not connected or in AP mode
+      tickerActive = false;        // Set the flag to indicate that the ticker is not active
+    }
+  }
+  else
+  {
+    if (!tickerActive) // Check if the ticker is not already active
+    {
+      log("WiFi connected! Reattach ticker.");
+      PublischMQTTTicker.attach(generalSettings.MQTTPublischPeriod, cb_BlinkerPublishToMQTT); // Reattach the ticker if WiFi is connected
+      ListenMQTTTicker.attach(generalSettings.MQTTListenPeriod, cb_BlinkerMQTTListener);      // Reattach the ticker if WiFi is connected
+      tickerActive = true;                                                                    // Set the flag to indicate that the ticker is active
+    }
+  }
 
   if (!client.connected())
   {
-    log("MQTT Not Connected!");
+    // logv("MQTT Not Connected!");
     reconnectMQTT();
   }
 
-  if (wifiManager->hasAPServer())
-  {
-    wifiManager->handleClient();
-  }
+  wifiManager->handleClient();
+
   delay(100);
 }
 
@@ -170,6 +189,11 @@ void loop()
 //----------------------------------------
 void reconnectMQTT()
 {
+  if (WiFi.status() != WL_CONNECTED || WiFi.getMode() == WIFI_AP)
+  {
+    logv("WiFi not connected or in AP mode! Skipping MQTT.");
+    return;
+  }
 
   int retry = 0;
   int maxRetry = 10; // max retry count

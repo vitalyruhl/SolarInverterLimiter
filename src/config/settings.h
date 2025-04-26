@@ -6,8 +6,9 @@
 
 // Logging-Setup --> comment this out to disable logging to serial console
 #define ENABLE_LOGGING
-#define ENABLE_LOGGING_VERBOSE
-#define ENABLE_LOGGING_LCD
+// #define ENABLE_LOGGING_VERBOSE
+// #define ENABLE_LOGGING_LCD
+#define ENABLE_LOGGING_SETTINGS
 
 // WiFi-Setup
 const Config_wifi default_wifi_settings = []

@@ -83,6 +83,7 @@ void Config::loadSettingsFromEEPROM()
 
 void Config::saveSettingsToEEPROM()
 {
+    log("Saving settings to EEPROM...");
     Preferences prefs;
     prefs.begin("config", false);
 
@@ -113,6 +114,7 @@ void Config::saveSettingsToEEPROM()
     prefs.putInt("smoothing", general.smoothingSize);
 
     prefs.end();
+    printSettings(); // print the settings to the serial monitor
 }
 
 void Config::removeSettings(char *Name)

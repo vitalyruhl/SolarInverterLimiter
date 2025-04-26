@@ -2,13 +2,10 @@
 #include "logging/logging.h"
 #include "config/webconfig.h"
 
-
-
 WiFiManager::WiFiManager(Config_wifi *config) : _config(config)
 {
     // do nothing, constructor initializes _config
 }
-
 
 void WiFiManager::begin()
 {
@@ -18,7 +15,6 @@ void WiFiManager::begin()
         return;
     }
 
-    // webconfig = new Webconfig(); // Erstellen Sie das Objekt hier
     webconfig.reset(new Webconfig());
 
     log("Config-WiFi values:");
@@ -75,13 +71,13 @@ void WiFiManager::startAccessPoint()
     WiFi.mode(WIFI_AP);
     if (WiFi.softAP(_config->apSSID.c_str()))
     {
-        log("AP gestartet: IP %s", WiFi.softAPIP().toString().c_str());
+        logs("AP-Mode: IP %s", WiFi.softAPIP().toString().c_str());
         StartWebApp();
     }
 
     else
     {
-        log("Fehler beim Starten des Access Points.");
+        logs("Erron on starting Access Points.");
     }
 }
 
@@ -100,15 +96,15 @@ String WiFiManager::getSSID()
     return connected ? WiFi.SSID() : WiFi.softAPSSID();
 }
 
+void WiFiManager::StartWebApp()
+{
+    logs("Init Server...");
+    _server.reset(new WebServer()); // no unique_ptr, because c++ v11
 
-void WiFiManager::StartWebApp() {
-    logv("Init Server...");
-    _server.reset(new WebServer());
-    
-    logv("Apply Route \\ ...");
-    _server->on("/", HTTP_GET, [this]() {
-        _server->send_P(200, "text/html", webhtml.getWebHTML());
-    });
-    logv("Start server on port 80 (http://) ...");
+    logs("register endpoints ...");
+    webconfig->attachWebEndpoint(*_server);
+
+    logs("Start server on port 80 (http://) ...");
     _server->begin(); // Server starten
+    logs("webserver up ...");
 }

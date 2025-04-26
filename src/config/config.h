@@ -8,8 +8,8 @@
 #include "WiFiManager/WiFiManager.h"
 #include "config/settings.h"
 
-#define VERSION "0.2.1"           // version of the software
-#define VERSION_DATE "2025.04.24" // date of the version
+#define VERSION "0.3.0"           // version of the software
+#define VERSION_DATE "2025.04.26" // date of the version
 
 #define BUTTON_PIN_RESET_TO_DEFAULTS 15 // GPIO pin for the button (D0 on ESP8266, GPIO 0 on ESP32)
 #define WDT_TIMEOUT 60                  // in seconds, if esp32 is not responding within this time, the ESP32 will reboot automatically

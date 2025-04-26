@@ -3,7 +3,9 @@
 #include "config/webconfig.h"
 #include "logging/logging.h"
 
-Webconfig::Webconfig() {
+Webconfig::Webconfig() : configuration()
+{                         // Config-Objekt initialisieren
+    configuration.load(); // Einstellungen laden
     mqttSettings = configuration.mqtt;
     generalSettings = configuration.general;
     wifi_configSettings = configuration.wifi_config;
@@ -11,9 +13,11 @@ Webconfig::Webconfig() {
     saveSettingsFlag = false;
 }
 
-String Webconfig::toJSON() {
+String Webconfig::toJSON()
+{
+    logs("enter toJSON()...");
     JsonDocument doc;
-    logv("Generiere JSON...");
+    logs("Generiere JSON...");
     doc["wifi"]["ssid"] = wifi_configSettings.ssid;
     doc["wifi"]["pass"] = wifi_configSettings.pass;
     doc["wifi"]["fo_ssid"] = wifi_configSettings.failover_ssid;
@@ -48,10 +52,10 @@ String Webconfig::toJSON() {
 
 void Webconfig::fromJSON(const String &json)
 {
+    logs("enter fromJSON()...");
     JsonDocument doc;
     deserializeJson(doc, json);
-    logv("JSON recived: %s", json.c_str());
-
+    logs("JSON recived: %s", json.c_str());
 
     wifi_configSettings.ssid = doc["wifi"]["ssid"].as<String>();
     wifi_configSettings.pass = doc["wifi"]["pass"].as<String>();
@@ -80,24 +84,58 @@ void Webconfig::fromJSON(const String &json)
     generalSettings.smoothingSize = doc["general"]["smoothing"].as<int>();
 }
 
-void Webconfig::attachWebEndpoint(WebServer &server) {
-    // GET-Handler mit explizitem Capture
+void Webconfig::attachWebEndpoint(WebServer &server)
+{
+    logs("enter attachWebEndpoint()...");
+
+    logs("Apply Route \\ ...");
     server.on("/", HTTP_GET, [this, &server]() {
+        server.sendHeader("Access-Control-Allow-Origin", "*");
+        server.send_P(200, "text/html", webhtml.getWebHTML());
+    });
+
+    logs("Apply Route /config ...");
+    server.on("/config/json", HTTP_GET, [this, &server]() {
+        server.sendHeader("Access-Control-Allow-Origin", "*");
         server.send(200, "application/json", this->toJSON());
     });
 
-    // server.on("/", HTTP_GET, [this](WebServer* srv) {
-    //     srv->send(200, "application/json", this->toJSON());
-    // });
-
-    // POST-Handler mit safe Capture
-    server.on("/", HTTP_POST, [this, &server]() {
+    // apply save settings route
+    logs("Apply Route /config/save ...");
+    server.on("/config/save", HTTP_POST, [this, &server]() {
         if (!server.hasArg("plain")) {
             server.send(400, "text/plain", "Missing body");
             return;
         }
         this->fromJSON(server.arg("plain"));
         this->configuration.save();
-        server.send(200, "text/plain", "Configuration saved.");
+        server.send(200, "text/plain", "Settings saved");
     });
+
+    logs("Apply Route /config/reset ...");
+    server.on("/config/reset", HTTP_POST, [this, &server]() {
+        this->configuration.removeAllSettings();
+        server.sendHeader("Access-Control-Allow-Origin", "*");
+        server.send(200, "text/plain", "Settings reset");
+    });
+
+    server.on("/reboot", HTTP_POST, [this, &server]() {
+        server.sendHeader("Access-Control-Allow-Origin", "*");
+        server.send(200, "text/plain", "Rebooting...");
+        delay(500); // Kurze Verzögerung, um die Antwort zu senden
+        ESP.restart();
+    });
+
+    
+    // POST-Handler mit safe Capture
+
+    server.on("/", HTTP_POST, [this, &server]()
+              {
+        if (!server.hasArg("plain")) {
+            server.send(400, "text/plain", "Missing body");
+            return;
+        }
+        this->fromJSON(server.arg("plain"));
+        this->configuration.save();
+        server.send(200, "text/plain", "Configuration saved."); });
 }

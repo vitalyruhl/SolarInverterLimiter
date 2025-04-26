@@ -6,6 +6,7 @@
 #include "config/settings.h"
 #include "config/config.h"
 #include "WiFiManager/WiFiManager.h"
+#include "config/html/html_content.h"
 
 class Webconfig
 {
@@ -26,6 +27,7 @@ private:
     Config_wifi wifi_configSettings;
     rs485Settings rs485config;
     bool saveSettingsFlag = false;
+    WebHTML webhtml;
 };
 
 #endif // WEBCONFIG_H

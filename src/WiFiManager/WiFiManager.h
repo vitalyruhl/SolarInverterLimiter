@@ -5,7 +5,9 @@
 #include <WebServer.h>
 #include <Arduino.h>
 #include <WiFi.h>
-#include "config/html/html_content.h"
+#include <memory> // For std::unique_ptr
+
+//todo: Apply asyncWebServer instead of WebServer, because it is much faster and more efficient
 
 class Webconfig;
 
@@ -46,11 +48,12 @@ private:
     // id do not knowing what this is, but it was in examples... todo: learn more about this
     std::unique_ptr<Webconfig> webconfig; // Use smart pointer to manage memory automatically
     std::unique_ptr<WebServer> _server;
+    // std::unique_ptr<AsyncWebServer> _asyncServer;  //test instead of WebServer there is very slow
     // std::unique_ptr<Config_wifi> _config;
     Config_wifi* _config = nullptr;
     // WebServer* _server = nullptr;
     void StartWebApp();
-    WebHTML webhtml;
+   
 };
 
 #endif

@@ -25,6 +25,21 @@
   } while (0) // do nothing if logging is disabled
 #endif
 
+#ifdef ENABLE_LOGGING_SETTINGS
+#define logs(fmt, ...)                                   \
+  do                                                      \
+  {                                                       \
+    char buffer[255];                                     \
+    snprintf(buffer, sizeof(buffer), fmt, ##__VA_ARGS__); \
+    Serial.println(buffer);                               \
+  } while (0)
+#else
+#define logs(...) \
+  do               \
+  {                \
+  } while (0) // do nothing if logging is disabled
+#endif
+
 #ifdef ENABLE_LOGGING_VERBOSE
 #define logv(fmt, ...)                                   \
   do                                                      \
