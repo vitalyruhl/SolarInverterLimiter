@@ -4,11 +4,6 @@
 
 Config::Config()
 {
-}
-
-void Config::load()
-{
-    wifi_config = default_wifi_settings; // set the default values for the wifi settings
     int currentMajor = 0, currentMinor = 0, currentPatch = 0;
     int major = 0, minor = 0, patch = 0;
 
@@ -16,8 +11,8 @@ void Config::load()
 
     if (version == "0.0.0") // there is no version saved, set the default version
     {
+        saveSettingsFlag = true;
         saveSettingsToEEPROM();
-        saveSettingsFlag = false;
         return;
     }
 
@@ -32,12 +27,18 @@ void Config::load()
     {
         log("Version changed, removing all settings...");
         removeAllSettings();
+        saveSettingsFlag = true;
         saveSettingsToEEPROM();
-        saveSettingsFlag = false;
+        
         delay(10000);  // Wait for 10 seconds to avoid multiple resets
         ESP.restart(); // Restart the ESP32
     }
 
+}
+
+void Config::load()
+{
+  
     loadSettingsFromEEPROM();
 }
 
@@ -49,6 +50,9 @@ void Config::save()
 
 void Config::loadSettingsFromEEPROM()
 {
+    log(" ");
+    log("<----------------------------------");
+    log("Loading settings from EEPROM...");
     Preferences prefs;
     prefs.begin("config", true);
 
@@ -63,30 +67,43 @@ void Config::loadSettingsFromEEPROM()
     wifi_config.staticDNS = prefs.getString("wifi_DNS", wifi_config.staticDNS);
     wifi_config.use_static_ip = prefs.getBool("wifi_use_sp", wifi_config.use_static_ip);
 
-    mqtt.mqtt_server = prefs.getString("mqtt_server", mqtt.mqtt_server);
-    mqtt.mqtt_username = prefs.getString("mqtt_user", mqtt.mqtt_username);
-    mqtt.mqtt_password = prefs.getString("mqtt_pass", mqtt.mqtt_password);
-    mqtt.mqtt_hostname = prefs.getString("mqtt_host", mqtt.mqtt_hostname);
-    mqtt.mqtt_port = prefs.getInt("mqtt_port", mqtt.mqtt_port);
+    mqttSettings.mqtt_server = prefs.getString("mqtt_server", mqttSettings.mqtt_server);
+    mqttSettings.mqtt_username = prefs.getString("mqtt_user", mqttSettings.mqtt_username);
+    mqttSettings.mqtt_password = prefs.getString("mqtt_pass", mqttSettings.mqtt_password);
+    mqttSettings.mqtt_hostname = prefs.getString("mqtt_host", mqttSettings.mqtt_hostname);
+    mqttSettings.mqtt_port = prefs.getInt("mqtt_port", mqttSettings.mqtt_port);
 
-    general.enableController = prefs.getBool("enableCtrl", general.enableController);
-    general.maxOutput = prefs.getInt("maxOutput", general.maxOutput);
-    general.minOutput = prefs.getInt("minOutput", general.minOutput);
-    general.inputCorrectionOffset = prefs.getInt("offset", general.inputCorrectionOffset);
-    general.MQTTPublischPeriod = prefs.getFloat("Pub", general.MQTTPublischPeriod);
-    general.MQTTListenPeriod = prefs.getFloat("Listen", general.MQTTListenPeriod);
-    general.RS232PublishPeriod = prefs.getFloat("RS232Pub", general.RS232PublishPeriod);
-    general.smoothingSize = prefs.getFloat("smoothing", general.smoothingSize);
+    generalSettings.enableController = prefs.getBool("enableCtrl", generalSettings.enableController);
+    generalSettings.maxOutput = prefs.getInt("maxOutput", generalSettings.maxOutput);
+    generalSettings.minOutput = prefs.getInt("minOutput", generalSettings.minOutput);
+    generalSettings.inputCorrectionOffset = prefs.getInt("offset", generalSettings.inputCorrectionOffset);
+    generalSettings.MQTTPublischPeriod = prefs.getFloat("Pub", generalSettings.MQTTPublischPeriod);
+    generalSettings.MQTTListenPeriod = prefs.getFloat("Listen", generalSettings.MQTTListenPeriod);
+    generalSettings.RS232PublishPeriod = prefs.getFloat("RS232Pub", generalSettings.RS232PublishPeriod);
+    generalSettings.smoothingSize = prefs.getFloat("smoothing", generalSettings.smoothingSize);
+    generalSettings.Version = prefs.getString("version", generalSettings.Version);
 
     prefs.end();
+    printSettings(); // print the settings to the serial monitor
+    log("<----------------------------------");
+    log(" ");
 }
 
 void Config::saveSettingsToEEPROM()
 {
+    log(" ");
+    log("---------------------------------->");
     log("Saving settings to EEPROM...");
     Preferences prefs;
     prefs.begin("config", false);
-
+    //todo: check if the settings are changed before saving them to EEPROM
+    if (!saveSettingsFlag)
+        {
+           log("Settings not changed, skipping save to EEPROM.");
+           prefs.end();
+              return;
+        }
+    prefs.putString("version", VERSION); // save the version to EEPROM
     prefs.putString("wifi_ssid", wifi_config.ssid);
     prefs.putString("wifi_pass", wifi_config.pass);
     prefs.putString("wifi_fo_ssid", wifi_config.failover_ssid);
@@ -98,41 +115,57 @@ void Config::saveSettingsToEEPROM()
     prefs.putString("wifi_DNS", wifi_config.staticDNS);
     prefs.putBool("wifi_use_sp", wifi_config.use_static_ip);
 
-    prefs.putString("mqtt_server", mqtt.mqtt_server);
-    prefs.putString("mqtt_user", mqtt.mqtt_username);
-    prefs.putString("mqtt_pass", mqtt.mqtt_password);
-    prefs.putString("mqtt_host", mqtt.mqtt_hostname);
-    prefs.putInt("mqtt_port", mqtt.mqtt_port);
+    prefs.putString("mqtt_server", mqttSettings.mqtt_server);
+    prefs.putString("mqtt_user", mqttSettings.mqtt_username);
+    prefs.putString("mqtt_pass", mqttSettings.mqtt_password);
+    prefs.putString("mqtt_host", mqttSettings.mqtt_hostname);
+    prefs.putInt("mqtt_port", mqttSettings.mqtt_port);
 
-    prefs.putBool("enableCtrl", general.enableController);
-    prefs.putInt("maxOutput", general.maxOutput);
-    prefs.putInt("minOutput", general.minOutput);
-    prefs.putInt("offset", general.inputCorrectionOffset);
-    prefs.putFloat("Pub", general.MQTTPublischPeriod);
-    prefs.putFloat("Listen", general.MQTTListenPeriod);
-    prefs.putFloat("RS232Pub", general.RS232PublishPeriod);
-    prefs.putInt("smoothing", general.smoothingSize);
+    prefs.putBool("enableCtrl", generalSettings.enableController);
+    prefs.putInt("maxOutput", generalSettings.maxOutput);
+    prefs.putInt("minOutput", generalSettings.minOutput);
+    prefs.putInt("offset", generalSettings.inputCorrectionOffset);
+    prefs.putFloat("Pub", generalSettings.MQTTPublischPeriod);
+    prefs.putFloat("Listen", generalSettings.MQTTListenPeriod);
+    prefs.putFloat("RS232Pub", generalSettings.RS232PublishPeriod);
+    prefs.putInt("smoothing", generalSettings.smoothingSize);
 
     prefs.end();
+    saveSettingsFlag = false;
     printSettings(); // print the settings to the serial monitor
+    log("done Saving settings to EEPROM...");
+    log("---------------------------------->");
+    log(" ");
 }
 
 void Config::removeSettings(char *Name)
 {
+    log(" ");
+    log("removeSettings(%s)...", Name);
+    log("---------------------------------->");
     Preferences prefs;
     prefs.begin("config", false);
     prefs.remove(Name);
     prefs.end();
     log("Removed setting from EEPROM: %s", Name);
+    printSettings(); // print the settings to the serial monitor
+    log("---------------------------------->");
+    log(" ");
 }
 
 void Config::removeAllSettings()
 {
+    log(" ");
+    log("removeAllSettings()...");
+    log("---------------------------------->");
     Preferences prefs;
     prefs.begin("config", false);
     prefs.clear(); // Löscht ALLE Werte im Namespace
     prefs.end();
     log("Removed ALL setting from EEPROM:");
+    saveSettingsFlag = false;
+    log("---------------------------------->");
+    log(" ");
 }
 
 void Config::printSettings()
@@ -146,15 +179,15 @@ void Config::printSettings()
     log(" ");
     log("General Settings:");
     log("------------------");
-    log("maxOutput: %d", general.maxOutput);
-    log("minOutput: %d", general.minOutput);
-    log("inputCorrectionOffset: %d", general.inputCorrectionOffset);
-    log("enableController: %s", general.enableController ? "true" : "false");
-    log("MQTTPublischPeriod: %f", general.MQTTPublischPeriod);
-    log("MQTTSettingsPublischPeriod: %f", general.MQTTSettingsPublischPeriod);
-    log("MQTTListenPeriod: %f", general.MQTTListenPeriod);
-    log("RS232PublishPeriod: %f", general.RS232PublishPeriod);
-    log("smoothingSize: %d", general.smoothingSize);
+    log("maxOutput: %d", generalSettings.maxOutput);
+    log("minOutput: %d", generalSettings.minOutput);
+    log("inputCorrectionOffset: %d", generalSettings.inputCorrectionOffset);
+    log("enableController: %s", generalSettings.enableController ? "true" : "false");
+    log("MQTTPublischPeriod: %f", generalSettings.MQTTPublischPeriod);
+    log("MQTTSettingsPublischPeriod: %f", generalSettings.MQTTSettingsPublischPeriod);
+    log("MQTTListenPeriod: %f", generalSettings.MQTTListenPeriod);
+    log("RS232PublishPeriod: %f", generalSettings.RS232PublishPeriod);
+    log("smoothingSize: %d", generalSettings.smoothingSize);
 
     log(" ");
     log("WiFi-Settings:");
@@ -173,14 +206,14 @@ void Config::printSettings()
     log(" ");
     log("MQTT-Settings:");
     log("------------------");
-    log("MQTT-Server: %s", mqtt.mqtt_server.c_str());
+    log("MQTT-Server: %s", mqttSettings.mqtt_server.c_str());
     log("MQTT-User: ****");
     log("MQTT-Password: ****");
-    log("MQTT-Hostname: %s", mqtt.mqtt_hostname.c_str());
-    log("MQTT-Port: %d", mqtt.mqtt_port);
-    log("MQTT-Sensor for actual powerusage: %s", mqtt.mqtt_sensor_powerusage_topic.c_str());
-    log("MQTT-Publish-SetValue-Topic: %s", mqtt.mqtt_publish_setvalue_topic.c_str());
-    log("MQTT-Publish-GetValue-Topic: %s", mqtt.mqtt_publish_getvalue_topic.c_str());
+    log("MQTT-Hostname: %s", mqttSettings.mqtt_hostname.c_str());
+    log("MQTT-Port: %d", mqttSettings.mqtt_port);
+    log("MQTT-Sensor for actual powerusage: %s", mqttSettings.mqtt_sensor_powerusage_topic.c_str());
+    log("MQTT-Publish-SetValue-Topic: %s", mqttSettings.mqtt_publish_setvalue_topic.c_str());
+    log("MQTT-Publish-GetValue-Topic: %s", mqttSettings.mqtt_publish_getvalue_topic.c_str());
 
     log(" ");
     log("Temp:");

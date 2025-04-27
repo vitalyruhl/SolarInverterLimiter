@@ -5,11 +5,10 @@
 #include <Arduino.h>
 #include <Preferences.h>
 #include <esp_task_wdt.h>
-#include "WiFiManager/WiFiManager.h"
 #include "config/settings.h"
 
-#define VERSION "0.3.0"           // version of the software
-#define VERSION_DATE "2025.04.26" // date of the version
+#define VERSION "0.3.2"           // version of the software
+#define VERSION_DATE "2025.04.27" // date of the version
 
 #define BUTTON_PIN_RESET_TO_DEFAULTS 15 // GPIO pin for the button (D0 on ESP8266, GPIO 0 on ESP32)
 #define WDT_TIMEOUT 60                  // in seconds, if esp32 is not responding within this time, the ESP32 will reboot automatically
@@ -17,10 +16,10 @@
 class Config
 {
 public:
-  config_mqtt mqtt;
-  GeneralSettings general;
-  Config_wifi wifi_config = default_wifi_settings;
-  rs485Settings rs485settings;
+  MQTT_Settings mqttSettings;
+  General_Settings generalSettings;
+  Wifi_Settings wifi_config;
+  RS485_Settings rs485settings;
 
   bool saveSettingsFlag = false;
 

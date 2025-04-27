@@ -77,6 +77,7 @@ const char WEB_HTML[] PROGMEM = R"rawliteral(
     <div id="status"></div>
     <div id="settingsContainer"></div>
 
+    <button onclick="apply()">apply</button>
     <button onclick="saveSettings()">Save Settings</button>
     <button onclick="resetToDefaults()" class="reset">Reset to Defaults</button>
     <button onclick="handleReboot()">Reboot</button>
@@ -174,34 +175,41 @@ const char WEB_HTML[] PROGMEM = R"rawliteral(
       }
 
       async function saveSettings() {
-        try {
-          const formData = {};
-          document.querySelectorAll("input").forEach((input) => {
-            const [category, key] = input.name.split(".");
-            if (!formData[category]) formData[category] = {};
+        if (confirm("Are you sure you want to save the settings?")) {
+          try {
+            const config = {};
 
-            if (input.type === "checkbox") {
-              formData[category][key] = input.checked;
+            document.querySelectorAll("input").forEach((input) => {
+              const [category, key] = input.name.split(".");
+              if (!config[category]) {
+                config[category] = {};
+              }
+              if (input.type === "checkbox") {
+                config[category][key] = input.checked;
+              } else if (input.type === "number") {
+                config[category][key] = Number(input.value);
+              } else {
+                config[category][key] = input.value;
+              }
+            });
+
+            const response = await fetch("/config/save", {
+              method: "POST",
+              headers: {
+                "Content-Type": "application/json",
+              },
+              body: JSON.stringify(config),
+            });
+
+            if (response.ok) {
+              showStatus("Settings saved successfully!", "green");
+              setTimeout(() => location.reload(), 1000);
             } else {
-              formData[category][key] =
-                input.type === "number" ? Number(input.value) : input.value;
+              showStatus("Error saving settings!", "red");
             }
-          });
-
-          const response = await fetch("/config/save", {
-            method: "POST",
-            headers: { "Content-Type": "application/json" },
-            body: JSON.stringify(formData),
-          });
-
-          if (response.ok) {
-            showStatus("Settings saved successfully!", "green");
-            setTimeout(() => location.reload(), 1000);
-          } else {
-            showStatus("Error saving settings!", "red");
+          } catch (error) {
+            showStatus("Error: " + error.message, "red");
           }
-        } catch (error) {
-          showStatus("Error: " + error.message, "red");
         }
       }
 
@@ -219,6 +227,45 @@ const char WEB_HTML[] PROGMEM = R"rawliteral(
         }
       }
 
+      async function apply() {
+        if (confirm("Are you sure you want to apply the settings?")) {
+          try {
+            const config = {};
+
+            document.querySelectorAll("input").forEach((input) => {
+              const [category, key] = input.name.split(".");
+              if (!config[category]) {
+                config[category] = {};
+              }
+              if (input.type === "checkbox") {
+                config[category][key] = input.checked;
+              } else if (input.type === "number") {
+                config[category][key] = Number(input.value);
+              } else {
+                config[category][key] = input.value;
+              }
+            });
+
+            const response = await fetch("/config/apply", {
+              method: "POST",
+              headers: {
+                "Content-Type": "application/json",
+              },
+              body: JSON.stringify(config),
+            });
+
+            if (response.ok) {
+              showStatus("Settings applyed successfully!", "green");
+              setTimeout(() => location.reload(), 1000);
+            } else {
+              showStatus("Error apply settings!", "red");
+            }
+          } catch (error) {
+            showStatus("Error: " + error.message, "red");
+          }
+        }
+      }
+
       function showStatus(message, color) {
         const statusDiv = document.getElementById("status");
         statusDiv.style.display = "block";
@@ -228,14 +275,16 @@ const char WEB_HTML[] PROGMEM = R"rawliteral(
       }
 
       function handleReboot() {
-        fetch("/reboot", { method: "POST" })
-          .then((response) => {
-            if (!response.ok) throw new Error("Reboot failed");
-            alert("Rebooting!");
-          })
-          .catch((error) => {
-            showStatus(error.message, "red");
-          });
+        if (confirm("Are you sure you want to reboot ESP?")) {
+          fetch("/reboot", { method: "POST" })
+            .then((response) => {
+              if (!response.ok) throw new Error("Reboot failed");
+              alert("Rebooting!");
+            })
+            .catch((error) => {
+              showStatus(error.message, "red");
+            });
+        }
       }
 
       // Load settings when page loads

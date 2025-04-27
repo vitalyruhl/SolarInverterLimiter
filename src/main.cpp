@@ -24,12 +24,7 @@ Todo:
 
 #pragma region configuratio variables
 
-RS485Settings rs485settings;
-RS485Module rs485;
-RS485Packet rs485packet;
-
 Helpers helpers;
-GeneralSettings generalSettings;
 Config config; // create an instance of the config class
 
 Ticker PublischMQTTTicker;
@@ -39,16 +34,17 @@ Ticker RS485Ticker;
 
 WiFiClient espClient;
 PubSubClient client(espClient);
-config_mqtt mqtt; // create an instance of the mqtt config class
 
 // Smoothing Values
 Smoother powerSmoother(
-    generalSettings.smoothingSize,
-    generalSettings.inputCorrectionOffset,
-    generalSettings.minOutput,
-    generalSettings.maxOutput);
+  config.generalSettings.smoothingSize,
+  config.generalSettings.inputCorrectionOffset,
+  config.generalSettings.minOutput,
+  config.generalSettings.maxOutput);
 
-WiFiManager *wifiManager;
+WiFiManager wifiManager(&config); // create an instance of the WiFiManager class
+
+RS485Module rs485(&config);
 
 // globale helpers variables
 int AktualImportFromGrid = 0; // amount of electricity being imported from grid
@@ -99,37 +95,37 @@ void setup()
 
   config.load(); // Load the configuration from the config file
 
-  powerSmoother.fillBufferOnStart(generalSettings.minOutput);
+  powerSmoother.fillBufferOnStart(config.generalSettings.minOutput);
 
-  config.printSettings(); // Print the settings to the serial console
+  // config.printSettings(); // Print the settings to the serial console
 
   testRS232();
 
-  rs485.Init(rs485settings);
+  rs485.begin();
 
   // wifiManager = new WiFiManager(config.wifi_config);
   if (config.wifi_config.ssid.length() == 0)
   {
     log("⚠️ SETUP: config.wifi_config.ssid.ssid ist leer!");
   }
-  wifiManager = new WiFiManager(&config.wifi_config);
+  // wifiManager.reset(new WiFiManager(&config));
   // WiFiManager wifiManager(&config.wifi_config);
-  // wifiManager->begin();
-  wifiManager->begin();
+  // wifiManager.begin();
+  wifiManager.begin();
 
   logv("rs485 --> End rs485settings");
   //----------------------------------------
 
   //----------------------------------------
   // -- Setup MQTT connection --
-  client.setServer(mqtt.mqtt_server.c_str(), static_cast<uint16_t>(mqtt.mqtt_port)); // Set the MQTT server and port
+  client.setServer(config.mqttSettings.mqtt_server.c_str(), static_cast<uint16_t>(config.mqttSettings.mqtt_port)); // Set the MQTT server and port
   client.setCallback(cb_MQTT);
-  generalSettings.dirtybit = true; // send the settings to the mqtt broker on startup
+  config.generalSettings.dirtybit = true; // send the settings to the mqtt broker on startup
 
   log("Attaching tickers...");
-  PublischMQTTTicker.attach(generalSettings.MQTTPublischPeriod, cb_BlinkerPublishToMQTT);
-  ListenMQTTTicker.attach(generalSettings.MQTTListenPeriod, cb_BlinkerMQTTListener);
-  RS485Ticker.attach(generalSettings.RS232PublishPeriod, cb_BlinkerRS485Listener);
+  PublischMQTTTicker.attach(config.generalSettings.MQTTPublischPeriod, cb_BlinkerPublishToMQTT);
+  ListenMQTTTicker.attach(config.generalSettings.MQTTListenPeriod, cb_BlinkerMQTTListener);
+  RS485Ticker.attach(config.generalSettings.RS232PublishPeriod, cb_BlinkerRS485Listener);
   tickerActive = true; // Set the flag to indicate that the ticker is active
   reconnectMQTT(); // connect to MQTT broker
   logv("System setup completed.");
@@ -167,8 +163,8 @@ void loop()
     if (!tickerActive) // Check if the ticker is not already active
     {
       log("WiFi connected! Reattach ticker.");
-      PublischMQTTTicker.attach(generalSettings.MQTTPublischPeriod, cb_BlinkerPublishToMQTT); // Reattach the ticker if WiFi is connected
-      ListenMQTTTicker.attach(generalSettings.MQTTListenPeriod, cb_BlinkerMQTTListener);      // Reattach the ticker if WiFi is connected
+      PublischMQTTTicker.attach(config.generalSettings.MQTTPublischPeriod, cb_BlinkerPublishToMQTT); // Reattach the ticker if WiFi is connected
+      ListenMQTTTicker.attach(config.generalSettings.MQTTListenPeriod, cb_BlinkerMQTTListener);      // Reattach the ticker if WiFi is connected
       tickerActive = true;                                                                    // Set the flag to indicate that the ticker is active
     }
   }
@@ -179,7 +175,7 @@ void loop()
     reconnectMQTT();
   }
 
-  wifiManager->handleClient();
+  wifiManager.handleClient();
 
   delay(100);
 }
@@ -191,7 +187,7 @@ void reconnectMQTT()
 {
   if (WiFi.status() != WL_CONNECTED || WiFi.getMode() == WIFI_AP)
   {
-    logv("WiFi not connected or in AP mode! Skipping MQTT.");
+    logv("WiFi not connected or in AP mode! Skipping mqttSettings.");
     return;
   }
 
@@ -203,7 +199,7 @@ void reconnectMQTT()
     log("MQTT reconnect attempt %d...", retry + 1);
     helpers.blinkBuidInLED(5, 300);
     retry++;
-    client.connect(mqtt.mqtt_hostname.c_str(), mqtt.mqtt_username.c_str(), mqtt.mqtt_password.c_str()); // Connect to the MQTT broker
+    client.connect(config.mqttSettings.mqtt_hostname.c_str(), config.mqttSettings.mqtt_username.c_str(), config.mqttSettings.mqtt_password.c_str()); // Connect to the MQTT broker
     delay(2000);
     if (client.connected())
       break; // Exit the loop if connected successfully
@@ -236,13 +232,13 @@ void reconnectMQTT()
     cb_BlinkerPublishToMQTT(); // publish the settings to the MQTT broker, before subscribing to the topics
     logv("trying to subscribe to topics...");
 
-    if (client.subscribe(mqtt.mqtt_sensor_powerusage_topic.c_str()))
+    if (client.subscribe(config.mqttSettings.mqtt_sensor_powerusage_topic.c_str()))
     {
-      log("✅ Subscribed to topic: [%s]\n", mqtt.mqtt_sensor_powerusage_topic.c_str());
+      log("✅ Subscribed to topic: [%s]\n", config.mqttSettings.mqtt_sensor_powerusage_topic.c_str());
     }
     else
     {
-      log("❌ Subscription to Topic[%s] failed!", mqtt.mqtt_sensor_powerusage_topic.c_str());
+      log("❌ Subscription to Topic[%s] failed!", config.mqttSettings.mqtt_sensor_powerusage_topic.c_str());
     }
   }
 }
@@ -253,9 +249,9 @@ void publishToMQTT()
   // logv("++++++++++++++++++++++++++++++++++++++");
   if (client.connected())
   {
-    log("--> MQTT: Topic[%s] -> [%d]", mqtt.mqtt_publish_setvalue_topic.c_str(), inverterSetValue);
-    client.publish(mqtt.mqtt_publish_setvalue_topic.c_str(), String(inverterSetValue).c_str());     // send to Mqtt
-    client.publish(mqtt.mqtt_publish_getvalue_topic.c_str(), String(AktualImportFromGrid).c_str()); // send to Mqtt
+    log("--> MQTT: Topic[%s] -> [%d]", config.mqttSettings.mqtt_publish_setvalue_topic.c_str(), inverterSetValue);
+    client.publish(config.mqttSettings.mqtt_publish_setvalue_topic.c_str(), String(inverterSetValue).c_str());     // send to Mqtt
+    client.publish(config.mqttSettings.mqtt_publish_getvalue_topic.c_str(), String(AktualImportFromGrid).c_str()); // send to Mqtt
   }
   else
   {
@@ -274,7 +270,7 @@ void cb_MQTT(char *topic, byte *message, unsigned int length)
   // logv("++++++++++++++++++++++++++++++++++++++");
   log("<-- MQTT: Topic[%s] <-- [%s]", topic, messageTemp.c_str());
   helpers.blinkBuidInLED(1, 100); // blink the LED once to indicate that the loop is running
-  if (strcmp(topic, mqtt.mqtt_sensor_powerusage_topic.c_str()) == 0)
+  if (strcmp(topic, config.mqttSettings.mqtt_sensor_powerusage_topic.c_str()) == 0)
   {
     // check if it is a number, if not set it to 0
     if (messageTemp.equalsIgnoreCase("null") ||
@@ -313,16 +309,16 @@ void cb_BlinkerRS485Listener()
   // logv("cb_BlinkerRS485Listener()...");
   inverterSetValue = powerSmoother.smooth(AktualImportFromGrid);
   // logv("cb_BlinkerRS485Listener(%d)...", inverterSetValue);
-  if (generalSettings.enableController)
+  if (config.generalSettings.enableController)
   {
-    rs485.sendToRS485(rs485settings, static_cast<uint16_t>(inverterSetValue));
+    rs485.sendToRS485(static_cast<uint16_t>(inverterSetValue));
   }
   else
   {
     logv("controller is didabled!");
     logl("MAX-POWER!");
     // rs485.sendToRS485(rs485settings, rs485packet, generalSettings.maxOutput); // send the maxOutput to the RS485 module
-    rs485.sendToRS485(rs485settings, generalSettings.maxOutput); // send the maxOutput to the RS485 module
+    rs485.sendToRS485(config.generalSettings.maxOutput); // send the maxOutput to the RS485 module
   }
 }
 
@@ -330,12 +326,12 @@ void testRS232()
 {
   // test the RS232 connection
   logv("Testing RS232 connection... shorting RX and TX pins!");
-  logv("Baudrate: %d", rs485settings.baudRate);
-  logv("RX Pin: %d", rs485settings.rxPin);
-  logv("TX Pin: %d", rs485settings.txPin);
-  logv("DE Pin: %d", rs485settings.dePin);
+  logv("Baudrate: %d", config.rs485settings.baudRate);
+  logv("RX Pin: %d", config.rs485settings.rxPin);
+  logv("TX Pin: %d", config.rs485settings.txPin);
+  logv("DE Pin: %d", config.rs485settings.dePin);
 
-  Serial2.begin(rs485settings.baudRate, SERIAL_8N1, rs485settings.rxPin, rs485settings.txPin);
+  Serial2.begin(config.rs485settings.baudRate, SERIAL_8N1, config.rs485settings.rxPin, config.rs485settings.txPin);
   Serial2.println("Hello RS485");
   delay(300);
   if (Serial2.available())

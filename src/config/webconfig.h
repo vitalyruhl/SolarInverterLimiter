@@ -8,26 +8,26 @@
 #include "WiFiManager/WiFiManager.h"
 #include "config/html/html_content.h"
 
+class Config;
+
 class Webconfig
 {
 public:
-    Webconfig();
+    // Webconfig();
+    Webconfig(Config *configuration);
     ~Webconfig() = default; // Destruktor
 
     void attachWebEndpoint(WebServer &server);
     String toJSON();
     void fromJSON(const String &json);
-
+    void saveSettings(const String &json);
+    void applySettings(const String &json);
     void handleClient(WebServer &server);
 
 private:
-    Config configuration;
-    config_mqtt mqttSettings;
-    GeneralSettings generalSettings;
-    Config_wifi wifi_configSettings;
-    rs485Settings rs485config;
-    bool saveSettingsFlag = false;
+    std::unique_ptr<Config> configuration;
     WebHTML webhtml;
+    Config* _config = nullptr;
 };
 
 #endif // WEBCONFIG_H

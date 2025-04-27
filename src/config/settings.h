@@ -2,7 +2,6 @@
 #define SETTINGS_H
 
 #pragma once
-#include "WiFiManager/WiFiManager.h"
 
 // Logging-Setup --> comment this out to disable logging to serial console
 #define ENABLE_LOGGING
@@ -11,24 +10,24 @@
 #define ENABLE_LOGGING_SETTINGS
 
 // WiFi-Setup
-const Config_wifi default_wifi_settings = []
+struct Wifi_Settings
 {
-    Config_wifi cfg;
-    cfg.ssid = "HausNetz";
-    cfg.pass = "Geheim123";
-    cfg.failover_ssid = "HausNetz2";
-    cfg.failover_pass = "FailoverPass";
-    cfg.apSSID = "SolarLimiterAP";
-    cfg.staticIP = "192.168.0.22";
-    cfg.staticSubnet = "255.255.255.0";
-    cfg.staticGateway = "192.168.0.1";
-    cfg.staticDNS = "192.168.0.1";
-    cfg.use_static_ip = true;
-    return cfg;
-}();
+    String ssid = "YourSSID";     // WiFi SSID
+    String pass = "YourPassword"; // WiFi password
+    String failover_ssid = "YourFailoverSSID";
+    String failover_pass = "YourFailoverPassword";
+    String apSSID = "HouseBattery_AP"; // Access Point SSID
+    String staticIP = "192.168.2.105";
+    String staticSubnet = "255.255.255.0";
+    String staticGateway = "192.168.2.250";
+    String staticDNS = "192.168.2.250";
+    bool use_static_ip = false;
+    // virtual ~Config_wifi() = default; // Virtual Destructor to make it polymorphic
+};
+
 
 //mqtt-Setup
-struct config_mqtt
+struct MQTT_Settings
 {
     int mqtt_port = 1883;
     String mqtt_server = "192.168.2.3"; // IP address of the MQTT broker (Mosquitto)
@@ -40,7 +39,7 @@ struct config_mqtt
     String mqtt_publish_getvalue_topic;
 
     // constructor for setting dependent fields
-    config_mqtt()
+    MQTT_Settings()
     {
         mqtt_publish_setvalue_topic = mqtt_hostname + "/SetValue";
         mqtt_publish_getvalue_topic = mqtt_hostname + "/GetValue";
@@ -48,7 +47,7 @@ struct config_mqtt
 };
 
 // General configuration (default Settings)
-struct GeneralSettings
+struct General_Settings
 {
     bool dirtybit = false;                    // dirty bit to indicate if the message has changed
     bool enableController = true;             // set to false to disable the controller and use Maximum power output
@@ -60,10 +59,11 @@ struct GeneralSettings
     float MQTTListenPeriod = 0.5;             // check x seconds if there is a new MQTT message to listen to
     float RS232PublishPeriod = 2.0;           // send the RS485 Data all x seconds
     int smoothingSize = 8;                    // size of the buffer for smoothing
+    String Version;
 };
 
 // RS485 configuration (default Settings)
-struct rs485Settings
+struct RS485_Settings
 {
     bool useExtraSerial = true; // set to true to use Serial2 for RS485 communication
     int baudRate = 4800;
@@ -73,5 +73,14 @@ struct rs485Settings
     bool enableRS485 = true; // set to false to disable RS485 communication
     //todo: add settings for Inverter eg, headder, checksum, etc.
 };
+
+struct RS485Packet
+{
+    uint16_t header = 0x2456;
+    uint16_t command = 0x0021;
+    uint16_t power = 0;
+    uint8_t checksum = 0;
+};
+
 
 #endif // SETTINGS_H

@@ -1,36 +1,24 @@
 #ifndef RS485_MODULE_H
 #define RS485_MODULE_H
 
-#include <Arduino.h>
-#include "config/config.h"
-
 #pragma once
 
-struct RS485Settings
-{
-    bool useExtraSerial = false; // set to true to use Serial2 for RS485 communication
-    int baudRate = 4800;
-    int rxPin = 18;          // only for Serial2, not used for Serial
-    int txPin = 19;          // only for Serial2, not used for Serial
-    int dePin = 4; // DE pin for RS485 communication (direction control)
-    bool enableRS485 = true; // set to false to disable RS485 communication
-};
+#include <Arduino.h>
+#include "config/settings.h"
+#include "config/config.h"
+
+class Config;
 
 // 19.04.2025 viru - that will not working???
-struct RS485Packet
-{
-    uint16_t header = 0x2456;
-    uint16_t command = 0x0021;
-    uint16_t power = 0;
-    uint8_t checksum = 0;
-};
 
 class RS485Module
 {
 public:
-    void Init(RS485Settings &settings);
-    void sendToRS485(RS485Settings &settings, RS485Packet &packet, uint16_t demand);
-    void sendToRS485(RS485Settings &settings, uint16_t demand); // 19.04.2025 viru - test, because below not working
+    RS485Module(Config *settings);
+    ~RS485Module();
+    void begin();
+    void sendToRS485(uint16_t demand);
+    void sendToRS485Packet(uint16_t demand);
     String reciveFromRS485();
     RS485Packet reciveFromRS485Packet();
 
@@ -47,7 +35,9 @@ public:
 
 private:
     byte serialpacket[8];
-    HardwareSerial* RS485serial = &Serial; // Zeiger auf die serielle Schnittstelle // default to Serial, can be changed to Serial2 if needed
+    HardwareSerial *RS485serial = &Serial; // Zeiger auf die serielle Schnittstelle // default to Serial, can be changed to Serial2 if needed
+    Config *_config = nullptr;
+    RS485Packet packet; // RS485 packet structure
 };
 
 #endif // RS485_MODULE_H
