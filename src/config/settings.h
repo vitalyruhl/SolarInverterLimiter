@@ -7,7 +7,7 @@
 #define ENABLE_LOGGING
 // #define ENABLE_LOGGING_VERBOSE
 // #define ENABLE_LOGGING_LCD
-#define ENABLE_LOGGING_SETTINGS
+// #define ENABLE_LOGGING_SETTINGS
 
 // WiFi-Setup
 struct Wifi_Settings
@@ -53,12 +53,11 @@ struct General_Settings
     bool enableController = true;             // set to false to disable the controller and use Maximum power output
     int maxOutput = 1100;                     // edit this to limit TOTAL power output in watts
     int minOutput = 500;                      // minimum output power in watts
-    int inputCorrectionOffset = 50;          // ( -80) Current clamp sensors have poor accuracy at low load, a buffer ensures some current flow in the import direction to ensure no exporting. Adjust according to accuracy of meter.
+    int inputCorrectionOffset = 10;          // ( -80) Current clamp sensors have poor accuracy at low load, a buffer ensures some current flow in the import direction to ensure no exporting. Adjust according to accuracy of meter.
     float MQTTPublischPeriod = 5.0;           // check all x seconds if there is a new MQTT message to publish
-    float MQTTSettingsPublischPeriod = 300.0; // send the settings to the MQTT broker every x seconds
     float MQTTListenPeriod = 0.5;             // check x seconds if there is a new MQTT message to listen to
     float RS232PublishPeriod = 2.0;           // send the RS485 Data all x seconds
-    int smoothingSize = 8;                    // size of the buffer for smoothing
+    int smoothingSize = 10;                    // size of the buffer for smoothing
     String Version;
 };
 
@@ -74,13 +73,6 @@ struct RS485_Settings
     //todo: add settings for Inverter eg, headder, checksum, etc.
 };
 
-struct RS485Packet
-{
-    uint16_t header = 0x2456;
-    uint16_t command = 0x0021;
-    uint16_t power = 0;
-    uint8_t checksum = 0;
-};
 
 
 #endif // SETTINGS_H

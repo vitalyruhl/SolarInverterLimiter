@@ -9,7 +9,14 @@
 
 class Config;
 
-// 19.04.2025 viru - that will not working???
+
+struct RS485Packet// 19.04.2025 viru - that will not working???
+{
+    uint16_t header = 0x2456;
+    uint16_t command = 0x0021;
+    uint16_t power = 0;
+    uint8_t checksum = 0;
+};
 
 class RS485Module
 {

@@ -99,7 +99,7 @@ void setup()
 
   // config.printSettings(); // Print the settings to the serial console
 
-  testRS232();
+  // testRS232();
 
   rs485.begin();
 
@@ -306,18 +306,16 @@ void cb_BlinkerMQTTListener()
 
 void cb_BlinkerRS485Listener()
 {
-  // logv("cb_BlinkerRS485Listener()...");
   inverterSetValue = powerSmoother.smooth(AktualImportFromGrid);
-  // logv("cb_BlinkerRS485Listener(%d)...", inverterSetValue);
   if (config.generalSettings.enableController)
   {
+    // rs485.sendToRS485(static_cast<uint16_t>(inverterSetValue));
     rs485.sendToRS485(static_cast<uint16_t>(inverterSetValue));
   }
   else
   {
     logv("controller is didabled!");
     logl("MAX-POWER!");
-    // rs485.sendToRS485(rs485settings, rs485packet, generalSettings.maxOutput); // send the maxOutput to the RS485 module
     rs485.sendToRS485(config.generalSettings.maxOutput); // send the maxOutput to the RS485 module
   }
 }

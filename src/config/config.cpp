@@ -184,7 +184,6 @@ void Config::printSettings()
     log("inputCorrectionOffset: %d", generalSettings.inputCorrectionOffset);
     log("enableController: %s", generalSettings.enableController ? "true" : "false");
     log("MQTTPublischPeriod: %f", generalSettings.MQTTPublischPeriod);
-    log("MQTTSettingsPublischPeriod: %f", generalSettings.MQTTSettingsPublischPeriod);
     log("MQTTListenPeriod: %f", generalSettings.MQTTListenPeriod);
     log("RS232PublishPeriod: %f", generalSettings.RS232PublishPeriod);
     log("smoothingSize: %d", generalSettings.smoothingSize);

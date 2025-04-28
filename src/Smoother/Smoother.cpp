@@ -42,6 +42,9 @@ int Smoother::applyLimiter(int value) {
 }
 
 int Smoother::smooth(int newValue) {
+  if (newValue == 0) {
+    return applyLimiter(buffer[bufferIndex]);
+  }
   buffer[bufferIndex] = newValue + correctionOffset;
   bufferIndex = (bufferIndex + 1) % bufferSize;
 

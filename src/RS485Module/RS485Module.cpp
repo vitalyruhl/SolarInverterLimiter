@@ -44,6 +44,9 @@ void RS485Module::begin()
 
 void RS485Module::sendToRS485Packet(uint16_t demand)
 {
+    //todo:Fix it --> dont sen the header, there is an logical error!!! 
+    //21:00:FF:02:64:00 instead of 
+    //24:56:00:21:02:FE:80:09
     packet.power = demand;
     logv("");
     logv("-------------------------");
