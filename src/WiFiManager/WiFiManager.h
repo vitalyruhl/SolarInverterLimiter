@@ -1,32 +1,44 @@
-#pragma once
+#ifndef WIFI_MANAGER_H
+#define WIFI_MANAGER_H
 
-#include <WiFi.h>
+#pragma once
 #include <WebServer.h>
-#include <ArduinoJson.h>
-#include <Preferences.h>
+#include <Arduino.h>
+#include <WiFi.h>
+#include <memory> // For std::unique_ptr
 #include "config/config.h"
-#include "logging/logging.h"
+#include "config/webconfig.h"
+
+// todo: Apply asyncWebServer instead of WebServer, because it is much faster and more efficient
+
+class Webconfig;
+class Config;
 
 class WiFiManager
 {
 public:
-    WiFiManager(const char *apName = "ESP32_ConfigAP");
-    void begin(const char *ssid = nullptr, const char *password = nullptr);
-    void begin(const String &ssid, const String &password);
-    void loop();
+    // WiFiManager(Config_wifi &config) : _config(config) {}
+    WiFiManager(Config *settings);
+    ~WiFiManager();
+    void begin();
+    bool isConnected();
+    String getLocalIP();
+    String getSSID();
+    bool connectToWiFi();
+    void startAccessPoint();
+    bool hasAPServer();
+    void handleClient();
 
 private:
-    void startAccessPoint();
-    void handleRoot();
-    void handleFormSubmit();
-    void connectToWiFi();
-    bool loadWiFiCredentials();
-    void saveWiFiCredentials(const String &ssid, const String &password);
+    // Config_wifi &_config;
+    bool connected;
 
-    const char *_apName;
-    WebServer _server;
-    Preferences _preferences;
+    // id do not knowing what this is, but it was in examples... todo: learn more about this
+    std::unique_ptr<Webconfig> webconfig; // Use smart pointer to manage memory automatically
+    std::unique_ptr<WebServer> _server;
 
-    String _storedSSID;
-    String _storedPassword;
+    Config *_config = nullptr;
+    void StartWebApp();
 };
+
+#endif

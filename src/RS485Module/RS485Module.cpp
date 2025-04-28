@@ -1,12 +1,22 @@
 #include "RS485Module/RS485Module.h"
 #include "logging/logging.h"
 
-void RS485Module::Init(RS485Settings &settings)
+
+
+RS485Module::RS485Module(Config *settings) : _config(settings)
+{
+    // do nothing, constructor initializes config
+}
+
+RS485Module::~RS485Module() = default;
+
+
+void RS485Module::begin()
 {
     logv("logv... starting RS485Module:Init()");
-    logv("rs485settings.enableRS485 = %d", settings.enableRS485);
+    logv("rs485settings.enableRS485 = %d", _config->rs485settings.enableRS485);
 
-    if (settings.enableRS485 == false)
+    if (_config->rs485settings.enableRS485 == false)
     {
         log("RS485Module: RS485 communication disabled.");
         return;
@@ -21,19 +31,28 @@ void RS485Module::Init(RS485Settings &settings)
     serialpacket[6] = byte6;
     serialpacket[7] = byte7;
 
-    Serial2.begin(settings.baudRate, SERIAL_8N1, settings.rxPin, settings.txPin);
-    pinMode(settings.dePin, OUTPUT);
-    digitalWrite(settings.dePin, LOW); // recivemod (DE = LOW)
+    
+    if (_config->rs485settings.useExtraSerial) {
+        RS485serial = &Serial2;
+        RS485serial->begin(_config->rs485settings.baudRate, SERIAL_8N1, _config->rs485settings.rxPin, _config->rs485settings.txPin);
+        pinMode(_config->rs485settings.dePin, OUTPUT);
+        digitalWrite(_config->rs485settings.dePin, LOW);
+    } else {
+        RS485serial = &Serial; // Optional fallback
+    }
 }
 
-void RS485Module::sendToRS485(RS485Settings &settings, RS485Packet &packet, uint16_t demand)
+void RS485Module::sendToRS485Packet(uint16_t demand)
 {
+    //todo:Fix it --> dont sen the header, there is an logical error!!! 
+    //21:00:FF:02:64:00 instead of 
+    //24:56:00:21:02:FE:80:09
     packet.power = demand;
     logv("");
     logv("-------------------------");
     logv("RS485Module::sendToRS485: %d", demand);
 
-    if (settings.enableRS485 == false)
+    if (_config->rs485settings.enableRS485 == false)
     {
         log("RS485Module: RS485 communication disabled.");
         return;
@@ -45,12 +64,12 @@ void RS485Module::sendToRS485(RS485Settings &settings, RS485Packet &packet, uint
 
     packet.checksum = 256 - (sum & 0xFF);
 
-    digitalWrite(settings.dePin, HIGH); // Aktivate send mode
+    digitalWrite(_config->rs485settings.dePin, HIGH); // Aktivate send mode
     delayMicroseconds(100);
-    Serial2.write((uint8_t *)&packet, sizeof(packet));
-    Serial2.flush(); // wait for send to finish
+    RS485serial->write((uint8_t *)&packet, sizeof(packet));
+    RS485serial->flush(); // wait for send to finish
     delayMicroseconds(100);
-    digitalWrite(settings.dePin, LOW); // aktivate recive mode
+    digitalWrite(_config->rs485settings.dePin, LOW); // aktivate recive mode
 
     logv("-------------------------");
     // logv("RS485Module: SetValue(demand(%d))[limited]:%d", demand, packet.power);
@@ -58,14 +77,14 @@ void RS485Module::sendToRS485(RS485Settings &settings, RS485Packet &packet, uint
     logv("");
 }
 
-void RS485Module::sendToRS485(RS485Settings &settings, uint16_t demand)
+void RS485Module::sendToRS485(uint16_t demand)
 {
 
     logv("");
     logv("-------------------------");
     logv("RS485Module::sendToRS485: %d", demand);
 
-    if (settings.enableRS485 == false)
+    if (_config->rs485settings.enableRS485 == false)
     {
         log("RS485Module: RS485 communication disabled.");
         return;
@@ -92,12 +111,12 @@ void RS485Module::sendToRS485(RS485Settings &settings, uint16_t demand)
     serialpacket[5] = byte5;
     serialpacket[7] = byte7;
 
-    digitalWrite(settings.dePin, HIGH); // Aktivate send mode
+    digitalWrite(_config->rs485settings.dePin, HIGH); // Aktivate send mode
     delayMicroseconds(100);
-    Serial2.write(serialpacket, 8);
-    Serial2.flush(); // wait for send to finish
+    RS485serial->write(serialpacket, 8);
+    RS485serial->flush(); // wait for send to finish
     delayMicroseconds(100);
-    digitalWrite(settings.dePin, LOW); // aktivate recive mode
+    digitalWrite(_config->rs485settings.dePin, LOW); // aktivate recive mode
 
     logv("--> RS485: Headder:%02X,%02X,%02X, Command:%02X, Power:%02X,%02X Byte6:%02X Checksum:%02X",
          serialpacket[0], serialpacket[1], serialpacket[2],
@@ -112,9 +131,9 @@ void RS485Module::sendToRS485(RS485Settings &settings, uint16_t demand)
 String RS485Module::reciveFromRS485()
 {
     String recivedData;
-    while (Serial2.available())
+    while (RS485serial->available())
     {
-        uint8_t byte = Serial2.read();
+        uint8_t byte = RS485serial->read();
         char hexByte[4];
         snprintf(hexByte, sizeof(hexByte), "%02X ", byte);
         recivedData += hexByte;
@@ -126,9 +145,9 @@ String RS485Module::reciveFromRS485()
 RS485Packet RS485Module::reciveFromRS485Packet()
 {
     RS485Packet incoming;
-    if (Serial2.available() >= sizeof(RS485Packet))
+    if (RS485serial->available() >= sizeof(RS485Packet))
     {
-        Serial2.readBytes((char *)&incoming, sizeof(RS485Packet));
+        RS485serial->readBytes((char *)&incoming, sizeof(RS485Packet));
         // logv("Received Packet - Header: %04X, Command: %04X, Power: %04X, Checksum: %02X",
         //      incoming.header, incoming.command, incoming.power, incoming.checksum);
     }

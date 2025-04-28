@@ -1,22 +1,16 @@
 #ifndef RS485_MODULE_H
 #define RS485_MODULE_H
 
-#include <Arduino.h>
-#include "config/config.h"
-
 #pragma once
 
-struct RS485Settings
-{
-    int baudRate = 4800;
-    int rxPin = 16;
-    int txPin = 17;
-    int dePin = 4;
-    bool enableRS485 = true; // set to false to disable RS485 communication
-};
+#include <Arduino.h>
+#include "config/settings.h"
+#include "config/config.h"
 
-// 19.04.2025 viru - that will not working???
-struct RS485Packet
+class Config;
+
+
+struct RS485Packet// 19.04.2025 viru - that will not working???
 {
     uint16_t header = 0x2456;
     uint16_t command = 0x0021;
@@ -27,14 +21,16 @@ struct RS485Packet
 class RS485Module
 {
 public:
-    void Init(RS485Settings &settings);
-    void sendToRS485(RS485Settings &settings, RS485Packet &packet, uint16_t demand);
-    void sendToRS485(RS485Settings &settings, uint16_t demand); // 19.04.2025 viru - test, because below not working
+    RS485Module(Config *settings);
+    ~RS485Module();
+    void begin();
+    void sendToRS485(uint16_t demand);
+    void sendToRS485Packet(uint16_t demand);
     String reciveFromRS485();
     RS485Packet reciveFromRS485Packet();
 
     // -- Serial data --
-    // 19.04.2025 viru - that will not working??? --> get it from internet
+    // 19.04.2025 viru - packet will not working??? --> get this from internet
     byte byte0 = 36;
     byte byte1 = 86;
     byte byte2 = 0;
@@ -46,6 +42,9 @@ public:
 
 private:
     byte serialpacket[8];
+    HardwareSerial *RS485serial = &Serial; // Zeiger auf die serielle Schnittstelle // default to Serial, can be changed to Serial2 if needed
+    Config *_config = nullptr;
+    RS485Packet packet; // RS485 packet structure
 };
 
 #endif // RS485_MODULE_H
