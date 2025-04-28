@@ -29,8 +29,28 @@ This is an Project, that not ready yet. Wait to Version 1.0.0 for the first stab
 ```
 ESP32 Pin  | RS485 Pin
 -----------|----------
-  GPIO 16   | TXD (Transmitter)
-  GPIO 17   | RXD (Receiver)
+  GPIO 19   | TXD (Transmitter)
+  GPIO 18   | RXD (Receiver) don't use this pin, only for RXD
   GND       | GND
   VCC       | VCC (5V or 3.3V depending on the RS485 module)
+```
+
+## Home Assistant Integration
+
+- Add the following to your configuration.yaml file:
+
+```yaml
+mqtt:
+  sensor:
+    - name: "SolarLimiter_SetValue"
+      state_topic: "SolarLimiter/SetValue"
+      unique_id: SolarLimiter_SetValue
+      device_class: energy
+      unit_of_measurement: "W"
+
+    - name: "SolarLimiter_GetValue"
+      state_topic: "SolarLimiter/GetValue"
+      unique_id: SolarLimiter_GetValue
+      device_class: energy
+      unit_of_measurement: "W"
 ```
