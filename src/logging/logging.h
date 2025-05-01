@@ -2,16 +2,14 @@
 #define LOGGING_H
 
 #pragma once
-// #include <string.h>       //for string functions like strcmp
-#include <stdarg.h>       // for variadische Funktionen (printf-Stil)
+#include <stdarg.h>        // for variadische Funktionen (printf-Stil)
 #include "config/config.h" // for config settings
 
 // #define ENABLE_LOGGING
 // #define ENABLE_LOGGING_VERBOSE
 
-
 #ifdef ENABLE_LOGGING
-#define log(fmt, ...)                                   \
+#define log(fmt, ...)                                     \
   do                                                      \
   {                                                       \
     char buffer[255];                                     \
@@ -20,13 +18,13 @@
   } while (0)
 #else
 #define log(...) \
-  do               \
-  {                \
+  do             \
+  {              \
   } while (0) // do nothing if logging is disabled
 #endif
 
 #ifdef ENABLE_LOGGING_SETTINGS
-#define logs(fmt, ...)                                   \
+#define logs(fmt, ...)                                    \
   do                                                      \
   {                                                       \
     char buffer[255];                                     \
@@ -35,13 +33,13 @@
   } while (0)
 #else
 #define logs(...) \
-  do               \
-  {                \
+  do              \
+  {               \
   } while (0) // do nothing if logging is disabled
 #endif
 
 #ifdef ENABLE_LOGGING_VERBOSE
-#define logv(fmt, ...)                                   \
+#define logv(fmt, ...)                                    \
   do                                                      \
   {                                                       \
     char buffer[255];                                     \
@@ -50,13 +48,13 @@
   } while (0)
 #else
 #define logv(...) \
-  do               \
-  {                \
+  do              \
+  {               \
   } while (0) // do nothing if logging is disabled
 #endif
 
 #ifdef ENABLE_LOGGING_LCD
-#define logl(fmt, ...)                                   \
+#define logl(fmt, ...)                                    \
   do                                                      \
   {                                                       \
     char buffer[255];                                     \
@@ -65,8 +63,8 @@
   } while (0)
 #else
 #define logl(...) \
-  do               \
-  {                \
+  do              \
+  {               \
   } while (0) // do nothing if logging is disabled
 #endif
 

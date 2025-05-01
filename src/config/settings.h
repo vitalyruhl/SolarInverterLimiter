@@ -3,12 +3,6 @@
 
 #pragma once
 
-// Logging-Setup --> comment this out to disable logging to serial console
-#define ENABLE_LOGGING
-// #define ENABLE_LOGGING_VERBOSE
-// #define ENABLE_LOGGING_LCD
-// #define ENABLE_LOGGING_SETTINGS
-
 // WiFi-Setup
 struct Wifi_Settings
 {
@@ -33,7 +27,7 @@ struct MQTT_Settings
     String mqtt_server = "192.168.2.3"; // IP address of the MQTT broker (Mosquitto)
     String mqtt_username = "housebattery";
     String mqtt_password = "mqttsecret";
-    String mqtt_hostname = "SolarLimiter";
+    String mqtt_hostname = "SolarLimiter_test";
     String mqtt_sensor_powerusage_topic = "emon/emonpi/power1";
     String mqtt_publish_setvalue_topic;
     String mqtt_publish_getvalue_topic;

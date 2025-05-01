@@ -6,9 +6,10 @@
 #include <Preferences.h>
 #include <esp_task_wdt.h>
 #include "config/settings.h"
+#include <SigmaLoger.h>
 
-#define VERSION "0.3.2"           // version of the software
-#define VERSION_DATE "2025.04.27" // date of the version
+#define VERSION "0.4.0"           // version of the software
+#define VERSION_DATE "01.05.2025" // date of the version
 
 #define BUTTON_PIN_RESET_TO_DEFAULTS 15 // GPIO pin for the button (D0 on ESP8266, GPIO 0 on ESP32)
 #define WDT_TIMEOUT 60                  // in seconds, if esp32 is not responding within this time, the ESP32 will reboot automatically
@@ -20,7 +21,15 @@ public:
   General_Settings generalSettings;
   Wifi_Settings wifi_config;
   RS485_Settings rs485settings;
-
+  SigmaLogLevel logLevel = SIGMALOG_WARN;
+  // SIGMALOG_OFF = 0,
+  // SIGMALOG_INTERNAL,
+  // SIGMALOG_FATAL,
+  // SIGMALOG_ERROR,
+  // SIGMALOG_WARN,
+  // SIGMALOG_INFO,
+  // SIGMALOG_DEBUG,
+  // SIGMALOG_ALL
   bool saveSettingsFlag = false;
 
   Config(); // constructor
