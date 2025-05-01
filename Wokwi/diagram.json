@@ -1,97 +1,57 @@
 {
     "version": 1,
-    "author": "Uri Shaked",
+    "author": "Anonymous maker",
     "editor": "wokwi",
     "parts": [
-        {
-            "type": "wokwi-esp32-devkit-v1",
-            "id": "esp",
-            "top": 26.66,
-            "left": -10.02,
-            "rotate": 270,
-            "attrs": {}
-        },
-        {
-            "type": "wokwi-microsd-card",
-            "id": "sd1",
-            "top": -33.33,
-            "left": 15.43,
-            "rotate": 90,
-            "attrs": {}
-        }
-    ],
-    "serialMonitor": {
-        "display": "terminal",
-        "newline": "crlf",
-        "convertEol": true
+      { "type": "wokwi-esp32-devkit-v1", "id": "esp", "top": 33.5, "left": -53, "attrs": {} },
+      { "type": "wokwi-dht22", "id": "dht1", "top": -38.1, "left": 138.6, "attrs": {} },
+      { "type": "wokwi-ir-receiver", "id": "ir1", "top": 27.45, "left": -174.58, "attrs": {} },
+      {
+        "type": "wokwi-text",
+        "id": "text1",
+        "top": 0,
+        "left": -230.4,
+        "attrs": { "text": "serial(rs232) to RS485" }
       },
+      { "type": "wokwi-esp32-devkit-v1", "id": "esp1", "top": 33.5, "left": -53, "attrs": {} },
+      { "type": "wokwi-dht22", "id": "dht2", "top": -38.1, "left": 138.6, "attrs": {} },
+      { "type": "wokwi-relay-module", "id": "relay1", "top": 307.4, "left": 38.4, "attrs": {} },
+      {
+        "type": "wokwi-text",
+        "id": "text2",
+        "top": 326.4,
+        "left": 182.4,
+        "attrs": { "text": "Relay for fan/cooler" }
+      },
+      { "type": "wokwi-relay-module", "id": "relay2", "top": 384.2, "left": 28.8, "attrs": {} },
+      {
+        "type": "wokwi-text",
+        "id": "text3",
+        "top": 403.2,
+        "left": 172.8,
+        "attrs": { "text": "Relay for Heater" }
+      }
+    ],
     "connections": [
-        [
-            "esp:TX0",
-            "$serialMonitor:RX",
-            "",
-            []
-        ],
-        [
-            "esp:RX0",
-            "$serialMonitor:TX",
-            "",
-            []
-        ],
-        [ 
-            "sd1:SCK",
-            "esp:D18",
-            "green",
-            [
-                "v18",
-                "h-31"
-            ]
-        ],
-        [
-            "sd1:GND",
-            "esp:GND.1",
-            "black",
-            [
-                "v21",
-                "h-48"
-            ]
-        ],
-        [
-            "sd1:DO",
-            "esp:D19",
-            "green",
-            [
-                "v24",
-                "h-42"
-            ]
-        ],
-        [
-            "sd1:DI",
-            "esp:D23",
-            "green",
-            [
-                "v14",
-                "h6"
-            ]
-        ],
-        [
-            "sd1:CS",
-            "esp:D5",
-            "green",
-            [
-                "v7",
-                "h21"
-            ]
-        ],
-        [
-            "sd1:VCC",
-            "esp:3V3",
-            "red",
-            [
-                "v11",
-                "h-89",
-                "h79"
-            ]
-        ]
-    ]
-}
+      [ "esp:TX", "$serialMonitor:RX", "", [] ],
+      [ "esp:RX", "$serialMonitor:TX", "", [] ],
+      [ "dht1:VCC", "esp:3V3", "red", [ "v0" ] ],
+      [ "dht1:SDA", "esp:D21", "green", [ "v0" ] ],
+      [ "dht1:NC", "esp:D22", "green", [ "v0" ] ],
+      [ "dht1:GND", "esp:GND.1", "black", [ "v0" ] ],
+      [ "dht2:VCC", "esp1:3V3", "red", [ "v0" ] ],
+      [ "dht2:SDA", "esp1:D21", "green", [ "v0" ] ],
+      [ "dht2:NC", "esp1:D22", "green", [ "v0" ] ],
+      [ "dht2:GND", "esp1:GND.1", "black", [ "v0" ] ],
+      [ "ir1:GND", "esp1:GND.1", "black", [ "v0" ] ],
+      [ "ir1:VCC", "esp1:3V3", "red", [ "v28.8", "h259.2", "v48" ] ],
+      [ "ir1:DAT", "esp1:D19", "green", [ "v0" ] ],
+      [ "relay1:VCC", "esp1:VIN", "red", [ "h-124.8", "v-134.4" ] ],
+      [ "relay1:GND", "esp1:GND.1", "black", [ "h0" ] ],
+      [ "relay1:VCC", "relay2:VCC", "red", [ "h-38.4", "v76.8" ] ],
+      [ "relay1:GND", "relay2:GND", "black", [ "v38", "h-9.6" ] ],
+      [ "esp1:D12", "relay2:IN", "purple", [ "h-76.8", "v258.7" ] ],
+      [ "esp1:D13", "relay1:IN", "green", [ "h-57.6", "v76.6", "h144" ] ]
+    ],
+    "dependencies": {}
+  }
