@@ -98,6 +98,7 @@ void Webconfig::applySettings(const String &json)
     fromJSON(json);
     toJSON(); // Convert settings to JSON format
     logs("done applySettings()...");
+    //todo: apply settings to the device eg. smoother correctton Offset must be set to the new value
 }
 
 void Webconfig::attachWebEndpoint(WebServer &server)

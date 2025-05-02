@@ -3,6 +3,12 @@
 
 #pragma once
 
+// set the I2C address for the BME280 sensor for temperature and humidity
+#define I2C_SDA    21
+#define I2C_SCL    22
+#define I2C_FREQUENCY  400000
+#define BME280_FREQUENCY  400000
+
 // WiFi-Setup
 struct Wifi_Settings
 {

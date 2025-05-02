@@ -11,7 +11,8 @@
 #include <Ticker.h>
 #include "WiFiManager/WiFiManager.h"
 #include "Smoother/Smoother.h"
-
+#include "Wire.h"
+#include <BME280_I2C.h>
 /*
 Todo:
  - Add periodicly send MQTT Settings (every 10 minutes or so), to get Values in HomeAssistant
@@ -33,9 +34,11 @@ void testRS232();
 void SerialLoggerPublisher(SigmaLogLevel level, const char *message);
 void LCDLoggerPublisher(SigmaLogLevel level, const char *message);
 const char *sl_timestamp();
-
+void readBme280();
 
 #pragma region configuratio variables
+
+BME280_I2C bme280;
 
 Helpers helpers;
 Config config; // create an instance of the config class
@@ -125,6 +128,27 @@ void setup()
     sl->Printf("⚠️ SETUP: Starting WiFi! [%s]", config.wifi_config.ssid.c_str()).Debug();
     wifiManager.begin();
   }
+
+  //init BME280 for temperature and humidity sensor
+  bme280.setAddress(BME280_ADDRESS, I2C_SDA, I2C_SCL);
+  bool isStatus = bme280.begin(
+    bme280.BME280_STANDBY_0_5,
+    bme280.BME280_FILTER_16,
+    bme280.BME280_SPI3_DISABLE,
+    bme280.BME280_OVERSAMPLING_2,
+    bme280.BME280_OVERSAMPLING_16,
+    bme280.BME280_OVERSAMPLING_1,
+    bme280.BME280_MODE_NORMAL);
+  if (!isStatus)
+  {
+    sl->Printf("can NOT initialize for using BME280.").Debug();
+  }
+  else
+  {
+    sl->Printf("ready to using BME280.").Debug();
+  }
+
+
   //----------------------------------------
 
   //----------------------------------------
@@ -189,7 +213,7 @@ void loop()
   }
 
   wifiManager.handleClient();
-
+  readBme280(); // read the BME280 sensor data
   delay(100);
 }
 
@@ -365,4 +389,32 @@ const char *sl_timestamp()
   static char timestamp[16];
   sprintf(timestamp, "{ts=%.3f} ::", millis() / 1000.0);
   return timestamp;
+}
+
+
+void readBme280()
+{
+  //todo: add ticker to read the BME280 sensor data every 10 seconds
+  // set sea-level pressure
+  bme280.setSeaLevelPressure(1010);
+
+  // read values from BME280 and store calibrated values in the library
+  // and the calibrated values is storeed to BME280.data in the library.
+  // the stored data is temperature, atmospheric pressure, humidity and altitude.
+  bme280.read();
+
+  // format the stored values
+  char temp_c[12], humi_c[12], pres_c[12], altd_c[12];
+  sprintf(temp_c, "%2.2lf", bme280.data.temperature);
+  sprintf(humi_c, "%2.2lf", bme280.data.humidity);
+  sprintf(pres_c, "%4.2lf", bme280.data.pressure);
+  sprintf(altd_c, "%4.2lf", bme280.data.altitude);
+
+  // output formatted values to serial console
+  sl->Printf("-----------------------").Debug();
+  sl->Printf("Temperature: %s %s", temp_c, "℃").Debug();
+  sl->Printf("Humidity: %s %s", humi_c, "%").Debug();
+  sl->Printf("Pressure: %s %s", pres_c, "hPa").Debug();
+  sl->Printf("Altitude: %s %s", altd_c, "m").Debug();
+  sl->Printf("-----------------------").Debug();
 }
