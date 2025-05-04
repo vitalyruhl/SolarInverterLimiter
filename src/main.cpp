@@ -1,5 +1,5 @@
 #include <Arduino.h>
-#include "SigmaLoger.h"      // for logging
+#include "SigmaLoger.h" // for logging
 #include "config/config.h"
 #include "config/settings.h"
 #include "RS485Module/RS485Module.h"
@@ -13,6 +13,8 @@
 #include "Smoother/Smoother.h"
 #include "Wire.h"
 #include <BME280_I2C.h>
+#include <Adafruit_GFX.h>
+#include <Adafruit_SSD1306.h>
 /*
 Todo:
  - Add periodicly send MQTT Settings (every 10 minutes or so), to get Values in HomeAssistant
@@ -35,10 +37,17 @@ void SerialLoggerPublisher(SigmaLogLevel level, const char *message);
 void LCDLoggerPublisher(SigmaLogLevel level, const char *message);
 const char *sl_timestamp();
 void readBme280();
+void WriteToDisplay();
+
+void SetupCheckForResetButton();
+void SetupCheckForAPModeButton();
+void SetupStartTemperatureMeasuring();
+void SetupStartDisplay();
 
 #pragma region configuratio variables
 
 BME280_I2C bme280;
+Adafruit_SSD1306 display(4); // OLED_RESET 4
 
 Helpers helpers;
 Config config; // create an instance of the config class
@@ -47,6 +56,7 @@ Ticker PublischMQTTTicker;
 Ticker PublischMQTTTSettingsTicker;
 Ticker ListenMQTTTicker;
 Ticker RS485Ticker;
+Ticker temperatureTicker;
 
 WiFiClient espClient;
 PubSubClient client(espClient);
@@ -65,14 +75,14 @@ RS485Module rs485(&config);
 // globale helpers variables
 int AktualImportFromGrid = 0; // amount of electricity being imported from grid
 int inverterSetValue = 0;     // current power inverter should deliver (default to zero)
+float temperature = 0.0;   // current temperature in Celsius
 bool tickerActive = false;    // flag to indicate if the ticker is active
 
 SigmaLoger *sl = new SigmaLoger(512, SerialLoggerPublisher, sl_timestamp);
-SigmaLoger *sll = new SigmaLoger(512, LCDLoggerPublisher, sl_timestamp);
+SigmaLoger *sll = new SigmaLoger(512, LCDLoggerPublisher, NULL);
 SigmaLogLevel level = config.logLevel; // Set the log level from the config settings
 
 #pragma endregion configuration variables
-
 
 //----------------------------------------
 // MAIN FUNCTIONS
@@ -84,23 +94,12 @@ void setup()
   Serial.begin(115200); // Debug-Mode: send to serial console
 
   sl->Printf("System setup start...").Debug();
-  sll->Printf("System setup start...");
-
-  // check for pressed reset button
-  pinMode(BUTTON_PIN_RESET_TO_DEFAULTS, INPUT_PULLUP); // importand: BUTTON is LOW aktiv!
-
-  if (digitalRead(BUTTON_PIN_RESET_TO_DEFAULTS) == LOW)
-  {
-    sl->Internal("Reset-Button pressed... -> Resett all settings...");
-    sll->Internal("Reset-Button pressed... -> Resett all settings...");
-    config.removeAllSettings();
-    delay(10000);  // Wait for 10 seconds to avoid multiple resets
-    config.save(); // Save the default settings to EEPROM
-    delay(10000);  // Wait for 10 seconds to avoid multiple resets
-    ESP.restart(); // Restart the ESP32
-  }
 
   // init modules...
+  SetupStartDisplay();
+  SetupCheckForResetButton();
+  SetupCheckForAPModeButton();
+
   helpers.blinkBuidInLEDsetpinMode(); // Initialize the built-in LED pin mode
   helpers.blinkBuidInLED(3, 100);     // Blink the built-in LED 3 times with a 100ms delay
 
@@ -115,39 +114,17 @@ void setup()
   sl->Printf("⚠️ SETUP: Starting RS485...!").Debug();
   rs485.begin();
 
-  // wifiManager = new WiFiManager(config.wifi_config);
-  if (config.wifi_config.ssid.length() == 0)
+  if (wifiManager.hasAPServer())
   {
-    sl->Printf("⚠️ SETUP: config.wifi_config.ssid ist empty! [%s]", config.wifi_config.ssid.c_str()).Error();
-    // todo: start AP-Mode to set the WiFi settings
-    wifiManager.begin();
-    wifiManager.startAccessPoint(); // Start the access point mode
+    sl->Printf("⚠️ SETUP: Wifi run in AP-Mode!").Debug();
   }
   else
   {
-    sl->Printf("⚠️ SETUP: Starting WiFi! [%s]", config.wifi_config.ssid.c_str()).Debug();
-    wifiManager.begin();
+    sl->Printf("⚠️ SETUP: Starting WiFi-Client!").Debug();
+    wifiManager.begin(); // Connect to the WiFi network using the stored SSID and password
   }
 
-  //init BME280 for temperature and humidity sensor
-  bme280.setAddress(BME280_ADDRESS, I2C_SDA, I2C_SCL);
-  bool isStatus = bme280.begin(
-    bme280.BME280_STANDBY_0_5,
-    bme280.BME280_FILTER_16,
-    bme280.BME280_SPI3_DISABLE,
-    bme280.BME280_OVERSAMPLING_2,
-    bme280.BME280_OVERSAMPLING_16,
-    bme280.BME280_OVERSAMPLING_1,
-    bme280.BME280_MODE_NORMAL);
-  if (!isStatus)
-  {
-    sl->Printf("can NOT initialize for using BME280.").Debug();
-  }
-  else
-  {
-    sl->Printf("ready to using BME280.").Debug();
-  }
-
+  SetupStartTemperatureMeasuring();
 
   //----------------------------------------
 
@@ -164,6 +141,7 @@ void setup()
   tickerActive = true; // Set the flag to indicate that the ticker is active
   reconnectMQTT();     // connect to MQTT broker
   sl->Debug("System setup completed.");
+  sll->Debug("System setup completed.");
 }
 
 void loop()
@@ -213,8 +191,8 @@ void loop()
   }
 
   wifiManager.handleClient();
-  readBme280(); // read the BME280 sensor data
   delay(100);
+  WriteToDisplay();
 }
 
 //----------------------------------------
@@ -259,7 +237,7 @@ void reconnectMQTT()
     }
     // AktualImportFromGrid
     // delay(1000);   // Wait for 1 second before restarting
-    //todo: add logic to restart the ESP32 if no connection is available after 10 minutes
+    // todo: add logic to restart the ESP32 if no connection is available after 10 minutes
     // ESP.restart(); // Restart the ESP32
     return; // exit the function if max retry reached
   }
@@ -269,7 +247,7 @@ void reconnectMQTT()
     sl->Debug("MQTT connected!");
     cb_BlinkerPublishToMQTT(); // publish the settings to the MQTT broker, before subscribing to the topics
     sl->Debug("trying to subscribe to topics...");
-    sll->Debug("trying to subscribe to topics...");
+    sll->Debug("subscribe to topics...");
 
     if (client.subscribe(config.mqttSettings.mqtt_sensor_powerusage_topic.c_str()))
     {
@@ -370,32 +348,95 @@ void testRS232()
   }
 }
 
-void SerialLoggerPublisher(SigmaLogLevel level, const char *message)
+void SetupCheckForResetButton()
 {
-  Serial.printf("MAIN: [%d] %s\r\n", level, message);
+
+  // check for pressed reset button
+  pinMode(BUTTON_PIN_RESET_TO_DEFAULTS, INPUT_PULLUP); // importand: BUTTON is LOW aktiv!
+
+  if (digitalRead(BUTTON_PIN_RESET_TO_DEFAULTS) == LOW)
+  {
+    sl->Internal("Reset-Button pressed... -> Resett all settings...");
+    sll->Internal("Reset-Button pressed... -> Resett all settings...");
+    config.removeAllSettings();
+    delay(10000);  // Wait for 10 seconds to avoid multiple resets
+    config.save(); // Save the default settings to EEPROM
+    delay(10000);  // Wait for 10 seconds to avoid multiple resets
+    ESP.restart(); // Restart the ESP32
+  }
 }
 
-void LCDLoggerPublisher(SigmaLogLevel level, const char *message)
+void SetupCheckForAPModeButton()
 {
-  // You can add any function here: send log to MQTT, to Serial, to SD card, etc.
-  // You can add any filters based on level here
-  // ToDo: add LCD support
-  // Serial.printf("LCD : [%d] %s\n", level, message);
+
+  if (config.wifi_config.ssid.length() == 0)
+  {
+    sl->Printf("⚠️ SETUP: config.wifi_config.ssid ist empty! [%s]", config.wifi_config.ssid.c_str()).Error();
+    wifiManager.startAccessPoint(); // Start the access point mode
+  }
+
+  // check for pressed AP-Mode button
+  pinMode(BUTTON_PIN_AP_MODE, INPUT_PULLUP); // importand: BUTTON is LOW aktiv!
+
+  if (digitalRead(BUTTON_PIN_AP_MODE) == LOW)
+  {
+    sl->Internal("AP-Mode-Button pressed... -> Start AP-Mode...");
+    sll->Internal("AP-Mode-Button pressed... -> Start AP-Mode...");
+    wifiManager.startAccessPoint(); // Start the access point mode
+  }
 }
 
-const char *sl_timestamp()
+void SetupStartTemperatureMeasuring()
 {
-  // You can add any function here: get timestamp from RTC, from NTP, etc.
-  static char timestamp[16];
-  sprintf(timestamp, "{ts=%.3f} ::", millis() / 1000.0);
-  return timestamp;
+  // init BME280 for temperature and humidity sensor
+  bme280.setAddress(BME280_ADDRESS, I2C_SDA, I2C_SCL);
+  bool isStatus = bme280.begin(
+      bme280.BME280_STANDBY_0_5,
+      bme280.BME280_FILTER_16,
+      bme280.BME280_SPI3_DISABLE,
+      bme280.BME280_OVERSAMPLING_2,
+      bme280.BME280_OVERSAMPLING_16,
+      bme280.BME280_OVERSAMPLING_1,
+      bme280.BME280_MODE_NORMAL);
+  if (!isStatus)
+  {
+    sl->Printf("can NOT initialize for using BME280.").Debug();
+  }
+  else
+  {
+    sl->Printf("ready to using BME280. Sart Ticker...").Debug();
+    temperatureTicker.attach(ReadTemperatureTicker, readBme280); // Attach the ticker to read BME280 every 5 seconds
+    readBme280(); // Read the BME280 sensor data once at startup
+  }
 }
 
+void WriteToDisplay()
+{
+  // display.clearDisplay();
+  display.fillRect(0, 0, 128, 24, BLACK); // Clear the previous message area
+  display.drawRect(0, 0, 128, 24, WHITE);
+
+  display.setTextSize(1);
+  display.setTextColor(WHITE);
+
+  display.setCursor(3, 3);
+  // display.printf("<- %d W|",AktualImportFromGrid);
+  display.printf("<- %d W|Temp: %2.1f",AktualImportFromGrid,temperature);
+  
+  // display.setTextColor(WHITE);
+  // display.setCursor(66, 3);
+  // display.printf("Temp: %3.1f ",temperature);
+
+
+  display.setCursor(3, 13);
+  display.printf("-> %d W",inverterSetValue);
+  display.display();
+}
 
 void readBme280()
 {
-  //todo: add ticker to read the BME280 sensor data every 10 seconds
-  // set sea-level pressure
+  // todo: add ticker to read the BME280 sensor data every 10 seconds
+  //  set sea-level pressure
   bme280.setSeaLevelPressure(1010);
 
   // read values from BME280 and store calibrated values in the library
@@ -405,11 +446,13 @@ void readBme280()
 
   // format the stored values
   char temp_c[12], humi_c[12], pres_c[12], altd_c[12];
-  sprintf(temp_c, "%2.2lf", bme280.data.temperature);
-  sprintf(humi_c, "%2.2lf", bme280.data.humidity);
-  sprintf(pres_c, "%4.2lf", bme280.data.pressure);
+  sprintf(temp_c, "%2.1lf", bme280.data.temperature);
+  sprintf(humi_c, "%2.0lf", bme280.data.humidity);
+  sprintf(pres_c, "%4.0lf", bme280.data.pressure);
   sprintf(altd_c, "%4.2lf", bme280.data.altitude);
 
+  temperature = bme280.data.temperature; // store the temperature value in the global variable
+  
   // output formatted values to serial console
   sl->Printf("-----------------------").Debug();
   sl->Printf("Temperature: %s %s", temp_c, "℃").Debug();
@@ -417,4 +460,44 @@ void readBme280()
   sl->Printf("Pressure: %s %s", pres_c, "hPa").Debug();
   sl->Printf("Altitude: %s %s", altd_c, "m").Debug();
   sl->Printf("-----------------------").Debug();
+}
+
+void SetupStartDisplay()
+{
+  display.begin(SSD1306_SWITCHCAPVCC, I2C_DISPLAY_ADDRESS); // define I2C Adress
+  display.clearDisplay();
+  display.drawRect(0, 0, 128, 25, WHITE); // Draw a rectangle around the display
+  display.setTextSize(2);
+  display.setTextColor(WHITE);
+  display.setCursor(10, 5);
+  display.println("Starting!");
+  display.display();
+}
+
+// ------- LOGGING FUNCTIONS -------
+
+const char *sl_timestamp()
+{
+  // You can add any function here: get timestamp from RTC, from NTP, etc.
+  static char timestamp[16];
+  sprintf(timestamp, "{ts=%.3f} ::", millis() / 1000.0);
+  return timestamp;
+}
+
+void SerialLoggerPublisher(SigmaLogLevel level, const char *message)
+{
+  Serial.printf("MAIN: [%d] %s\r\n", level, message);
+}
+
+void LCDLoggerPublisher(SigmaLogLevel level, const char *message)
+{
+  // todo: set a ticker to display messages 1x per 3 seconds - for this add a buffer, to store the messages and display them one by one
+  //  display.clearDisplay();
+  display.fillRect(0, 25, 128, 8, BLACK); // Clear the previous log message area
+  display.setCursor(0, 25);
+  display.setTextSize(1);
+  display.setTextColor(WHITE);
+  display.print("");
+  display.print(message);
+  display.display();
 }

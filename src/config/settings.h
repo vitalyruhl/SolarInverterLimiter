@@ -8,6 +8,12 @@
 #define I2C_SCL    22
 #define I2C_FREQUENCY  400000
 #define BME280_FREQUENCY  400000
+// #define BME280_ADDRESS 0x76 // I2C address for the BME280 sensor (default is 0x76) redefine, if needed
+#define I2C_DISPLAY_ADDRESS 0x3C // I2C address for the display (SSD1306)
+
+#define ReadTemperatureTicker  30.0
+
+#define BUTTON_PIN_AP_MODE 13
 
 // WiFi-Setup
 struct Wifi_Settings
