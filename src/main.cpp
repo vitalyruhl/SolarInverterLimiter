@@ -1,27 +1,22 @@
 #include <Arduino.h>
-#include "SigmaLoger.h" // for logging
-#include "config/config.h"
-#include "config/settings.h"
-#include "RS485Module/RS485Module.h"
-#include "helpers/helpers.h"
 #include <PubSubClient.h> // for MQTT
 #include <ArduinoJson.h>  // for JSON parsing
 #include <esp_task_wdt.h> // for watchdog timer
 #include <stdarg.h>       // for variadische Funktionen (printf-Stil)
 #include <Ticker.h>
-#include "WiFiManager/WiFiManager.h"
-#include "Smoother/Smoother.h"
 #include "Wire.h"
 #include <BME280_I2C.h>
-#include <Adafruit_GFX.h>
-#include <Adafruit_SSD1306.h>
+
+#include "config/config.h"
+#include "config/settings.h"
+#include "logging/logging.h"
+#include "RS485Module/RS485Module.h"
+#include "helpers/helpers.h"
+#include "WiFiManager/WiFiManager.h"
+#include "Smoother/Smoother.h"
+
 /*
 Todo:
- - Add periodicly send MQTT Settings (every 10 minutes or so), to get Values in HomeAssistant
- - Add Secondary WiFi-SSID and Password to connect to a second WiFi if the first one is not available
- - Add WiFI-Server to get settings from a webinterface if there is no Wifi available
- - Check Sending min-Value to RS485, if it is not set, or no connections available
- - make MQTT-Hostname and other settings configurable via MQTT, and or Webinterface
 
 */
 
@@ -33,21 +28,17 @@ void cb_BlinkerPublishToMQTT();
 void cb_BlinkerMQTTListener();
 void cb_BlinkerRS485Listener();
 void testRS232();
-void SerialLoggerPublisher(SigmaLogLevel level, const char *message);
-void LCDLoggerPublisher(SigmaLogLevel level, const char *message);
-const char *sl_timestamp();
+
 void readBme280();
 void WriteToDisplay();
 
 void SetupCheckForResetButton();
 void SetupCheckForAPModeButton();
 void SetupStartTemperatureMeasuring();
-void SetupStartDisplay();
 
 #pragma region configuratio variables
 
 BME280_I2C bme280;
-Adafruit_SSD1306 display(4); // OLED_RESET 4
 
 Helpers helpers;
 Config config; // create an instance of the config class
@@ -75,12 +66,8 @@ RS485Module rs485(&config);
 // globale helpers variables
 int AktualImportFromGrid = 0; // amount of electricity being imported from grid
 int inverterSetValue = 0;     // current power inverter should deliver (default to zero)
-float temperature = 0.0;   // current temperature in Celsius
+float temperature = 0.0;      // current temperature in Celsius
 bool tickerActive = false;    // flag to indicate if the ticker is active
-
-SigmaLoger *sl = new SigmaLoger(512, SerialLoggerPublisher, sl_timestamp);
-SigmaLoger *sll = new SigmaLoger(512, LCDLoggerPublisher, NULL);
-SigmaLogLevel level = config.logLevel; // Set the log level from the config settings
 
 #pragma endregion configuration variables
 
@@ -141,7 +128,7 @@ void setup()
   tickerActive = true; // Set the flag to indicate that the ticker is active
   reconnectMQTT();     // connect to MQTT broker
   sl->Debug("System setup completed.");
-  sll->Debug("System setup completed.");
+  sll->Debug("setup completed.");
 }
 
 void loop()
@@ -318,6 +305,7 @@ void cb_BlinkerRS485Listener()
   if (config.generalSettings.enableController)
   {
     // rs485.sendToRS485(static_cast<uint16_t>(inverterSetValue));
+    powerSmoother.setCorrectionOffset(config.generalSettings.inputCorrectionOffset); // apply the correction offset to the smoother, if needed
     rs485.sendToRS485(static_cast<uint16_t>(inverterSetValue));
   }
   else
@@ -406,31 +394,8 @@ void SetupStartTemperatureMeasuring()
   {
     sl->Printf("ready to using BME280. Sart Ticker...").Debug();
     temperatureTicker.attach(ReadTemperatureTicker, readBme280); // Attach the ticker to read BME280 every 5 seconds
-    readBme280(); // Read the BME280 sensor data once at startup
+    readBme280();                                                // Read the BME280 sensor data once at startup
   }
-}
-
-void WriteToDisplay()
-{
-  // display.clearDisplay();
-  display.fillRect(0, 0, 128, 24, BLACK); // Clear the previous message area
-  display.drawRect(0, 0, 128, 24, WHITE);
-
-  display.setTextSize(1);
-  display.setTextColor(WHITE);
-
-  display.setCursor(3, 3);
-  // display.printf("<- %d W|",AktualImportFromGrid);
-  display.printf("<- %d W|Temp: %2.1f",AktualImportFromGrid,temperature);
-  
-  // display.setTextColor(WHITE);
-  // display.setCursor(66, 3);
-  // display.printf("Temp: %3.1f ",temperature);
-
-
-  display.setCursor(3, 13);
-  display.printf("-> %d W",inverterSetValue);
-  display.display();
 }
 
 void readBme280()
@@ -452,7 +417,7 @@ void readBme280()
   sprintf(altd_c, "%4.2lf", bme280.data.altitude);
 
   temperature = bme280.data.temperature; // store the temperature value in the global variable
-  
+
   // output formatted values to serial console
   sl->Printf("-----------------------").Debug();
   sl->Printf("Temperature: %s %s", temp_c, "℃").Debug();
@@ -462,42 +427,20 @@ void readBme280()
   sl->Printf("-----------------------").Debug();
 }
 
-void SetupStartDisplay()
+void WriteToDisplay()
 {
-  display.begin(SSD1306_SWITCHCAPVCC, I2C_DISPLAY_ADDRESS); // define I2C Adress
-  display.clearDisplay();
-  display.drawRect(0, 0, 128, 25, WHITE); // Draw a rectangle around the display
-  display.setTextSize(2);
-  display.setTextColor(WHITE);
-  display.setCursor(10, 5);
-  display.println("Starting!");
-  display.display();
-}
+  // display.clearDisplay();
+  display.fillRect(0, 0, 128, 24, BLACK); // Clear the previous message area
+  display.drawRect(0, 0, 128, 24, WHITE);
 
-// ------- LOGGING FUNCTIONS -------
-
-const char *sl_timestamp()
-{
-  // You can add any function here: get timestamp from RTC, from NTP, etc.
-  static char timestamp[16];
-  sprintf(timestamp, "{ts=%.3f} ::", millis() / 1000.0);
-  return timestamp;
-}
-
-void SerialLoggerPublisher(SigmaLogLevel level, const char *message)
-{
-  Serial.printf("MAIN: [%d] %s\r\n", level, message);
-}
-
-void LCDLoggerPublisher(SigmaLogLevel level, const char *message)
-{
-  // todo: set a ticker to display messages 1x per 3 seconds - for this add a buffer, to store the messages and display them one by one
-  //  display.clearDisplay();
-  display.fillRect(0, 25, 128, 8, BLACK); // Clear the previous log message area
-  display.setCursor(0, 25);
   display.setTextSize(1);
   display.setTextColor(WHITE);
-  display.print("");
-  display.print(message);
+
+  display.setCursor(3, 3);
+  display.printf("<- %d W|Temp: %2.1f", AktualImportFromGrid, temperature);
+
+  display.setCursor(3, 13);
+  display.printf("-> %d W", inverterSetValue);
+
   display.display();
 }

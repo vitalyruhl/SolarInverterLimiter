@@ -1,7 +1,6 @@
 #include "WiFiManager/WiFiManager.h"
 #include "logging/logging.h"
 
-
 WiFiManager::WiFiManager(Config *settings) : _config(settings)
 {
     // do nothing, constructor initializes config
@@ -13,47 +12,96 @@ void WiFiManager::begin()
 {
     if (!_config)
     {
-        log("💣 ERROR!!! config pointer is null!");
+        sl->Printf("💣 ERROR!!! config pointer is null!").Error();
         return;
     }
-
     webconfig.reset(new Webconfig(_config));
 
-    log("Config-WiFi values:");
-    log("SSID: %s", _config->wifi_config.ssid.c_str());
-    log("Use Static IP: %s", String(_config->wifi_config.use_static_ip));
+    sl->Printf("Config-WiFi values:");
+    sll->Printf("Connecting to Wifi...").Debug();
+    sl->Printf("SSID: %s", _config->wifi_config.ssid.c_str());
+    sll->Printf("SSID: %s", _config->wifi_config.ssid.c_str());
+    sl->Printf("Use Static IP: %s", String(_config->wifi_config.use_static_ip));
 
     if (!connectToWiFi())
     {
-        startAccessPoint();
+        // try to connect with the failover credentials
+        sl->Printf("Failover SSID: %s", _config->wifi_config.failover_ssid.c_str());
+        sll->Printf("Failover SSID: %s", _config->wifi_config.failover_ssid.c_str());
+        // startAccessPoint();
     }
 }
 
-bool WiFiManager::connectToWiFi()
-{
-    // todo: add try it 3 times
-    // todo: add check and try to connect with the failover credentials
+bool WiFiManager::connectToWiFi() {
+    const int MAX_RETRIES = 5; // Total attempts (primary + failover)
+    bool connected = false;
 
-    if (_config->wifi_config.use_static_ip)
-    {
-        IPAddress ip, gateway, subnet, dns;
-        ip.fromString(_config->wifi_config.staticIP);
-        gateway.fromString(_config->wifi_config.staticGateway);
-        subnet.fromString(_config->wifi_config.staticSubnet);
-        dns.fromString(_config->wifi_config.staticDNS);
-        WiFi.config(ip, gateway, subnet, dns);
+    for (int attempt = 0; attempt < MAX_RETRIES && !connected; attempt++) {
+        // Configure static IP if enabled
+        if (_config->wifi_config.use_static_ip) {
+            IPAddress ip, gateway, subnet, dns;
+            bool ipValid = ip.fromString(_config->wifi_config.staticIP);
+            bool gatewayValid = gateway.fromString(_config->wifi_config.staticGateway);
+            bool subnetValid = subnet.fromString(_config->wifi_config.staticSubnet);
+            bool dnsValid = dns.fromString(_config->wifi_config.staticDNS);
+
+            if (ipValid && gatewayValid && subnetValid && dnsValid) {
+                WiFi.config(ip, gateway, subnet, dns);
+            } else {
+                sl->Printf("Invalid static IP settings! Using DHCP.").Error();
+                sll->Printf("Invalid IP settings! Using DHCP.").Error();
+            }
+        }
+
+        // Attempt primary SSID
+        WiFi.begin(_config->wifi_config.ssid.c_str(), _config->wifi_config.pass.c_str());
+        sl->Printf("Connecting to primary SSID: %s", _config->wifi_config.ssid.c_str()).Info();
+        sll->Printf("Connecting to primary SSID: %s", _config->wifi_config.ssid.c_str()).Info();
+        connected = waitForConnection(10); // 10-second timeout
+
+        // If primary fails, try failover
+        if (!connected && _config->wifi_config.failover_ssid.length() > 0) {
+            WiFi.disconnect();
+            delay(500);
+            WiFi.begin(_config->wifi_config.failover_ssid.c_str(), _config->wifi_config.failover_pass.c_str());
+            sl->Printf("Connecting to failover SSID: %s", _config->wifi_config.failover_ssid.c_str()).Info();
+            sll->Printf("Connecting to failover SSID: %s", _config->wifi_config.failover_ssid.c_str()).Info();
+            connected = waitForConnection(10);
+        }
+
+        if (connected) {
+            sl->Printf("Connected to WiFi! IP: %s", WiFi.localIP().toString().c_str()).Info();
+            sll->Printf("Connected to WiFi! IP: %s", WiFi.localIP().toString().c_str()).Info();
+            break;
+        } else {
+            sl->Printf("[Attempt %d/%d] Failed to connect", attempt + 1, MAX_RETRIES).Error();
+            sll->Printf("[Attempt %d/%d] Failed to connect", attempt + 1, MAX_RETRIES).Error();
+        }
     }
 
-    WiFi.begin(_config->wifi_config.ssid.c_str(), _config->wifi_config.pass.c_str());
-    if (WiFi.waitForConnectResult() != WL_CONNECTED)
-    {
-        WiFi.begin(_config->wifi_config.failover_ssid.c_str(), _config->wifi_config.failover_pass.c_str());
-        return WiFi.waitForConnectResult() == WL_CONNECTED;
+    if (!connected) {
+        sl->Printf("All connection attempts failed. Starting AP mode...").Error();
+        // startAccessPoint(); // Fallback to AP mode
+        // StartWebApp();
+        sll->Printf("Failed to connect to WiFi.").Error();
+        sll->Printf("restart ESP!!!.").Error();
+        delay(5000); // Wait for 5 second before restarting to show the message
+        ESP.restart(); // Restart the ESP32
+        return false;
     }
 
-    connected = (WiFi.waitForConnectResult() == WL_CONNECTED);
     StartWebApp();
-    return connected;
+    return true;
+}
+
+// Helper: Non-blocking connection check with timeout
+bool WiFiManager::waitForConnection(uint16_t timeout_sec) {
+    uint32_t start = millis();
+    while (millis() - start < timeout_sec * 1000) {
+        if (WiFi.status() == WL_CONNECTED) return true;
+        delay(500);
+    }
+    return false;
 }
 
 bool WiFiManager::hasAPServer()
@@ -63,7 +111,6 @@ bool WiFiManager::hasAPServer()
 
 void WiFiManager::handleClient()
 {
-    // todo: add check for avaibility of wifi stored credentials, and restart, if there if we are not connected to the wifi, or running in AP mode
     if (_server)
         _server->handleClient();
 }
@@ -73,13 +120,15 @@ void WiFiManager::startAccessPoint()
     WiFi.mode(WIFI_AP);
     if (WiFi.softAP(_config->wifi_config.apSSID.c_str()))
     {
-        logs("AP-Mode: IP %s", WiFi.softAPIP().toString().c_str());
+        sl->Printf("AP-Mode: IP %s", WiFi.softAPIP().toString().c_str()).Debug();
+        sll->Printf("AP-Mode: IP %s", WiFi.softAPIP().toString().c_str()).Debug();
         StartWebApp();
     }
 
     else
     {
-        logs("Erron on starting Access Points.");
+        sl->Printf("Erron on starting Access Points.").Error();
+        sll->Printf("Erron on starting Access Points.").Error();
     }
 }
 
@@ -100,13 +149,15 @@ String WiFiManager::getSSID()
 
 void WiFiManager::StartWebApp()
 {
-    logs("Init Server...");
+    sl->Printf("Init Server...");
     _server.reset(new WebServer()); // no unique_ptr, because c++ v11
 
-    logs("register endpoints ...");
+    sl->Printf("register endpoints ...");
     webconfig->attachWebEndpoint(*_server);
 
-    logs("Start server on port 80 (http://) ...");
+    sl->Printf("Start server on port 80 (http://) ...");
     _server->begin(); // Server starten
-    logs("webserver up ...");
+    sl->Printf("webserver up ...");
 }
+
+

@@ -8,7 +8,7 @@
 #include "config/settings.h"
 #include <SigmaLoger.h>
 
-#define VERSION "0.4.0"           // version of the software
+#define VERSION "0.5.0"           // version of the software
 #define VERSION_DATE "01.05.2025" // date of the version
 
 #define BUTTON_PIN_RESET_TO_DEFAULTS 15 // GPIO pin for the button (D0 on ESP8266, GPIO 0 on ESP32)
@@ -22,14 +22,14 @@ public:
   Wifi_Settings wifi_config;
   RS485_Settings rs485settings;
   SigmaLogLevel logLevel = SIGMALOG_WARN;
-  // SIGMALOG_OFF = 0,
-  // SIGMALOG_INTERNAL,
-  // SIGMALOG_FATAL,
-  // SIGMALOG_ERROR,
-  // SIGMALOG_WARN,
-  // SIGMALOG_INFO,
-  // SIGMALOG_DEBUG,
-  // SIGMALOG_ALL
+      // SIGMALOG_OFF = 0,
+      // SIGMALOG_INTERNAL,
+      // SIGMALOG_FATAL,
+      // SIGMALOG_ERROR,
+      // SIGMALOG_WARN,
+      // SIGMALOG_INFO,
+      // SIGMALOG_DEBUG,
+      // SIGMALOG_ALL
   bool saveSettingsFlag = false;
 
   Config(); // constructor
