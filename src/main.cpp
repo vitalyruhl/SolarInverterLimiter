@@ -67,6 +67,7 @@ RS485Module rs485(&config);
 int AktualImportFromGrid = 0; // amount of electricity being imported from grid
 int inverterSetValue = 0;     // current power inverter should deliver (default to zero)
 float temperature = 0.0;      // current temperature in Celsius
+float Dewpoint = 0.0;        // current dewpoint in Celsius
 bool tickerActive = false;    // flag to indicate if the ticker is active
 
 #pragma endregion configuration variables
@@ -99,18 +100,23 @@ void setup()
   // testRS232();
   //------------------
   sl->Printf("⚠️ SETUP: Starting RS485...!").Debug();
+  sll->Printf("Starting RS485...").Debug();
   rs485.begin();
 
   if (wifiManager.hasAPServer())
   {
     sl->Printf("⚠️ SETUP: Wifi run in AP-Mode!").Debug();
+    sll->Printf("Wifi run in AP-Mode!").Debug();
   }
   else
   {
     sl->Printf("⚠️ SETUP: Starting WiFi-Client!").Debug();
+    sll->Printf("Starting WiFi-Client!").Debug();
     wifiManager.begin(); // Connect to the WiFi network using the stored SSID and password
   }
 
+  sl->Printf("SETUP: Check and start BME280!").Debug();
+  sll->Printf("Check and start BME280!").Debug();
   SetupStartTemperatureMeasuring();
 
   //----------------------------------------
@@ -118,17 +124,19 @@ void setup()
   //----------------------------------------
   // -- Setup MQTT connection --
   sl->Printf("⚠️ SETUP: Starting MQTT! [%s]", config.mqttSettings.mqtt_server.c_str()).Debug();
+  sll->Printf("Starting MQTT! [%s]", config.mqttSettings.mqtt_server.c_str()).Debug();
   client.setServer(config.mqttSettings.mqtt_server.c_str(), static_cast<uint16_t>(config.mqttSettings.mqtt_port)); // Set the MQTT server and port
   client.setCallback(cb_MQTT);
 
   sl->Debug("Attaching tickers...");
+  sll->Debug("Attaching tickers...");
   PublischMQTTTicker.attach(config.generalSettings.MQTTPublischPeriod, cb_BlinkerPublishToMQTT);
   ListenMQTTTicker.attach(config.generalSettings.MQTTListenPeriod, cb_BlinkerMQTTListener);
   RS485Ticker.attach(config.generalSettings.RS232PublishPeriod, cb_BlinkerRS485Listener);
   tickerActive = true; // Set the flag to indicate that the ticker is active
   reconnectMQTT();     // connect to MQTT broker
   sl->Debug("System setup completed.");
-  sll->Debug("setup completed.");
+  sll->Debug("Setup completed.");
 }
 
 void loop()
@@ -153,7 +161,9 @@ void loop()
     if (tickerActive) // Check if the ticker is already active
     {
       sl->Debug("WiFi not connected or in AP mode! deactivate ticker.");
-      sll->Debug("WiFi not connected or in AP mode!");
+      sll->Debug("WiFi lost connection!");
+      sll->Debug("or run in AP mode!");
+      sll->Debug("deactivate mqtt ticker.");
       PublischMQTTTicker.detach(); // Stop the ticker if WiFi is not connected or in AP mode
       ListenMQTTTicker.detach();   // Stop the ticker if WiFi is not connected or in AP mode
       tickerActive = false;        // Set the flag to indicate that the ticker is not active
@@ -164,7 +174,8 @@ void loop()
     if (!tickerActive) // Check if the ticker is not already active
     {
       sl->Debug("WiFi connected! Reattach ticker.");
-      sll->Debug("WiFi connected! Reattach ticker.");
+      sll->Debug("WiFi reconnected!");
+      sll->Debug("Reattach ticker.");
       PublischMQTTTicker.attach(config.generalSettings.MQTTPublischPeriod, cb_BlinkerPublishToMQTT); // Reattach the ticker if WiFi is connected
       ListenMQTTTicker.attach(config.generalSettings.MQTTListenPeriod, cb_BlinkerMQTTListener);      // Reattach the ticker if WiFi is connected
       tickerActive = true;                                                                           // Set the flag to indicate that the ticker is active
@@ -234,7 +245,7 @@ void reconnectMQTT()
     sl->Debug("MQTT connected!");
     cb_BlinkerPublishToMQTT(); // publish the settings to the MQTT broker, before subscribing to the topics
     sl->Debug("trying to subscribe to topics...");
-    sll->Debug("subscribe to topics...");
+    sll->Debug("subscribe to mqtt...");
 
     if (client.subscribe(config.mqttSettings.mqtt_sensor_powerusage_topic.c_str()))
     {
@@ -312,7 +323,7 @@ void cb_BlinkerRS485Listener()
   {
     sl->Debug("controller is didabled!");
     sl->Debug("MAX-POWER!");
-    sll->Debug("controller is didabled!");
+    sll->Debug("Limiter is didabled!");
     sll->Debug("MAX-POWER!");
     rs485.sendToRS485(config.generalSettings.maxOutput); // send the maxOutput to the RS485 module
   }
@@ -345,7 +356,8 @@ void SetupCheckForResetButton()
   if (digitalRead(BUTTON_PIN_RESET_TO_DEFAULTS) == LOW)
   {
     sl->Internal("Reset-Button pressed... -> Resett all settings...");
-    sll->Internal("Reset-Button pressed... -> Resett all settings...");
+    sll->Internal("Reset-Button pressed!");
+    sll->Internal("Resett all settings!");
     config.removeAllSettings();
     delay(10000);  // Wait for 10 seconds to avoid multiple resets
     config.save(); // Save the default settings to EEPROM
@@ -369,7 +381,8 @@ void SetupCheckForAPModeButton()
   if (digitalRead(BUTTON_PIN_AP_MODE) == LOW)
   {
     sl->Internal("AP-Mode-Button pressed... -> Start AP-Mode...");
-    sll->Internal("AP-Mode-Button pressed... -> Start AP-Mode...");
+    sll->Internal("AP-Mode-Button!");
+    sll->Internal("-> Start AP-Mode...");
     wifiManager.startAccessPoint(); // Start the access point mode
   }
 }
@@ -389,10 +402,12 @@ void SetupStartTemperatureMeasuring()
   if (!isStatus)
   {
     sl->Printf("can NOT initialize for using BME280.").Debug();
+    sll->Printf("No BME280 detected!").Debug();
   }
   else
   {
     sl->Printf("ready to using BME280. Sart Ticker...").Debug();
+    sll->Printf("BME280 detected!").Debug();
     temperatureTicker.attach(ReadTemperatureTicker, readBme280); // Attach the ticker to read BME280 every 5 seconds
     readBme280();                                                // Read the BME280 sensor data once at startup
   }
@@ -400,30 +415,25 @@ void SetupStartTemperatureMeasuring()
 
 void readBme280()
 {
-  // todo: add ticker to read the BME280 sensor data every 10 seconds
+  //todo: add settings for correcting the values!!!
   //  set sea-level pressure
   bme280.setSeaLevelPressure(1010);
 
-  // read values from BME280 and store calibrated values in the library
-  // and the calibrated values is storeed to BME280.data in the library.
-  // the stored data is temperature, atmospheric pressure, humidity and altitude.
   bme280.read();
-
-  // format the stored values
-  char temp_c[12], humi_c[12], pres_c[12], altd_c[12];
-  sprintf(temp_c, "%2.1lf", bme280.data.temperature);
-  sprintf(humi_c, "%2.0lf", bme280.data.humidity);
-  sprintf(pres_c, "%4.0lf", bme280.data.pressure);
-  sprintf(altd_c, "%4.2lf", bme280.data.altitude);
 
   temperature = bme280.data.temperature; // store the temperature value in the global variable
 
+  //calculate drewpoint
+  // Dewpoint = T - ((100 - RH) / 5.0)
+  Dewpoint = bme280.data.temperature - ((100 - bme280.data.humidity) / 5.0);
+
   // output formatted values to serial console
   sl->Printf("-----------------------").Debug();
-  sl->Printf("Temperature: %s %s", temp_c, "℃").Debug();
-  sl->Printf("Humidity: %s %s", humi_c, "%").Debug();
-  sl->Printf("Pressure: %s %s", pres_c, "hPa").Debug();
-  sl->Printf("Altitude: %s %s", altd_c, "m").Debug();
+  sl->Printf("Temperature: %2.1lf °C", bme280.data.temperature).Debug();
+  sl->Printf("Humidity   : %2.1lf %rH", bme280.data.humidity).Debug();
+  sl->Printf("Pressure   : %4.0lf hPa", bme280.data.pressure).Debug();
+  sl->Printf("Altitude   : %4.2lf m", bme280.data.altitude).Debug();
+  sl->Printf("Dewpoint   : %2.1lf °C", Dewpoint).Debug();
   sl->Printf("-----------------------").Debug();
 }
 
@@ -437,10 +447,25 @@ void WriteToDisplay()
   display.setTextColor(WHITE);
 
   display.setCursor(3, 3);
-  display.printf("<- %d W|Temp: %2.1f", AktualImportFromGrid, temperature);
+  if (temperature > 0)
+  {
+    display.printf("<- %d W|Temp: %2.1f", AktualImportFromGrid, temperature);
+  }
+  else
+  {
+    display.printf("<- %d W", AktualImportFromGrid);
+  }
+  
 
   display.setCursor(3, 13);
-  display.printf("-> %d W", inverterSetValue);
+  if (Dewpoint != 0)
+  {
+    display.printf("-> %d W|DP-T: %2.1f", inverterSetValue, Dewpoint);
+  }
+  else
+  {
+    display.printf("-> %d W", inverterSetValue);
+  }
 
   display.display();
 }

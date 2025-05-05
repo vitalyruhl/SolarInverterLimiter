@@ -1,8 +1,6 @@
 #include "RS485Module/RS485Module.h"
 #include "logging/logging.h"
 
-
-
 RS485Module::RS485Module(Config *settings) : _config(settings)
 {
     // do nothing, constructor initializes config
@@ -10,15 +8,14 @@ RS485Module::RS485Module(Config *settings) : _config(settings)
 
 RS485Module::~RS485Module() = default;
 
-
 void RS485Module::begin()
 {
-    logv("logv... starting RS485Module:Init()");
-    logv("rs485settings.enableRS485 = %d", _config->rs485settings.enableRS485);
+    sl->Printf("starting RS485Module:Init()").Debug();
+    sl->Printf("rs485settings.enableRS485 = %d", _config->rs485settings.enableRS485).Debug();
 
     if (_config->rs485settings.enableRS485 == false)
     {
-        log("RS485Module: RS485 communication disabled.");
+        sl->Printf("RS485Module: RS485 communication disabled.").Info();
         return;
     }
 
@@ -31,30 +28,31 @@ void RS485Module::begin()
     serialpacket[6] = byte6;
     serialpacket[7] = byte7;
 
-    
-    if (_config->rs485settings.useExtraSerial) {
+    if (_config->rs485settings.useExtraSerial)
+    {
         RS485serial = &Serial2;
         RS485serial->begin(_config->rs485settings.baudRate, SERIAL_8N1, _config->rs485settings.rxPin, _config->rs485settings.txPin);
         pinMode(_config->rs485settings.dePin, OUTPUT);
         digitalWrite(_config->rs485settings.dePin, LOW);
-    } else {
+    }
+    else
+    {
         RS485serial = &Serial; // Optional fallback
     }
 }
 
 void RS485Module::sendToRS485Packet(uint16_t demand)
 {
-    //todo:Fix it --> dont sen the header, there is an logical error!!! 
-    //21:00:FF:02:64:00 instead of 
-    //24:56:00:21:02:FE:80:09
+    // todo:Fix it --> dont send the header, there is an logical error!!!
+    // 21:00:FF:02:64:00 instead of
+    // 24:56:00:21:02:FE:80:09
     packet.power = demand;
-    logv("");
-    logv("-------------------------");
-    logv("RS485Module::sendToRS485: %d", demand);
+    sl->Printf("sendToRS485Packet::sendToRS485: %d", demand).Debug();
 
     if (_config->rs485settings.enableRS485 == false)
     {
-        log("RS485Module: RS485 communication disabled.");
+        sl->Printf("sendToRS485Packet: RS485 communication disabled.").Debug();
+        sll->Printf("RS485 is disabled!").Debug();
         return;
     }
 
@@ -71,22 +69,17 @@ void RS485Module::sendToRS485Packet(uint16_t demand)
     delayMicroseconds(100);
     digitalWrite(_config->rs485settings.dePin, LOW); // aktivate recive mode
 
-    logv("-------------------------");
-    // logv("RS485Module: SetValue(demand(%d))[limited]:%d", demand, packet.power);
-    log("--> RS485: Headder:%04X, Command:%04X, Power:%04X, Checksum:%02X", packet.header, packet.command, packet.power, packet.checksum);
-    logv("");
+    sl->Printf("--> RS485: Headder:%04X, Command:%04X, Power:%04X, Checksum:%02X", packet.header, packet.command, packet.power, packet.checksum).Debug();
 }
 
 void RS485Module::sendToRS485(uint16_t demand)
 {
-
-    logv("");
-    logv("-------------------------");
-    logv("RS485Module::sendToRS485: %d", demand);
+    sl->Printf("RS485Module::sendToRS485: %d", demand).Info();
 
     if (_config->rs485settings.enableRS485 == false)
     {
-        log("RS485Module: RS485 communication disabled.");
+        sl->Printf("sendToRS485: RS485 communication disabled.").Debug();
+        sll->Printf("RS485 is disabled!").Debug();
         return;
     }
 
@@ -118,14 +111,21 @@ void RS485Module::sendToRS485(uint16_t demand)
     delayMicroseconds(100);
     digitalWrite(_config->rs485settings.dePin, LOW); // aktivate recive mode
 
-    logv("--> RS485: Headder:%02X,%02X,%02X, Command:%02X, Power:%02X,%02X Byte6:%02X Checksum:%02X",
-         serialpacket[0], serialpacket[1], serialpacket[2],
-         serialpacket[3],
-         serialpacket[4], serialpacket[5],
-         serialpacket[6],
-         serialpacket[7]);
-    logv("-------------------------");
-    logv("");
+    sl->Printf("--> RS485: Headder:%02X,%02X,%02X, Command:%02X, Power:%02X,%02X Byte6:%02X Checksum:%02X",
+               serialpacket[0], serialpacket[1], serialpacket[2],
+               serialpacket[3],
+               serialpacket[4], serialpacket[5],
+               serialpacket[6],
+               serialpacket[7])
+        .Debug();
+
+    sl->Printf("--> RS485: %02X:%02X:%02X:%02X:%02X:%02X:%02X:%02X",
+               serialpacket[0], serialpacket[1], serialpacket[2],
+               serialpacket[3],
+               serialpacket[4], serialpacket[5],
+               serialpacket[6],
+               serialpacket[7])
+        .Info();
 }
 
 String RS485Module::reciveFromRS485()
@@ -138,7 +138,7 @@ String RS485Module::reciveFromRS485()
         snprintf(hexByte, sizeof(hexByte), "%02X ", byte);
         recivedData += hexByte;
     }
-    // logv("RS485Module: Recived HEX: %s", recivedData.c_str());
+    // sl->Printf("RS485Module: Recived HEX: %s", recivedData.c_str()).Debug();
     return recivedData;
 }
 
@@ -148,8 +148,6 @@ RS485Packet RS485Module::reciveFromRS485Packet()
     if (RS485serial->available() >= sizeof(RS485Packet))
     {
         RS485serial->readBytes((char *)&incoming, sizeof(RS485Packet));
-        // logv("Received Packet - Header: %04X, Command: %04X, Power: %04X, Checksum: %02X",
-        //      incoming.header, incoming.command, incoming.power, incoming.checksum);
     }
     return incoming;
 }

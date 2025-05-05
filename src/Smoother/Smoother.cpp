@@ -8,7 +8,7 @@ Smoother::Smoother(int size, int correctionOffset, int min, int max)
     maxLimit(max)
 {
   buffer = new int[bufferSize];
-  fillBufferOnStart(0);
+  fillBufferOnStart(minLimit);
 }
 
 Smoother::~Smoother() {
@@ -23,7 +23,7 @@ void Smoother::fillBufferOnStart(int initialValue) {
 }
 
 void Smoother::reset() {
-  fillBufferOnStart(0);
+  fillBufferOnStart(minLimit);
 }
 
 void Smoother::setCorrectionOffset(int offset) {

@@ -13,13 +13,14 @@ Webconfig::Webconfig(Config *configuration) : _config(configuration)
 
 String Webconfig::toJSON()
 {
-    logs("enter toJSON()...");
+    //2025.05.05 - security - bugfix - remove password from JSON output
+    sl->Printf("send Config to WEB...").Debug();
+    sll->Printf("send Config to WEB...").Debug();
     JsonDocument doc;
-    logs("Generiere JSON...");
     doc["wifi"]["ssid"] = _config->wifi_config.ssid;
-    doc["wifi"]["pass"] = _config->wifi_config.pass;
+    doc["wifi"]["pass"] = "***";
     doc["wifi"]["fo_ssid"] = _config->wifi_config.failover_ssid;
-    doc["wifi"]["fo_pass"] = _config->wifi_config.failover_pass;
+    doc["wifi"]["fo_pass"] = "***";
     doc["wifi"]["AP_ssid"] = _config->wifi_config.apSSID;
     doc["wifi"]["IP"] = _config->wifi_config.staticIP;
     doc["wifi"]["SN"] = _config->wifi_config.staticSubnet;
@@ -28,8 +29,8 @@ String Webconfig::toJSON()
     doc["wifi"]["use_sp"] = _config->wifi_config.use_static_ip;
 
     doc["mqtt"]["mqtt_server"] = _config->mqttSettings.mqtt_server;
-    doc["mqtt"]["mqtt_user"] = _config->mqttSettings.mqtt_username;
-    doc["mqtt"]["mqtt_pass"] = _config->mqttSettings.mqtt_password;
+    doc["mqtt"]["mqtt_user"] = "Unchanged!";
+    doc["mqtt"]["mqtt_pass"] = "***";
     doc["mqtt"]["mqtt_host"] = _config->mqttSettings.mqtt_hostname;
     doc["mqtt"]["mqtt_port"] = _config->mqttSettings.mqtt_port;
 
@@ -50,15 +51,42 @@ String Webconfig::toJSON()
 
 void Webconfig::fromJSON(const String &json)
 {
-    logs("enter fromJSON()...");
+    //2025.05.05 - security - bugfix - remove password from output, check if the password is changed
+    sl->Printf("Got Config from Web!").Debug();
+    sll->Printf("Got Config from Web!").Debug();
     JsonDocument doc;
+    String tempPass = "";
     deserializeJson(doc, json);
-    logs("JSON recived: %s", json.c_str());
+
+    sl->Printf("JSON recived: %s", json.c_str()).Info();
 
     _config->wifi_config.ssid = doc["wifi"]["ssid"].as<String>();
-    _config->wifi_config.pass = doc["wifi"]["pass"].as<String>();
+    tempPass = doc["wifi"]["pass"].as<String>();
+    if (tempPass.equalsIgnoreCase("***"))
+    {
+        sl->Printf("[wifi][pass] is not changed!").Debug();
+    }
+    else
+    {
+        sl->Printf("[wifi][pass] is changed!").Debug();
+        _config->wifi_config.pass = tempPass; // change the password
+    }
+    tempPass = "";
+
     _config->wifi_config.failover_ssid = doc["wifi"]["fo_ssid"].as<String>();
-    _config->wifi_config.failover_pass = doc["wifi"]["fo_pass"].as<String>();
+    
+    tempPass = doc["wifi"]["fo_pass"].as<String>();
+    if (tempPass.equalsIgnoreCase("***"))
+    {
+        sl->Printf("[wifi][fo_passfo_pass] is not changed!").Debug();
+    }
+    else
+    {
+        sl->Printf("[wifi][fo_pass] is changed!").Debug();
+        _config->wifi_config.failover_pass = tempPass; // change the password
+    }
+    tempPass = "";
+
     _config->wifi_config.apSSID = doc["wifi"]["AP_ssid"].as<String>();
     _config->wifi_config.staticIP = doc["wifi"]["IP"].as<String>();
     _config->wifi_config.staticSubnet = doc["wifi"]["SN"].as<String>();
@@ -67,8 +95,32 @@ void Webconfig::fromJSON(const String &json)
     _config->wifi_config.use_static_ip = doc["wifi"]["use_sp"].as<bool>();
 
     _config->mqttSettings.mqtt_server = doc["mqtt"]["mqtt_server"].as<String>();
-    _config->mqttSettings.mqtt_username = doc["mqtt"]["mqtt_user"].as<String>();
-    _config->mqttSettings.mqtt_password = doc["mqtt"]["mqtt_pass"].as<String>();
+
+    tempPass = doc["mqtt"]["mqtt_user"].as<String>();
+    if (tempPass.equalsIgnoreCase("Unchanged!"))
+    {
+        sl->Printf("[mqtt][mqtt_user] is not changed!").Debug();
+    }
+    else
+    {
+        sl->Printf("[mqtt][mqtt_user] is changed!").Debug();
+        _config->mqttSettings.mqtt_username = tempPass; // change the username
+    }
+    tempPass = "";
+
+
+    tempPass = doc["mqtt"]["mqtt_pass"].as<String>();
+    if (tempPass.equalsIgnoreCase("***"))
+    {
+        sl->Printf("[mqtt][mqtt_pass] is not changed!").Debug();
+    }
+    else
+    {
+        sl->Printf("[mqtt][mqtt_pass] is changed!").Debug();
+        _config->mqttSettings.mqtt_password = tempPass; // change the password
+    }
+    tempPass = "";
+
     _config->mqttSettings.mqtt_hostname = doc["mqtt"]["mqtt_host"].as<String>();
     _config->mqttSettings.mqtt_port = doc["mqtt"]["mqtt_port"].as<int>();
 
@@ -84,40 +136,39 @@ void Webconfig::fromJSON(const String &json)
 
 void Webconfig::saveSettings(const String &json)
 {
-    logs("enter saveSettings()...");
+    sl->Printf("enter saveSettings()...").Debug();
+    sll->Printf("saveSettings()...").Debug();
     fromJSON(json); // Convert JSON string to settings
     _config->saveSettingsFlag = true;
     _config->save(); // Save the settings to EEPROM
     toJSON();
-    logs("done saveSettings()...");
 }
 
 void Webconfig::applySettings(const String &json)
 {
-    logs("enter applySettings()...");
+    sl->Printf("enter applySettings()...").Debug();
+    sll->Printf("applySettings()...").Debug();
     fromJSON(json);
     toJSON(); // Convert settings to JSON format
-    logs("done applySettings()...");
-    //todo: apply settings to the device eg. smoother correctton Offset must be set to the new value
 }
 
 void Webconfig::attachWebEndpoint(WebServer &server)
 {
-    logs("enter attachWebEndpoint()...");
+    sl->Printf("enter attachWebEndpoint()...").Debug();
 
-    logs("Apply Route \\ ...");
+    sl->Printf("Apply Route \\ ...").Debug();
     server.on("/", HTTP_GET, [this, &server]()
               {
         server.sendHeader("Access-Control-Allow-Origin", "*");
         server.send_P(200, "text/html", webhtml.getWebHTML()); });
 
-    logs("Apply Route /config/json ...");
+    sl->Printf("Apply Route /config/json ...").Debug();
     server.on("/config/json", HTTP_GET, [this, &server]()
               {
         server.sendHeader("Access-Control-Allow-Origin", "*");
         server.send(200, "application/json", this->toJSON()); });
 
-    logs("Apply Route /config/apply ...");
+    sl->Printf("Apply Route /config/apply ...").Debug();
     server.on("/config/apply", HTTP_POST, [this, &server]()
               {
                 if (!server.hasArg("plain")) {
@@ -129,7 +180,7 @@ void Webconfig::attachWebEndpoint(WebServer &server)
         server.send(200, "text/plain", "Apply settings done."); });
 
     // apply save settings route
-    logs("Apply Route /config/save ...");
+    sl->Printf("Apply Route /config/save ...").Debug();
     server.on("/config/save", HTTP_POST, [this, &server]()
               {
         if (!server.hasArg("plain")) {
@@ -141,7 +192,7 @@ void Webconfig::attachWebEndpoint(WebServer &server)
         server.sendHeader("Access-Control-Allow-Origin", "*");
         server.send(200, "text/plain", "Settings saved"); });
 
-    logs("Apply Route /config/reset ...");
+    sl->Printf("Apply Route /config/reset ...").Debug();
     server.on("/config/reset", HTTP_POST, [this, &server]()
               {
         this->_config->removeAllSettings();
@@ -167,5 +218,6 @@ void Webconfig::attachWebEndpoint(WebServer &server)
         this->_config->save();
         server.send(200, "text/plain", "Configuration saved."); });
 
-    logs("done attachWebEndpoint()...");
+    sl->Printf("done attachWebEndpoint()...").Debug();
+    sll->Printf("Webpoints attached...").Debug();
 }

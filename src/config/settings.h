@@ -18,7 +18,7 @@
 // WiFi-Setup
 struct Wifi_Settings
 {
-    String ssid = "YourSSID";     // WiFi SSID
+    String ssid = "";     // WiFi SSID /if empty, AP mode will be used
     String pass = "YourPassword"; // WiFi password
     String failover_ssid = "YourFailoverSSID";
     String failover_pass = "YourFailoverPassword";
@@ -55,7 +55,6 @@ struct MQTT_Settings
 // General configuration (default Settings)
 struct General_Settings
 {
-    bool dirtybit = false;                    // dirty bit to indicate if the message has changed
     bool enableController = true;             // set to false to disable the controller and use Maximum power output
     int maxOutput = 1100;                     // edit this to limit TOTAL power output in watts
     int minOutput = 500;                      // minimum output power in watts

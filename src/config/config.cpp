@@ -16,21 +16,26 @@ Config::Config()
         return;
     }
 
-    log("Current version: %s", VERSION);
-    log("Current Version_Date: %s", VERSION_DATE);
-    log("Saved version: %s", version.c_str());
+    sl->Printf("Current version: %s", VERSION).Debug();
+    sll->Printf("Cur. Version: %s", VERSION).Debug();
+    sl->Printf("Current Version_Date: %s", VERSION_DATE).Debug();
+    sll->Printf("from: %s", VERSION_DATE).Debug();
+    sl->Printf("Saved version: %s", version.c_str()).Debug();
 
     sscanf(version.c_str(), "%d.%d.%d", &major, &minor, &patch);
     sscanf(VERSION, "%d.%d.%d", &currentMajor, &currentMinor, &currentPatch);
 
     if (currentMajor != major || currentMinor != minor)
     {
-        log("Version changed, removing all settings...");
+        sl->Printf("Version changed, removing all settings...").Debug();
+        sll->Printf("Version changed, removing all settings...").Debug();
         removeAllSettings();
         saveSettingsFlag = true;
         saveSettingsToEEPROM();
         
+        sll->Printf("restarting...").Debug();
         delay(10000);  // Wait for 10 seconds to avoid multiple resets
+
         ESP.restart(); // Restart the ESP32
     }
 
@@ -38,21 +43,22 @@ Config::Config()
 
 void Config::load()
 {
-  
+  sll->Printf("Config::load()...").Debug();
     loadSettingsFromEEPROM();
 }
 
 void Config::save()
 {
+    sll->Printf("Config::save()...").Debug();
     saveSettingsToEEPROM();
     saveSettingsFlag = false;
 }
 
 void Config::loadSettingsFromEEPROM()
 {
-    log(" ");
-    log("<----------------------------------");
-    log("Loading settings from EEPROM...");
+    sl->Printf("<----------------------------------").Debug();
+    sl->Printf("Loading settings from EEPROM...").Debug();
+    sll->Printf("Loading from EEPROM...").Debug();
     Preferences prefs;
     prefs.begin("config", true);
 
@@ -85,21 +91,21 @@ void Config::loadSettingsFromEEPROM()
 
     prefs.end();
     printSettings(); // print the settings to the serial monitor
-    log("<----------------------------------");
-    log(" ");
+    sl->Printf("<----------------------------------").Debug();
 }
 
 void Config::saveSettingsToEEPROM()
 {
-    log(" ");
-    log("---------------------------------->");
-    log("Saving settings to EEPROM...");
+    sll->Printf("saveSettingsToEEPROM").Debug();
+    sl->Printf("---------------------------------->").Debug();
+    sl->Printf("Saving settings to EEPROM...").Debug();
     Preferences prefs;
     prefs.begin("config", false);
     //todo: check if the settings are changed before saving them to EEPROM
     if (!saveSettingsFlag)
         {
-           log("Settings not changed, skipping save to EEPROM.");
+           sl->Printf("Settings not changed, skipping save to EEPROM.saveSettingsFlag:0").Debug();
+           sll->Printf("No Savingflag!").Debug();
            prefs.end();
               return;
         }
@@ -133,91 +139,92 @@ void Config::saveSettingsToEEPROM()
     prefs.end();
     saveSettingsFlag = false;
     printSettings(); // print the settings to the serial monitor
-    log("done Saving settings to EEPROM...");
-    log("---------------------------------->");
-    log(" ");
+    sl->Printf("done Saving settings to EEPROM...").Debug();
+    sl->Printf("---------------------------------->").Debug();
+    sl->Printf(" ").Debug();
+    sll->Printf("Saved to EEPROM").Debug();
 }
 
 void Config::removeSettings(char *Name)
 {
-    log(" ");
-    log("removeSettings(%s)...", Name);
-    log("---------------------------------->");
+    sl->Printf(" ").Debug();
+    sl->Printf("removeSettings(%s)...", Name).Debug();
+    sl->Printf("---------------------------------->").Debug();
     Preferences prefs;
     prefs.begin("config", false);
     prefs.remove(Name);
     prefs.end();
-    log("Removed setting from EEPROM: %s", Name);
+    sl->Printf("Removed setting from EEPROM: %s", Name).Debug();
     printSettings(); // print the settings to the serial monitor
-    log("---------------------------------->");
-    log(" ");
+    sl->Printf("---------------------------------->").Debug();
+    sl->Printf(" ").Debug();
 }
 
 void Config::removeAllSettings()
 {
-    log(" ");
-    log("removeAllSettings()...");
-    log("---------------------------------->");
+    sl->Printf(" ").Debug();
+    sl->Printf("removeAllSettings()...").Debug();
+    sl->Printf("---------------------------------->").Debug();
     Preferences prefs;
     prefs.begin("config", false);
     prefs.clear(); // Löscht ALLE Werte im Namespace
     prefs.end();
-    log("Removed ALL setting from EEPROM:");
+    sl->Printf("Removed ALL setting from EEPROM:").Debug();
     saveSettingsFlag = false;
-    log("---------------------------------->");
-    log(" ");
+    sl->Printf("---------------------------------->").Debug();
+    sl->Printf(" ").Debug();
 }
 
 void Config::printSettings()
 {
-    log(" ");
-    log("++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++");
-    log(" ");
-    log("Version: %s", VERSION);
-    log("Version_Date: %s", VERSION_DATE);
+    sl->Printf(" ").Debug();
+    sl->Printf("++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++").Debug();
+    sl->Printf(" ").Debug();
+    sl->Printf("Version: %s", VERSION).Debug();
+    sl->Printf("Version_Date: %s", VERSION_DATE).Debug();
 
-    log(" ");
-    log("General Settings:");
-    log("------------------");
-    log("maxOutput: %d", generalSettings.maxOutput);
-    log("minOutput: %d", generalSettings.minOutput);
-    log("inputCorrectionOffset: %d", generalSettings.inputCorrectionOffset);
-    log("enableController: %s", generalSettings.enableController ? "true" : "false");
-    log("MQTTPublischPeriod: %f", generalSettings.MQTTPublischPeriod);
-    log("MQTTListenPeriod: %f", generalSettings.MQTTListenPeriod);
-    log("RS232PublishPeriod: %f", generalSettings.RS232PublishPeriod);
-    log("smoothingSize: %d", generalSettings.smoothingSize);
+    sl->Printf(" ").Debug();
+    sl->Printf("General Settings:").Debug();
+    sl->Printf("------------------").Debug();
+    sl->Printf("maxOutput: %d", generalSettings.maxOutput).Debug();
+    sl->Printf("minOutput: %d", generalSettings.minOutput).Debug();
+    sl->Printf("inputCorrectionOffset: %d", generalSettings.inputCorrectionOffset).Debug();
+    sl->Printf("enableController: %s", generalSettings.enableController ? "true" : "false").Debug();
+    sl->Printf("MQTTPublischPeriod: %f", generalSettings.MQTTPublischPeriod).Debug();
+    sl->Printf("MQTTListenPeriod: %f", generalSettings.MQTTListenPeriod).Debug();
+    sl->Printf("RS232PublishPeriod: %f", generalSettings.RS232PublishPeriod).Debug();
+    sl->Printf("smoothingSize: %d", generalSettings.smoothingSize).Debug();
 
-    log(" ");
-    log("WiFi-Settings:");
-    log("------------------");
-    log("WiFi-SSID: %s", wifi_config.ssid.c_str());
-    log("WiFi-Password: ****");
-    log("WiFi-Failover-SSID: %s", wifi_config.failover_ssid.c_str());
-    log("WiFi-Failover-Password: ****");
-    log("WiFi-AP-SSID: %s", wifi_config.apSSID.c_str());
-    log("WiFi-Static-IP: %s", wifi_config.staticIP.c_str());
-    log("WiFi-Static-Subnet: %s", wifi_config.staticSubnet.c_str());
-    log("WiFi-Static-Gateway: %s", wifi_config.staticGateway.c_str());
-    log("WiFi-Static-DNS: %s", wifi_config.staticDNS.c_str());
-    log("WiFi-Use-Static-IP: %s", wifi_config.use_static_ip ? "true" : "false");
+    sl->Printf(" ").Debug();
+    sl->Printf("WiFi-Settings:").Debug();
+    sl->Printf("------------------").Debug();
+    sl->Printf("WiFi-SSID: %s", wifi_config.ssid.c_str()).Debug();
+    sl->Printf("WiFi-Password: ****").Debug();
+    sl->Printf("WiFi-Failover-SSID: %s", wifi_config.failover_ssid.c_str()).Debug();
+    sl->Printf("WiFi-Failover-Password: ****").Debug();
+    sl->Printf("WiFi-AP-SSID: %s", wifi_config.apSSID.c_str()).Debug();
+    sl->Printf("WiFi-Static-IP: %s", wifi_config.staticIP.c_str()).Debug();
+    sl->Printf("WiFi-Static-Subnet: %s", wifi_config.staticSubnet.c_str()).Debug();
+    sl->Printf("WiFi-Static-Gateway: %s", wifi_config.staticGateway.c_str()).Debug();
+    sl->Printf("WiFi-Static-DNS: %s", wifi_config.staticDNS.c_str()).Debug();
+    sl->Printf("WiFi-Use-Static-IP: %s", wifi_config.use_static_ip ? "true" : "false").Debug();
 
-    log(" ");
-    log("MQTT-Settings:");
-    log("------------------");
-    log("MQTT-Server: %s", mqttSettings.mqtt_server.c_str());
-    log("MQTT-User: ****");
-    log("MQTT-Password: ****");
-    log("MQTT-Hostname: %s", mqttSettings.mqtt_hostname.c_str());
-    log("MQTT-Port: %d", mqttSettings.mqtt_port);
-    log("MQTT-Sensor for actual powerusage: %s", mqttSettings.mqtt_sensor_powerusage_topic.c_str());
-    log("MQTT-Publish-SetValue-Topic: %s", mqttSettings.mqtt_publish_setvalue_topic.c_str());
-    log("MQTT-Publish-GetValue-Topic: %s", mqttSettings.mqtt_publish_getvalue_topic.c_str());
+    sl->Printf(" ").Debug();
+    sl->Printf("MQTT-Settings:").Debug();
+    sl->Printf("------------------").Debug();
+    sl->Printf("MQTT-Server: %s", mqttSettings.mqtt_server.c_str()).Debug();
+    sl->Printf("MQTT-User: ****").Debug();
+    sl->Printf("MQTT-Password: ****").Debug();
+    sl->Printf("MQTT-Hostname: %s", mqttSettings.mqtt_hostname.c_str()).Debug();
+    sl->Printf("MQTT-Port: %d", mqttSettings.mqtt_port).Debug();
+    sl->Printf("MQTT-Sensor for actual powerusage: %s", mqttSettings.mqtt_sensor_powerusage_topic.c_str()).Debug();
+    sl->Printf("MQTT-Publish-SetValue-Topic: %s", mqttSettings.mqtt_publish_setvalue_topic.c_str()).Debug();
+    sl->Printf("MQTT-Publish-GetValue-Topic: %s", mqttSettings.mqtt_publish_getvalue_topic.c_str()).Debug();
 
-    log(" ");
-    log("Temp:");
-    log("------------------");
-    log("saveSettingsFlag: %s", saveSettingsFlag ? "true" : "false");
-    log("++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++");
-    log(" ");
+    sl->Printf(" ").Debug();
+    sl->Printf("Temp:").Debug();
+    sl->Printf("------------------").Debug();
+    sl->Printf("saveSettingsFlag: %s", saveSettingsFlag ? "true" : "false").Debug();
+    sl->Printf("++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++").Debug();
+    sl->Printf(" ").Debug();
 }
