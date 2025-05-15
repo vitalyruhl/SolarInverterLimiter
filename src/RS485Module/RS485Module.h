@@ -4,8 +4,7 @@
 #pragma once
 
 #include <Arduino.h>
-#include "config/settings.h"
-#include "config/config.h"
+#include "settings.h"
 
 class Config;
 

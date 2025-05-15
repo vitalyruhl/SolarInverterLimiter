@@ -1,18 +1,17 @@
 #include <Arduino.h>
 #include <PubSubClient.h> // for MQTT
-#include <ArduinoJson.h>  // for JSON parsing
 #include <esp_task_wdt.h> // for watchdog timer
 #include <stdarg.h>       // for variadische Funktionen (printf-Stil)
 #include <Ticker.h>
 #include "Wire.h"
 #include <BME280_I2C.h>
+#include <WebServer.h>
 
-#include "config/config.h"
-#include "config/settings.h"
+#include <WebServer.h>
+#include "settings.h"
 #include "logging/logging.h"
 #include "RS485Module/RS485Module.h"
 #include "helpers/helpers.h"
-#include "WiFiManager/WiFiManager.h"
 #include "Smoother/Smoother.h"
 
 /*
@@ -20,7 +19,8 @@ Todo:
 
 */
 
-// predefine the callback function for MQTT messages
+// predefine the functions
+void SetupStartDisplay();
 void reconnectMQTT();
 void cb_MQTT(char *topic, byte *message, unsigned int length);
 void publishToMQTT();
@@ -35,13 +35,14 @@ void WriteToDisplay();
 void SetupCheckForResetButton();
 void SetupCheckForAPModeButton();
 void SetupStartTemperatureMeasuring();
+bool SetupStartWebServer();
 
 #pragma region configuratio variables
 
 BME280_I2C bme280;
 
 Helpers helpers;
-Config config; // create an instance of the config class
+ProjectConfig config; // create an instance of the Project-config class
 
 Ticker PublischMQTTTicker;
 Ticker PublischMQTTTSettingsTicker;
@@ -59,15 +60,13 @@ Smoother powerSmoother(
     config.generalSettings.minOutput,
     config.generalSettings.maxOutput);
 
-WiFiManager wifiManager(&config); // create an instance of the WiFiManager class
-
 RS485Module rs485(&config);
 
 // globale helpers variables
 int AktualImportFromGrid = 0; // amount of electricity being imported from grid
 int inverterSetValue = 0;     // current power inverter should deliver (default to zero)
 float temperature = 0.0;      // current temperature in Celsius
-float Dewpoint = 0.0;        // current dewpoint in Celsius
+float Dewpoint = 0.0;         // current dewpoint in Celsius
 bool tickerActive = false;    // flag to indicate if the ticker is active
 
 #pragma endregion configuration variables
@@ -83,6 +82,8 @@ void setup()
 
   sl->Printf("System setup start...").Debug();
 
+  pinMode(BUTTON_PIN_AP_MODE, INPUT_PULLUP); // importand: BUTTON is LOW aktiv!
+
   // init modules...
   SetupStartDisplay();
   SetupCheckForResetButton();
@@ -91,35 +92,27 @@ void setup()
   helpers.blinkBuidInLEDsetpinMode(); // Initialize the built-in LED pin mode
   helpers.blinkBuidInLED(3, 100);     // Blink the built-in LED 3 times with a 100ms delay
 
-  config.load(); // Load the configuration from the config file
+  config.configManager.loadAll();
+  delay(300);
 
   powerSmoother.fillBufferOnStart(config.generalSettings.minOutput);
 
-  // debugging outputs:
-  // config.printSettings(); // Print the settings to the serial console
+  sl->Printf("Configuration printout:").Debug();
+  sl->Printf("/s",config.configManager.toJSON(false)).Debug();
   // testRS232();
+
   //------------------
   sl->Printf("⚠️ SETUP: Starting RS485...!").Debug();
   sll->Printf("Starting RS485...").Debug();
   rs485.begin();
-
-  if (wifiManager.hasAPServer())
-  {
-    sl->Printf("⚠️ SETUP: Wifi run in AP-Mode!").Debug();
-    sll->Printf("Wifi run in AP-Mode!").Debug();
-  }
-  else
-  {
-    sl->Printf("⚠️ SETUP: Starting WiFi-Client!").Debug();
-    sll->Printf("Starting WiFi-Client!").Debug();
-    wifiManager.begin(); // Connect to the WiFi network using the stored SSID and password
-  }
 
   sl->Printf("SETUP: Check and start BME280!").Debug();
   sll->Printf("Check and start BME280!").Debug();
   SetupStartTemperatureMeasuring();
 
   //----------------------------------------
+
+  bool isStartedAsAP = SetupStartWebServer();
 
   //----------------------------------------
   // -- Setup MQTT connection --
@@ -150,12 +143,6 @@ void loop()
     digitalWrite(LED_BUILTIN, HIGH); // disconnected
   }
 
-  if (WiFi.status() != WL_CONNECTED)
-  {
-    // sl->Debug("Wifi Not Connected!");
-    // wifiManager.begin(); // Start the WiFi manager with the stored SSID and password
-  }
-
   if (WiFi.status() != WL_CONNECTED || WiFi.getMode() == WIFI_AP)
   {
     if (tickerActive) // Check if the ticker is already active
@@ -182,15 +169,43 @@ void loop()
     }
   }
 
+  WriteToDisplay();
+
+  if (WiFi.getMode() == WIFI_AP)
+  {
+    blinkBuidInLED(5, 50); // show we are in AP mode
+    sll->Debug("or run in AP mode!");
+  }
+
+  else
+  {
+    if (WiFi.status() != WL_CONNECTED)
+    {
+      sl.println("❌ WiFi not connected!");
+      sll->Debug("reconnect to WiFi...");
+      config.configManager.reconnectWifi();
+      delay(1000);
+      return;
+    }
+    // blinkBuidInLED(1, 100); // not used here, because blinker is used if we get a message from MQTT
+  }
+
+  config.configManager.handleClient();
+
   if (!client.connected())
   {
     // logv("MQTT Not Connected!");
     reconnectMQTT();
   }
 
-  wifiManager.handleClient();
-  delay(100);
-  WriteToDisplay();
+  delay(10);
+}
+
+void yield()
+{
+  // This function is called to yield control to other tasks
+  // It can be used to prevent watchdog timer resets
+  delay(1);
 }
 
 //----------------------------------------
@@ -368,22 +383,23 @@ void SetupCheckForResetButton()
 
 void SetupCheckForAPModeButton()
 {
+  String APName = "ESP32_Config";
+  String pwd = "config1234"; // Default AP password
 
   if (config.wifi_config.ssid.length() == 0)
   {
     sl->Printf("⚠️ SETUP: config.wifi_config.ssid ist empty! [%s]", config.wifi_config.ssid.c_str()).Error();
-    wifiManager.startAccessPoint(); // Start the access point mode
+    configManager.startAccessPoint("192.168.4.1", "255.255.255.0", APName, "");
   }
 
   // check for pressed AP-Mode button
-  pinMode(BUTTON_PIN_AP_MODE, INPUT_PULLUP); // importand: BUTTON is LOW aktiv!
 
   if (digitalRead(BUTTON_PIN_AP_MODE) == LOW)
   {
     sl->Internal("AP-Mode-Button pressed... -> Start AP-Mode...");
     sll->Internal("AP-Mode-Button!");
     sll->Internal("-> Start AP-Mode...");
-    wifiManager.startAccessPoint(); // Start the access point mode
+    configManager.startAccessPoint("192.168.4.1", "255.255.255.0", APName, "");
   }
 }
 
@@ -413,18 +429,54 @@ void SetupStartTemperatureMeasuring()
   }
 }
 
+bool SetupStartWebServer()
+{
+
+  if (wifiSsid.get().length() == 0)
+  {
+    sl->Printf("⚠️ SETUP: SSID is empty! [%s]\n", wifiSsid.get().c_str());
+    sll->Printf("No SSID!").Debug();
+    sll->Printf("Start AP!").Debug();
+    configManager.startAccessPoint();
+  }
+
+  if (WiFi.getMode() == WIFI_AP)
+  {
+    sl->Printf("🖥️ Run in AP Mode! ");
+    sll->Printf("Run in AP Mode! ");
+    return false; // Skip webserver setup in AP mode
+  }
+
+  configManager.reconnectWifi();
+  delay(1000);
+
+  if (useDhcp.get())
+  {
+    sl->Printf("DHCP enabled");
+    configManager.startWebServer(wifiSsid.get(), wifiPassword.get());
+  }
+  else
+  {
+    sl->Printf("DHCP disabled");
+    configManager.startWebServer("192.168.2.122", "255.255.255.0", wifiSsid.get(), wifiPassword.get());
+  }
+  sl->Printf("🖥️ Webserver running at: %s", WiFi.localIP().toString().c_str());
+  sll->Printf("Web: %s", WiFi.localIP().toString().c_str());
+  return true; // Webserver setup completed
+}
+
 void readBme280()
 {
-  //todo: add settings for correcting the values!!!
-  //  set sea-level pressure
+  // todo: add settings for correcting the values!!!
+  //   set sea-level pressure
   bme280.setSeaLevelPressure(1010);
 
   bme280.read();
 
   temperature = bme280.data.temperature; // store the temperature value in the global variable
 
-  //calculate drewpoint
-  // Dewpoint = T - ((100 - RH) / 5.0)
+  // calculate drewpoint
+  //  Dewpoint = T - ((100 - RH) / 5.0)
   Dewpoint = bme280.data.temperature - ((100 - bme280.data.humidity) / 5.0);
 
   // output formatted values to serial console
@@ -455,7 +507,6 @@ void WriteToDisplay()
   {
     display.printf("<- %d W", AktualImportFromGrid);
   }
-  
 
   display.setCursor(3, 13);
   if (Dewpoint != 0)

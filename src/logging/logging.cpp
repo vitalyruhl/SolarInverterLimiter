@@ -1,6 +1,5 @@
 #include "logging/logging.h"
-#include "config/config.h"
-#include "config/settings.h"
+#include "settings.h"
 
 
 Adafruit_SSD1306 display(4);
