@@ -100,7 +100,6 @@ public:
     General_Settings generalSettings;
     RS485_Settings rs485settings;
     SigmaLogLevel logLevel = SIGMALOG_WARN;
-    ConfigManagerClass configManager;
     // SIGMALOG_OFF = 0,
     // SIGMALOG_INTERNAL,
     // SIGMALOG_FATAL,

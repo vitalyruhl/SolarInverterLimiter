@@ -9,6 +9,7 @@
 
 #include <WebServer.h>
 #include "settings.h"
+#include "ConfigManager.h"
 #include "logging/logging.h"
 #include "RS485Module/RS485Module.h"
 #include "helpers/helpers.h"
