@@ -20,7 +20,7 @@ extern SigmaLoger *sll;
 extern SigmaLogLevel level;
 
 // Function declarations
-void slSetupSerial();
+void LoggerSetupSerial();
 void SetupStartDisplay();
 const char *sl_timestamp();
 void SerialLoggerPublisher(SigmaLogLevel level, const char *message);

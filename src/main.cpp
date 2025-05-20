@@ -59,8 +59,6 @@ Smoother powerSmoother(
     generalSettings.minOutput.get(),
     generalSettings.maxOutput.get());
 
-RS485Module rs485;
-
 // globale helpers variables
 int AktualImportFromGrid = 0; // amount of electricity being imported from grid
 int inverterSetValue = 0;     // current power inverter should deliver (default to zero)
@@ -74,23 +72,15 @@ bool tickerActive = false;    // flag to indicate if the ticker is active
 // MAIN FUNCTIONS
 //----------------------------------------
 
-void ProjectConfig()
-{
-  // Register settings
-  configManager.addSetting(&wifiSsid);
-  configManager.addSetting(&wifiPassword);
-  configManager.addSetting(&useDhcp);
-  configManager.loadAll();
-  delay(300);
-}
 
 void setup()
 {
+  pinMode(BUTTON_PIN_AP_MODE, INPUT_PULLUP); // importand: BUTTON is LOW aktiv!
   
-  slSetupSerial();
+  LoggerSetupSerial();// Initialize the serial logger
   sl->Printf("System setup start...").Debug();
 
-  pinMode(BUTTON_PIN_AP_MODE, INPUT_PULLUP); // importand: BUTTON is LOW aktiv!
+  cfg.loadAll();
 
   // init modules...
   SetupStartDisplay();
@@ -99,18 +89,17 @@ void setup()
 
   helpers.blinkBuidInLEDsetpinMode(); // Initialize the built-in LED pin mode
   helpers.blinkBuidInLED(3, 100);     // Blink the built-in LED 3 times with a 100ms delay
-  ProjectConfig();                    // Setup the configuration manager and register settings
 
   powerSmoother.fillBufferOnStart(generalSettings.minOutput.get());
 
   sl->Printf("Configuration printout:").Debug();
-  sl->Printf("/s", configManager.toJSON(false)).Debug();
+  sl->Printf("/s", cfg.toJSON(false)).Debug();
   // testRS232();
 
   //------------------
   sl->Printf("⚠️ SETUP: Starting RS485...!").Debug();
   sll->Printf("Starting RS485...").Debug();
-  rs485.begin();
+  RS485begin();
 
   sl->Printf("SETUP: Check and start BME280!").Debug();
   sll->Printf("Check and start BME280!").Debug();
@@ -169,8 +158,8 @@ void loop()
       sl->Debug("WiFi connected! Reattach ticker.");
       sll->Debug("WiFi reconnected!");
       sll->Debug("Reattach ticker.");
-      PublischMQTTTicker.attach(generalSettings.MQTTPublischPeriod, cb_PublishToMQTT); // Reattach the ticker if WiFi is connected
-      ListenMQTTTicker.attach(generalSettings.MQTTListenPeriod, cb_MQTTListener);      // Reattach the ticker if WiFi is connected
+      PublischMQTTTicker.attach(generalSettings.MQTTPublischPeriod.get(), cb_PublishToMQTT); // Reattach the ticker if WiFi is connected
+      ListenMQTTTicker.attach(generalSettings.MQTTListenPeriod.get(), cb_MQTTListener);      // Reattach the ticker if WiFi is connected
       tickerActive = true;                                                             // Set the flag to indicate that the ticker is active
     }
   }
@@ -179,7 +168,7 @@ void loop()
 
   if (WiFi.getMode() == WIFI_AP)
   {
-    blinkBuidInLED(5, 50); // show we are in AP mode
+    helpers.blinkBuidInLED(5, 50); // show we are in AP mode
     sll->Debug("or run in AP mode!");
   }
 
@@ -187,16 +176,16 @@ void loop()
   {
     if (WiFi.status() != WL_CONNECTED)
     {
-      sl.println("❌ WiFi not connected!");
+      sl->Debug("❌ WiFi not connected!");
       sll->Debug("reconnect to WiFi...");
-      configManager.reconnectWifi();
+      cfg.reconnectWifi();
       delay(1000);
       return;
     }
     // blinkBuidInLED(1, 100); // not used here, because blinker is used if we get a message from MQTT
   }
 
-  configManager.handleClient();
+  cfg.handleClient();
 
   if (!client.connected())
   {
@@ -233,7 +222,7 @@ void reconnectMQTT()
     sl->Printf("MQTT reconnect attempt %d...", retry + 1).Log(level);
     helpers.blinkBuidInLED(5, 300);
     retry++;
-    client.connect(mqttSettings.mqtt_hostname.c_str(), mqttSettings.mqtt_username.c_str(), mqttSettings.mqtt_password.get().c_str()); // Connect to the MQTT broker
+    client.connect(mqttSettings.mqtt_hostname.c_str(), mqttSettings.mqtt_username.get().c_str(), mqttSettings.mqtt_password.get().c_str()); // Connect to the MQTT broker
     delay(2000);
     if (client.connected())
       break; // Exit the loop if connected successfully
@@ -283,9 +272,9 @@ void publishToMQTT()
 {
   if (client.connected())
   {
-    sl->Printf("--> MQTT: Topic[%s] -> [%d]", mqttSettings.mqtt_publish_setvalue_topic.get().c_str(), inverterSetValue);
-    client.publish(mqttSettings.mqtt_publish_setvalue_topic.c_str(), String(inverterSetValue).get().c_str());     // send to Mqtt
-    client.publish(mqttSettings.mqtt_publish_getvalue_topic.c_str(), String(AktualImportFromGrid).get().c_str()); // send to Mqtt
+    sl->Printf("--> MQTT: Topic[%s] -> [%d]", mqttSettings.mqtt_publish_setvalue_topic.c_str(), inverterSetValue);
+    client.publish(mqttSettings.mqtt_publish_setvalue_topic.c_str(), String(inverterSetValue).c_str());     // send to Mqtt
+    client.publish(mqttSettings.mqtt_publish_getvalue_topic.c_str(), String(AktualImportFromGrid).c_str()); // send to Mqtt
   }
   else
   {
@@ -338,7 +327,7 @@ void cb_RS485Listener()
   {
     // rs485.sendToRS485(static_cast<uint16_t>(inverterSetValue));
     powerSmoother.setCorrectionOffset(generalSettings.inputCorrectionOffset.get()); // apply the correction offset to the smoother, if needed
-    rs485.sendToRS485(static_cast<uint16_t>(inverterSetValue));
+    sendToRS485(static_cast<uint16_t>(inverterSetValue));
   }
   else
   {
@@ -346,7 +335,7 @@ void cb_RS485Listener()
     sl->Debug("MAX-POWER!");
     sll->Debug("Limiter is didabled!");
     sll->Debug("MAX-POWER!");
-    rs485.sendToRS485(generalSettings.maxOutput.get()); // send the maxOutput to the RS485 module
+    sendToRS485(generalSettings.maxOutput.get()); // send the maxOutput to the RS485 module
   }
 }
 
@@ -379,9 +368,9 @@ void SetupCheckForResetButton()
     sl->Internal("Reset-Button pressed... -> Resett all settings...");
     sll->Internal("Reset-Button pressed!");
     sll->Internal("Resett all settings!");
-    configManager.clearAllFromPrefs(); // Clear all settings from EEPROM
+    cfg.clearAllFromPrefs(); // Clear all settings from EEPROM
     delay(10000);            // Wait for 10 seconds to avoid multiple resets
-    configManager.saveAll(); // Save the default settings to EEPROM
+    cfg.saveAll(); // Save the default settings to EEPROM
     delay(10000);            // Wait for 10 seconds to avoid multiple resets
     ESP.restart();           // Restart the ESP32
   }
@@ -392,10 +381,10 @@ void SetupCheckForAPModeButton()
   String APName = "ESP32_Config";
   String pwd = "config1234"; // Default AP password
 
-  if (wifiSsid.get().length() == 0)
+  if (wifiSettings.wifiSsid.get().length() == 0)
   {
-    sl->Printf("⚠️ SETUP: wifiSsid.get() ist empty! [%s]", wifiSsid.get().c_str()).Error();
-    configManager.startAccessPoint("192.168.4.1", "255.255.255.0", APName, "");
+    sl->Printf("⚠️ SETUP: wifiSsid.get() ist empty! [%s]", wifiSettings.wifiSsid.get().c_str()).Error();
+    cfg.startAccessPoint("192.168.4.1", "255.255.255.0", APName, "");
   }
 
   // check for pressed AP-Mode button
@@ -405,7 +394,7 @@ void SetupCheckForAPModeButton()
     sl->Internal("AP-Mode-Button pressed... -> Start AP-Mode...");
     sll->Internal("AP-Mode-Button!");
     sll->Internal("-> Start AP-Mode...");
-    configManager.startAccessPoint("192.168.4.1", "255.255.255.0", APName, "");
+    cfg.startAccessPoint("192.168.4.1", "255.255.255.0", APName, "");
   }
 }
 
@@ -438,12 +427,12 @@ void SetupStartTemperatureMeasuring()
 bool SetupStartWebServer()
 {
 
-  if (wifiSsid.get().length() == 0)
+  if (wifiSettings.wifiSsid.get().length() == 0)
   {
     sl->Printf("No SSID!").Debug();
     sll->Printf("No SSID!").Debug();
     sll->Printf("Start AP!").Debug();
-    configManager.startAccessPoint();
+    cfg.startAccessPoint();
   }
 
   if (WiFi.getMode() == WIFI_AP)
@@ -453,18 +442,18 @@ bool SetupStartWebServer()
     return false; // Skip webserver setup in AP mode
   }
 
-  configManager.reconnectWifi();
+  cfg.reconnectWifi();
   delay(1000);
 
-  if (useDhcp.get())
+  if (wifiSettings.useDhcp.get())
   {
     sl->Printf("DHCP enabled");
-    configManager.startWebServer(wifiSsid.get(), wifiPassword.get());
+    cfg.startWebServer(wifiSettings.wifiSsid.get(), wifiSettings.wifiPassword.get());
   }
   else
   {
     sl->Printf("DHCP disabled");
-    configManager.startWebServer("192.168.2.122", "255.255.255.0", wifiSsid.get(), wifiPassword.get());
+    cfg.startWebServer("192.168.2.122", "255.255.255.0", wifiSettings.wifiSsid.get(), wifiSettings.wifiPassword.get());
   }
   sl->Printf("🖥️ Webserver running at: %s", WiFi.localIP().toString().c_str());
   sll->Printf("Web: %s", WiFi.localIP().toString().c_str());

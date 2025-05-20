@@ -17,7 +17,7 @@ std::queue<std::vector<String>> lcdMessageQueue;
 std::vector<String> lcdCurrentMessage;
 size_t lcdCurrentLine = 0;
 
-void slSetupSerial() {
+void LoggerSetupSerial() {
     Serial.begin(115200);
     while (!Serial) {
         delay(10); // wait for serial port to connect. Needed for native USB port only
