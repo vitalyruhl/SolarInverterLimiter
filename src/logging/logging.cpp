@@ -1,6 +1,6 @@
 #include "logging/logging.h"
 #include "settings.h"
-
+#include <Wire.h>
 
 Adafruit_SSD1306 display(4);
 SigmaLoger *sl = new SigmaLoger(512, SerialLoggerPublisher, sl_timestamp);
@@ -16,6 +16,15 @@ float lcdUpdateTime = 2.0; // time to show the message on the display
 std::queue<std::vector<String>> lcdMessageQueue;
 std::vector<String> lcdCurrentMessage;
 size_t lcdCurrentLine = 0;
+
+void slSetupSerial() {
+    Serial.begin(115200);
+    while (!Serial) {
+        delay(10); // wait for serial port to connect. Needed for native USB port only
+    }
+    sl->Debug("Serial started!");
+    sll->Debug("LCD started!");
+}
 
 void SetupStartDisplay() {
     display.begin(SSD1306_SWITCHCAPVCC, I2C_DISPLAY_ADDRESS);

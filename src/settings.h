@@ -33,6 +33,8 @@
 #define BUTTON_PIN_RESET_TO_DEFAULTS 15 // GPIO pin for the button (check on boot)
 #define WDT_TIMEOUT 60                  // in seconds, if esp32 is not responding within this time, the ESP32 will reboot automatically
 
+
+//store it globaly
 Config<String> wifiSsid("ssid", "wifi", "MyWiFi");
 Config<String> wifiPassword("password", "wifi", "secretpass", true, true);
 Config<bool> useDhcp("dhcp", "network", true);
@@ -40,18 +42,32 @@ Config<bool> useDhcp("dhcp", "network", true);
 // mqtt-Setup
 struct MQTT_Settings
 {
-    int mqtt_port = 1883;
-    String mqtt_server = "192.168.2.3"; // IP address of the MQTT broker (Mosquitto)
-    String mqtt_username = "housebattery";
-    String mqtt_password = "mqttsecret";
-    String mqtt_hostname = "SolarLimiter_test";
-    String mqtt_sensor_powerusage_topic = "emon/emonpi/power1";
+    Config<int> mqtt_port; // port for the MQTT broker (default is 1883)
+    
+    Config<String> mqtt_server; // IP address of the MQTT broker (Mosquitto)
+    Config<String> mqtt_username; // username for the MQTT broker
+    Config<String> mqtt_password; // password for the MQTT broker
+    Config<String> mqtt_sensor_powerusage_topic; // topic for the power usage sensor
+
+    String mqtt_hostname = "SolarLimiter";
     String mqtt_publish_setvalue_topic;
     String mqtt_publish_getvalue_topic;
 
     // constructor for setting dependent fields
-    MQTT_Settings()
+    MQTT_Settings():
+        mqtt_port("Port", "MQTT", 1883),
+        mqtt_server("Server", "MQTT", "192.168.2.3"),
+        mqtt_username("User", "MQTT", "housebattery"),
+        mqtt_password("Pass", "MQTT", "mqttsecret", true, true),
+        mqtt_sensor_powerusage_topic("PowerUsage", "MQTT", "emon/emonpi/power1")
     {
+        ConfigManager.addSetting(&mqtt_port);
+        ConfigManager.addSetting(&mqtt_server);
+        ConfigManager.addSetting(&mqtt_username);
+        ConfigManager.addSetting(&mqtt_password);
+        ConfigManager.addSetting(&mqtt_sensor_powerusage_topic);
+
+        //set the mqtt topics
         mqtt_publish_setvalue_topic = mqtt_hostname + "/SetValue";
         mqtt_publish_getvalue_topic = mqtt_hostname + "/GetValue";
         mqtt_publish_getvalue_topic = mqtt_hostname + "/Temperature"; // Todo: Implement it!
@@ -62,19 +78,40 @@ struct MQTT_Settings
 // General configuration (default Settings)
 struct General_Settings
 {
-    General_Settings() // constructor
-    {
-        Config<bool> enableController("enCtrl", "GS", true); // set to false to disable the controller and use Maximum power output
-        Config<bool> enableMQTT("enMQTT", "GS", true);       // set to false to disable the MQTT connection
+    Config<bool> enableController;     // set to false to disable the controller and use Maximum power output
+    Config<bool> enableMQTT;           // set to false to disable the MQTT connection
+    Config<int> maxOutput;             // edit this to limit TOTAL power output in watts
+    Config<int> minOutput;             // minimum output power in watts
+    Config<int> inputCorrectionOffset; // Adjust Correction Offset (Input + Offet + Smoothing --> Limmiter = Output)
+    Config<float> MQTTPublischPeriod;  // check all x seconds if there is a new MQTT message to publish
+    Config<float> MQTTListenPeriod;    // check x seconds if there is a new MQTT message to listen to
+    Config<float> RS232PublishPeriod;  // send the RS485 Data all x seconds
+    Config<int> smoothingSize;         // size of the buffer for smoothing
+    Config<String> Version;            // save the current version of the software
 
-        Config<int> maxOutput("MaxO", "GS", 1100);             // edit this to limit TOTAL power output in watts
-        Config<int> minOutput("MinO", "GS", 500);              // minimum output power in watts
-        Config<int> inputCorrectionOffset("ICO", "GS", 50);    // Adjust Correction Offset (Input + Offet + Smoothing --> Limmiter = Output). It can be a negative value, if you dont want spend solarpower and store all in the battery
-        Config<float> MQTTPublischPeriod("MQTTP", "GS", 5.0);  // check all x seconds if there is a new MQTT message to publish
-        Config<float> MQTTListenPeriod("MQTTL", "GS", 0.5);    // check x seconds if there is a new MQTT message to listen to
-        Config<float> RS232PublishPeriod("RS232P", "GS", 2.0); // send the RS485 Data all x seconds
-        Config<int> smoothingSize("Smooth", "GS", 10);         // size of the buffer for smoothing
-        Config<String> Version("Version", "GS", VERSION);      // save the current version of the software (major.minor.patch) (will reset all settings to default if there are breacking changes)
+    General_Settings() : 
+        enableController("enCtrl", "GS", true),
+        enableMQTT("enMQTT", "GS", true),
+        maxOutput("MaxO", "GS", 1100),
+        minOutput("MinO", "GS", 500),
+        inputCorrectionOffset("ICO", "GS", 50),
+        MQTTPublischPeriod("MQTTP", "GS", 5.0),
+        MQTTListenPeriod("MQTTL", "GS", 0.5),
+        RS232PublishPeriod("RS232P", "GS", 2.0),
+        smoothingSize("Smooth", "GS", 10),
+        Version("Version", "GS", VERSION)
+    {
+        // Register settings with ConfigManager
+        ConfigManager.addSetting(&enableController);
+        ConfigManager.addSetting(&enableMQTT);
+        ConfigManager.addSetting(&maxOutput);
+        ConfigManager.addSetting(&minOutput);
+        ConfigManager.addSetting(&inputCorrectionOffset);
+        ConfigManager.addSetting(&MQTTPublischPeriod);
+        ConfigManager.addSetting(&MQTTListenPeriod);
+        ConfigManager.addSetting(&RS232PublishPeriod);
+        ConfigManager.addSetting(&smoothingSize);
+        ConfigManager.addSetting(&Version);
     }
 };
 
@@ -90,46 +127,11 @@ struct RS485_Settings
     // todo: add settings for Inverter eg, headder, checksum, etc.
 };
 
-class ProjectConfig
-{
-public:
-    ConfigManagerClass configManager;
-
-    WebServer server(80);
-    MQTT_Settings mqttSettings;
-    General_Settings generalSettings;
-    RS485_Settings rs485settings;
-    SigmaLogLevel logLevel = SIGMALOG_WARN;
-    // SIGMALOG_OFF = 0,
-    // SIGMALOG_INTERNAL,
-    // SIGMALOG_FATAL,
-    // SIGMALOG_ERROR,
-    // SIGMALOG_WARN,
-    // SIGMALOG_INFO,
-    // SIGMALOG_DEBUG,
-    // SIGMALOG_ALL
-
-    
-    ProjectConfig()
-    {
-        // Register settings
-        configManager.addSetting(&wifiSsid);
-        configManager.addSetting(&wifiPassword);
-        configManager.addSetting(&useDhcp);
-
-        // register General settings
-        configManager.addSetting(&generalSettings.enableController);
-        configManager.addSetting(&generalSettings.enableMQTT);
-        configManager.addSetting(&generalSettings.maxOutput);
-        configManager.addSetting(&generalSettings.minOutput);
-        configManager.addSetting(&generalSettings.inputCorrectionOffset);
-        configManager.addSetting(&generalSettings.MQTTPublischPeriod);
-        configManager.addSetting(&generalSettings.MQTTListenPeriod);
-        configManager.addSetting(&generalSettings.RS232PublishPeriod);
-        configManager.addSetting(&generalSettings.smoothingSize);
-        configManager.addSetting(&generalSettings.Version);
-    }
-
-};
+WebServer server(80);
+ConfigManagerClass configManager;
+MQTT_Settings mqttSettings;
+General_Settings generalSettings;
+RS485_Settings rs485settings;
+SigmaLogLevel logLevel = SIGMALOG_WARN; // SIGMALOG_OFF = 0, SIGMALOG_INTERNAL, SIGMALOG_FATAL, SIGMALOG_ERROR, SIGMALOG_WARN, SIGMALOG_INFO, SIGMALOG_DEBUG, SIGMALOG_ALL
 
 #endif // SETTINGS_H
