@@ -15,7 +15,7 @@
 
 /*
 Todo:
-
+mqtt reconnect on display
 */
 
 // predefine the functions
@@ -125,6 +125,7 @@ void setup()
   reconnectMQTT();     // connect to MQTT broker
   sl->Debug("System setup completed.");
   sll->Debug("Setup completed.");
+  
 }
 
 void loop()

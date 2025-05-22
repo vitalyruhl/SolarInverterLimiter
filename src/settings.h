@@ -49,7 +49,7 @@ struct WiFi_Settings
 
                       wifiSsid("ssid", "wifi", "MyWiFi"),
                       wifiPassword("password", "wifi", "secretpass", true, true),
-                      useDhcp("dhcp", "network", true)
+                      useDhcp("dhcp", "network", false)
 
     {
         cfg.addSetting(&wifiSsid);
