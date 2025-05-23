@@ -2,72 +2,31 @@
 #define LOGGING_H
 
 #pragma once
-// #include <string.h>       //for string functions like strcmp
-#include <stdarg.h>       // for variadische Funktionen (printf-Stil)
-#include "config/config.h" // for config settings
 
-// #define ENABLE_LOGGING
-// #define ENABLE_LOGGING_VERBOSE
+#include <Arduino.h>
+#include <Wire.h>
+#include <stdarg.h>
+#include <Adafruit_GFX.h>
+#include <Adafruit_SSD1306.h>
+#include <vector>
+#include <queue>
+#include <Ticker.h>
+#include "SigmaLoger.h"
 
+// Declare extern variables
+extern Adafruit_SSD1306 display;
+extern SigmaLoger *sl;
+extern SigmaLoger *sll;
+extern SigmaLogLevel level;
 
-#ifdef ENABLE_LOGGING
-#define log(fmt, ...)                                   \
-  do                                                      \
-  {                                                       \
-    char buffer[255];                                     \
-    snprintf(buffer, sizeof(buffer), fmt, ##__VA_ARGS__); \
-    Serial.println(buffer);                               \
-  } while (0)
-#else
-#define log(...) \
-  do               \
-  {                \
-  } while (0) // do nothing if logging is disabled
-#endif
-
-#ifdef ENABLE_LOGGING_SETTINGS
-#define logs(fmt, ...)                                   \
-  do                                                      \
-  {                                                       \
-    char buffer[255];                                     \
-    snprintf(buffer, sizeof(buffer), fmt, ##__VA_ARGS__); \
-    Serial.println(buffer);                               \
-  } while (0)
-#else
-#define logs(...) \
-  do               \
-  {                \
-  } while (0) // do nothing if logging is disabled
-#endif
-
-#ifdef ENABLE_LOGGING_VERBOSE
-#define logv(fmt, ...)                                   \
-  do                                                      \
-  {                                                       \
-    char buffer[255];                                     \
-    snprintf(buffer, sizeof(buffer), fmt, ##__VA_ARGS__); \
-    Serial.println(buffer);                               \
-  } while (0)
-#else
-#define logv(...) \
-  do               \
-  {                \
-  } while (0) // do nothing if logging is disabled
-#endif
-
-#ifdef ENABLE_LOGGING_LCD
-#define logl(fmt, ...)                                   \
-  do                                                      \
-  {                                                       \
-    char buffer[255];                                     \
-    snprintf(buffer, sizeof(buffer), fmt, ##__VA_ARGS__); \
-    Serial.println(buffer);                               \
-  } while (0)
-#else
-#define logl(...) \
-  do               \
-  {                \
-  } while (0) // do nothing if logging is disabled
-#endif
+// Function declarations
+void LoggerSetupSerial();
+void SetupStartDisplay();
+const char *sl_timestamp();
+void SerialLoggerPublisher(SigmaLogLevel level, const char *message);
+void LCDLoggerPublisher(SigmaLogLevel level, const char *message);
+void LCDLoggerPublisherBuffered(SigmaLogLevel level, const char *message);
+void LCDUpdate();
+void splitIntoLines(const String& msg, size_t lineLength, std::vector<String>& out);
 
 #endif // LOGGING_H

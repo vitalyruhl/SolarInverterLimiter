@@ -1,5 +1,6 @@
 #include "helpers.h"
-
+#include <Preferences.h>
+#include "logging/logging.h"
 
 /** info
  * @param x float -> the value to be converted
@@ -42,4 +43,42 @@ void  Helpers::blinkBuidInLED(int BlinkCount, int blinkRate)
  */
 void  Helpers::blinkBuidInLEDsetpinMode() {
   pinMode(LED_BUILTIN, OUTPUT); // initialize GPIO pin 2 LED_BUILTIN as an output.
+}
+
+
+void Helpers::checkVersion(String currentVersion, String currentVersionDate)
+{
+    int currentMajor = 0, currentMinor = 0, currentPatch = 0;
+    int major = 0, minor = 0, patch = 0;
+
+    String version = Preferences().getString("version", "0.0.0");
+
+    if (version == "0.0.0") // there is no version saved, set the default version
+    {
+       //todo:save Version to EEPROM from new ConfigurationMananger Library
+        return;
+    }
+
+    sl->Printf("Current version: %s", currentVersion).Debug();
+    sll->Printf("Cur. Version: %s", currentVersion).Debug();
+    sl->Printf("Current Version_Date: %s", currentVersionDate).Debug();
+    sll->Printf("from: %s", currentVersionDate).Debug();
+    sl->Printf("Saved version: %s", version.c_str()).Debug();
+
+    sscanf(version.c_str(), "%d.%d.%d", &major, &minor, &patch);
+    sscanf(currentVersion.c_str(), "%d.%d.%d", &currentMajor, &currentMinor, &currentPatch);
+
+    if (currentMajor != major || currentMinor != minor)
+    {
+        sl->Printf("Version changed, removing all settings...").Debug();
+        sll->Printf("Version changed, removing all settings...").Debug();
+        //todo: implement a function to remove all settings from new ConfigurationMananger Library
+        
+        sll->Printf("restarting...").Debug();
+        //deactivate until the new version is implemented
+        // delay(10000);  // Wait for 10 seconds to avoid multiple resets
+
+        // ESP.restart(); // Restart the ESP32
+    }
+
 }

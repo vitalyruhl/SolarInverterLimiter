@@ -11,7 +11,7 @@ public:
     static float mapFloat(float x, float in_min, float in_max, float out_min, float out_max);
     void blinkBuidInLED(int BlinkCount, int blinkRate);
     void blinkBuidInLEDsetpinMode();
-    
+    void checkVersion(String currentVersion, String currentVersionDate); //todo: add this Feature to the configManager
 };
 
 #endif // HELPERS_H
