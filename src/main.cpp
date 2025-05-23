@@ -72,12 +72,11 @@ bool tickerActive = false;    // flag to indicate if the ticker is active
 // MAIN FUNCTIONS
 //----------------------------------------
 
-
 void setup()
 {
   pinMode(BUTTON_PIN_AP_MODE, INPUT_PULLUP); // importand: BUTTON is LOW aktiv!
-  
-  LoggerSetupSerial();// Initialize the serial logger
+
+  LoggerSetupSerial(); // Initialize the serial logger
   sl->Printf("System setup start...").Debug();
 
   cfg.loadAll();
@@ -93,7 +92,8 @@ void setup()
   powerSmoother.fillBufferOnStart(generalSettings.minOutput.get());
 
   sl->Printf("Configuration printout:").Debug();
-  sl->Printf("/s", cfg.toJSON(false)).Debug();
+  // sl->Printf("/s", cfg.toJSON(false)).Debug();
+  Serial.println(cfg.toJSON(false)); // Print the configuration to the serial monitor
   // testRS232();
 
   //------------------
@@ -125,7 +125,6 @@ void setup()
   reconnectMQTT();     // connect to MQTT broker
   sl->Debug("System setup completed.");
   sll->Debug("Setup completed.");
-  
 }
 
 void loop()
@@ -161,7 +160,7 @@ void loop()
       sll->Debug("Reattach ticker.");
       PublischMQTTTicker.attach(generalSettings.MQTTPublischPeriod.get(), cb_PublishToMQTT); // Reattach the ticker if WiFi is connected
       ListenMQTTTicker.attach(generalSettings.MQTTListenPeriod.get(), cb_MQTTListener);      // Reattach the ticker if WiFi is connected
-      tickerActive = true;                                                             // Set the flag to indicate that the ticker is active
+      tickerActive = true;                                                                   // Set the flag to indicate that the ticker is active
     }
   }
 
@@ -209,6 +208,16 @@ void yield()
 //----------------------------------------
 void reconnectMQTT()
 {
+  IPAddress mqttIP;
+  if (mqttIP.fromString(mqttSettings.mqtt_server.get()))
+  {
+    client.setServer(mqttIP, static_cast<uint16_t>(mqttSettings.mqtt_port.get()));
+  }
+  else
+  {
+    sl->Printf("Invalid MQTT IP: %s", mqttSettings.mqtt_server.get().c_str()).Error();
+  }
+
   if (WiFi.status() != WL_CONNECTED || WiFi.getMode() == WIFI_AP)
   {
     // sl->Debug("WiFi not connected or in AP mode! Skipping mqttSettings.");
@@ -220,11 +229,38 @@ void reconnectMQTT()
 
   while (!client.connected() && retry < maxRetry) // Retry 5 times before restarting
   {
-    sl->Printf("MQTT reconnect attempt %d...", retry + 1).Log(level);
+    // sl->Printf("MQTT reconnect attempt %d...", retry + 1).Log(level);
+
+    sl->Printf("Attempting MQTT connection to %s:%d...",
+               mqttSettings.mqtt_server.get().c_str(),
+               mqttSettings.mqtt_port.get())
+        .Debug();
+
     helpers.blinkBuidInLED(5, 300);
     retry++;
+
+    //print the mqtt settings
+    sl->Printf("Connecting to MQTT broker...").Debug();
+    sl->Printf("MQTT Hostname: %s", mqttSettings.mqtt_hostname.c_str()).Debug();
+    sl->Printf("MQTT Server: %s", mqttSettings.mqtt_server.get().c_str()).Debug();
+    sl->Printf("MQTT Port: %d", mqttSettings.mqtt_port.get()).Debug();
+    sl->Printf("MQTT User: %s", mqttSettings.mqtt_username.get().c_str()).Debug();
+    // sl->Printf("MQTT Password: %s", mqttSettings.mqtt_password.get().c_str()).Debug();
+    sl->Printf("MQTT Password: ***").Debug();
+    sl->Printf("MQTT Sensor Power Usage Topic: %s", mqttSettings.mqtt_sensor_powerusage_topic.get().c_str()).Debug();
+
     client.connect(mqttSettings.mqtt_hostname.c_str(), mqttSettings.mqtt_username.get().c_str(), mqttSettings.mqtt_password.get().c_str()); // Connect to the MQTT broker
     delay(2000);
+
+    if (client.connected())
+    {
+      sl->Debug("Connected!");
+    }
+    else
+    {
+      sl->Printf("Failed, rc=%d", client.state()).Error(); 
+    }
+
     if (client.connected())
       break; // Exit the loop if connected successfully
 
@@ -371,7 +407,7 @@ void SetupCheckForResetButton()
     sll->Internal("Resett all settings!");
     cfg.clearAllFromPrefs(); // Clear all settings from EEPROM
     delay(10000);            // Wait for 10 seconds to avoid multiple resets
-    cfg.saveAll(); // Save the default settings to EEPROM
+    cfg.saveAll();           // Save the default settings to EEPROM
     delay(10000);            // Wait for 10 seconds to avoid multiple resets
     ESP.restart();           // Restart the ESP32
   }
@@ -454,7 +490,7 @@ bool SetupStartWebServer()
   else
   {
     sl->Printf("DHCP disabled");
-    cfg.startWebServer("192.168.2.122", "255.255.255.0", wifiSettings.wifiSsid.get(), wifiSettings.wifiPassword.get());
+    cfg.startWebServer("192.168.2.122", "255.255.255.0", "192.168.2.250", wifiSettings.wifiSsid.get(), wifiSettings.wifiPassword.get());
   }
   sl->Printf("🖥️ Webserver running at: %s", WiFi.localIP().toString().c_str());
   sll->Printf("Web: %s", WiFi.localIP().toString().c_str());

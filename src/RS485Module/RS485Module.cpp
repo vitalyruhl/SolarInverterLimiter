@@ -81,7 +81,7 @@ void sendToRS485Packet(uint16_t demand)
 
 void sendToRS485(uint16_t demand)
 {
-    sl->Printf("RS485Module::sendToRS485: %d", demand).Info();
+    // sl->Printf("RS485Module::sendToRS485: %d", demand).Info();
 
     if (rs485settings.enableRS485 == false)
     {
@@ -118,21 +118,21 @@ void sendToRS485(uint16_t demand)
     delayMicroseconds(100);
     digitalWrite(rs485settings.dePin, LOW); // aktivate recive mode
 
-    sl->Printf("--> RS485: Headder:%02X,%02X,%02X, Command:%02X, Power:%02X,%02X Byte6:%02X Checksum:%02X",
-               serialpacket[0], serialpacket[1], serialpacket[2],
-               serialpacket[3],
-               serialpacket[4], serialpacket[5],
-               serialpacket[6],
-               serialpacket[7])
-        .Debug();
+    // sl->Printf("--> RS485: Headder:%02X,%02X,%02X, Command:%02X, Power:%02X,%02X Byte6:%02X Checksum:%02X",
+    //            serialpacket[0], serialpacket[1], serialpacket[2],
+    //            serialpacket[3],
+    //            serialpacket[4], serialpacket[5],
+    //            serialpacket[6],
+    //            serialpacket[7])
+    //     .Debug();
 
-    sl->Printf("--> RS485: %02X:%02X:%02X:%02X:%02X:%02X:%02X:%02X",
-               serialpacket[0], serialpacket[1], serialpacket[2],
-               serialpacket[3],
-               serialpacket[4], serialpacket[5],
-               serialpacket[6],
-               serialpacket[7])
-        .Info();
+    // sl->Printf("--> RS485: %02X:%02X:%02X:%02X:%02X:%02X:%02X:%02X",
+    //            serialpacket[0], serialpacket[1], serialpacket[2],
+    //            serialpacket[3],
+    //            serialpacket[4], serialpacket[5],
+    //            serialpacket[6],
+    //            serialpacket[7])
+    //     .Info();
 }
 
 String reciveFromRS485()

@@ -10,23 +10,32 @@ SigmaLogLevel level = SIGMALOG_WARN;
 #include <Ticker.h>
 
 Ticker lcdTicker;
-String lcdLogBuffer;      // buffer
+String lcdLogBuffer; // buffer
 bool lcdUpdatePending = false;
 float lcdUpdateTime = 2.0; // time to show the message on the display
 std::queue<std::vector<String>> lcdMessageQueue;
 std::vector<String> lcdCurrentMessage;
 size_t lcdCurrentLine = 0;
 
-void LoggerSetupSerial() {
+void cbMyConfigLogger(const char *msg)
+{
+    sl->Debug(msg);
+}
+
+void LoggerSetupSerial()
+{
     Serial.begin(115200);
-    while (!Serial) {
+    while (!Serial)
+    {
         delay(10); // wait for serial port to connect. Needed for native USB port only
     }
     sl->Debug("Serial started!");
     sll->Debug("LCD started!");
+    ConfigManagerClass::setLogger(cbMyConfigLogger); // Set the logger for the ConfigManager
 }
 
-void SetupStartDisplay() {
+void SetupStartDisplay()
+{
     display.begin(SSD1306_SWITCHCAPVCC, I2C_DISPLAY_ADDRESS);
     display.clearDisplay();
     display.drawRect(0, 0, 128, 25, WHITE);
@@ -38,17 +47,20 @@ void SetupStartDisplay() {
     lcdTicker.attach(lcdUpdateTime, LCDUpdate);
 }
 
-const char *sl_timestamp() {
+const char *sl_timestamp()
+{
     static char timestamp[16];
     sprintf(timestamp, "{ts=%.3f} ::", millis() / 1000.0);
     return timestamp;
 }
 
-void SerialLoggerPublisher(SigmaLogLevel level, const char *message) {
+void SerialLoggerPublisher(SigmaLogLevel level, const char *message)
+{
     Serial.printf("MAIN: [%d] %s\r\n", level, message);
 }
 
-void LCDLoggerPublisher(SigmaLogLevel level, const char *message) {
+void LCDLoggerPublisher(SigmaLogLevel level, const char *message)
+{
     display.fillRect(0, 25, 128, 8, BLACK);
     display.setCursor(0, 25);
     display.setTextSize(1);
@@ -57,30 +69,37 @@ void LCDLoggerPublisher(SigmaLogLevel level, const char *message) {
     display.display();
 }
 
-void LCDLoggerPublisherBuffered(SigmaLogLevel level, const char *message) {
-    // lcdLogBuffer = message; 
-    // lcdUpdatePending = true; 
+void LCDLoggerPublisherBuffered(SigmaLogLevel level, const char *message)
+{
+    // lcdLogBuffer = message;
+    // lcdUpdatePending = true;
 
     std::vector<String> newMessage;
     splitIntoLines(String(message), 21, newMessage);
     lcdMessageQueue.push(newMessage);
-
 }
-void splitIntoLines(const String& msg, size_t lineLength, std::vector<String>& out) {
+void splitIntoLines(const String &msg, size_t lineLength, std::vector<String> &out)
+{
     out.clear();
-    for (size_t i = 0; i < msg.length(); i += lineLength) {
+    for (size_t i = 0; i < msg.length(); i += lineLength)
+    {
         out.push_back(msg.substring(i, i + lineLength));
     }
 }
 
-void LCDUpdate() {
-    if (lcdCurrentLine >= lcdCurrentMessage.size()) {
+void LCDUpdate()
+{
+    if (lcdCurrentLine >= lcdCurrentMessage.size())
+    {
         // aktuelle Nachricht fertig, nächste holen
-        if (!lcdMessageQueue.empty()) {
+        if (!lcdMessageQueue.empty())
+        {
             lcdCurrentMessage = lcdMessageQueue.front();
             lcdMessageQueue.pop();
             lcdCurrentLine = 0;
-        } else {
+        }
+        else
+        {
             return; // nichts zu tun
         }
     }

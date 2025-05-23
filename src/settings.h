@@ -10,8 +10,8 @@
 
 #include "ConfigManager.h"
 
-#define VERSION "0.6.0"           // version of the software (major.minor.patch) (Version 0.6.0 Has Breaking Changes!)
-#define VERSION_DATE "05.05.2025" // date of the version
+#define VERSION "0.6.1"           // version of the software (major.minor.patch) (Version 0.6.0 Has Breaking Changes!)
+#define VERSION_DATE "23.05.2025" // date of the version
 
 //--------------------------------------------------------------------------------------------------------------
 // set the I2C address for the BME280 sensor for temperature and humidity
