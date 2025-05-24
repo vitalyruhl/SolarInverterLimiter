@@ -36,6 +36,8 @@ void SetupCheckForAPModeButton();
 void SetupStartTemperatureMeasuring();
 bool SetupStartWebServer();
 void ProjectConfig();
+void PinSetup();
+//--------------------------------------------------------------------------------------------------------------
 
 #pragma region configuratio variables
 
@@ -64,6 +66,7 @@ int AktualImportFromGrid = 0; // amount of electricity being imported from grid
 int inverterSetValue = 0;     // current power inverter should deliver (default to zero)
 float temperature = 0.0;      // current temperature in Celsius
 float Dewpoint = 0.0;         // current dewpoint in Celsius
+float Humidity = 0.0;         // current humidity in percent
 bool tickerActive = false;    // flag to indicate if the ticker is active
 
 #pragma endregion configuration variables
@@ -74,8 +77,8 @@ bool tickerActive = false;    // flag to indicate if the ticker is active
 
 void setup()
 {
-  pinMode(BUTTON_PIN_AP_MODE, INPUT_PULLUP); // importand: BUTTON is LOW aktiv!
 
+  PinSetup();
   LoggerSetupSerial(); // Initialize the serial logger
   sl->Printf("System setup start...").Debug();
 
@@ -239,7 +242,7 @@ void reconnectMQTT()
     helpers.blinkBuidInLED(5, 300);
     retry++;
 
-    //print the mqtt settings
+    // print the mqtt settings
     sl->Printf("Connecting to MQTT broker...").Debug();
     sl->Printf("MQTT Hostname: %s", mqttSettings.mqtt_hostname.c_str()).Debug();
     sl->Printf("MQTT Server: %s", mqttSettings.mqtt_server.get().c_str()).Debug();
@@ -258,7 +261,7 @@ void reconnectMQTT()
     }
     else
     {
-      sl->Printf("Failed, rc=%d", client.state()).Error(); 
+      sl->Printf("Failed, rc=%d", client.state()).Error();
     }
 
     if (client.connected())
@@ -309,9 +312,12 @@ void publishToMQTT()
 {
   if (client.connected())
   {
-    sl->Printf("--> MQTT: Topic[%s] -> [%d]", mqttSettings.mqtt_publish_setvalue_topic.c_str(), inverterSetValue);
-    client.publish(mqttSettings.mqtt_publish_setvalue_topic.c_str(), String(inverterSetValue).c_str());     // send to Mqtt
-    client.publish(mqttSettings.mqtt_publish_getvalue_topic.c_str(), String(AktualImportFromGrid).c_str()); // send to Mqtt
+    sl->Printf("--> MQTT: Topic[%s] -> [%d]", mqttSettings.mqtt_publish_setvalue_topic.c_str(), inverterSetValue).Debug();
+    client.publish(mqttSettings.mqtt_publish_setvalue_topic.c_str(), String(inverterSetValue).c_str());
+    client.publish(mqttSettings.mqtt_publish_getvalue_topic.c_str(), String(AktualImportFromGrid).c_str());
+    client.publish(mqttSettings.mqtt_publish_Temperature_topic.c_str(), String(temperature).c_str());
+    client.publish(mqttSettings.mqtt_publish_Humidity_topic.c_str(), String(Humidity).c_str());
+    client.publish(mqttSettings.mqtt_publish_Dewpoint_topic.c_str(), String(Dewpoint).c_str());
   }
   else
   {
@@ -324,7 +330,7 @@ void cb_MQTT(char *topic, byte *message, unsigned int length)
   String messageTemp((char *)message, length); // Convert byte array to String using constructor
   messageTemp.trim();                          // Remove leading and trailing whitespace
 
-  sl->Printf("<-- MQTT: Topic[%s] <-- [%s]", topic, messageTemp.c_str());
+  sl->Printf("<-- MQTT: Topic[%s] <-- [%s]", topic, messageTemp.c_str()).Debug();
   helpers.blinkBuidInLED(1, 100); // blink the LED once to indicate that the loop is running
   if (strcmp(topic, mqttSettings.mqtt_sensor_powerusage_topic.get().c_str()) == 0)
   {
@@ -398,7 +404,6 @@ void SetupCheckForResetButton()
 {
 
   // check for pressed reset button
-  pinMode(BUTTON_PIN_RESET_TO_DEFAULTS, INPUT_PULLUP); // importand: BUTTON is LOW aktiv!
 
   if (digitalRead(BUTTON_PIN_RESET_TO_DEFAULTS) == LOW)
   {
@@ -505,7 +510,8 @@ void readBme280()
 
   bme280.read();
 
-  temperature = bme280.data.temperature; // store the temperature value in the global variable
+  temperature = bme280.data.temperature + generalSettings.TempCorrectionOffset.get(); // store the temperature value in the global variable
+  Humidity = bme280.data.humidity + generalSettings.HumidityCorrectionOffset.get();   // store the temperature value in the global variable
 
   // calculate drewpoint
   //  Dewpoint = T - ((100 - RH) / 5.0)
@@ -513,11 +519,11 @@ void readBme280()
 
   // output formatted values to serial console
   sl->Printf("-----------------------").Debug();
-  sl->Printf("Temperature: %2.1lf °C", bme280.data.temperature).Debug();
-  sl->Printf("Humidity   : %2.1lf %rH", bme280.data.humidity).Debug();
+  sl->Printf("Temperature: %2.1lf °C", temperature).Debug();
+  sl->Printf("Humidity   : %2.1lf %rH", Humidity).Debug();
+  sl->Printf("Dewpoint   : %2.1lf °C", Dewpoint).Debug();
   sl->Printf("Pressure   : %4.0lf hPa", bme280.data.pressure).Debug();
   sl->Printf("Altitude   : %4.2lf m", bme280.data.altitude).Debug();
-  sl->Printf("Dewpoint   : %2.1lf °C", Dewpoint).Debug();
   sl->Printf("-----------------------").Debug();
 }
 
@@ -551,4 +557,23 @@ void WriteToDisplay()
   }
 
   display.display();
+}
+
+void PinSetup()
+{
+  pinMode(BUTTON_PIN_RESET_TO_DEFAULTS, INPUT_PULLUP); // importand: BUTTON is LOW aktiv!
+  pinMode(BUTTON_PIN_AP_MODE, INPUT_PULLUP);           // importand: BUTTON is LOW aktiv!
+
+  pinMode(RELAY_MOTOR_UP_PIN, OUTPUT);
+  digitalWrite(RELAY_MOTOR_UP_PIN, HIGH); // set the relay to HIGH (off) at startup
+
+  pinMode(RELAY_MOTOR_DOWN_PIN, OUTPUT);
+  digitalWrite(RELAY_MOTOR_DOWN_PIN, HIGH); // set the relay to HIGH (off) at startup
+
+  pinMode(RELAY_MOTOR_LEFT_PIN, OUTPUT);
+  digitalWrite(RELAY_MOTOR_LEFT_PIN, HIGH); // set the relay to HIGH (off) at startup
+
+  pinMode(RELAY_MOTOR_RIGHT_PIN, OUTPUT);
+  digitalWrite(RELAY_MOTOR_RIGHT_PIN, HIGH); // set the relay to HIGH (off) at startup
+
 }

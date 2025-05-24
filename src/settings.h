@@ -10,7 +10,7 @@
 
 #include "ConfigManager.h"
 
-#define VERSION "0.6.1"           // version of the software (major.minor.patch) (Version 0.6.0 Has Breaking Changes!)
+#define VERSION "0.7.0"           // version of the software (major.minor.patch) (Version 0.6.0 Has Breaking Changes!)
 #define VERSION_DATE "23.05.2025" // date of the version
 
 //--------------------------------------------------------------------------------------------------------------
@@ -32,6 +32,13 @@
 #define BUTTON_PIN_AP_MODE 13           // GPIO pin for the button to start AP mode (check on boot)
 #define BUTTON_PIN_RESET_TO_DEFAULTS 15 // GPIO pin for the button (check on boot)
 #define WDT_TIMEOUT 60                  // in seconds, if esp32 is not responding within this time, the ESP32 will reboot automatically
+
+#define RELAY_MOTOR_UP_PIN 14
+#define RELAY_MOTOR_DOWN_PIN 27
+#define RELAY_MOTOR_LEFT_PIN 26
+#define RELAY_MOTOR_RIGHT_PIN 25
+
+
 
 
 
@@ -71,6 +78,9 @@ struct MQTT_Settings
     String mqtt_hostname = "SolarLimiter";
     String mqtt_publish_setvalue_topic;
     String mqtt_publish_getvalue_topic;
+    String mqtt_publish_Temperature_topic;
+    String mqtt_publish_Humidity_topic;
+    String mqtt_publish_Dewpoint_topic;
 
     // constructor for setting dependent fields
     MQTT_Settings() : mqtt_port("Port", "MQTT", 1883),
@@ -88,8 +98,9 @@ struct MQTT_Settings
         // set the mqtt topics
         mqtt_publish_setvalue_topic = mqtt_hostname + "/SetValue";
         mqtt_publish_getvalue_topic = mqtt_hostname + "/GetValue";
-        mqtt_publish_getvalue_topic = mqtt_hostname + "/Temperature"; // Todo: Implement it!
-        mqtt_publish_getvalue_topic = mqtt_hostname + "/Humidity";    // Todo: Implement it!
+        mqtt_publish_Temperature_topic = mqtt_hostname + "/Temperature";
+        mqtt_publish_Humidity_topic = mqtt_hostname + "/Humidity";
+        mqtt_publish_Dewpoint_topic = mqtt_hostname + "/Dewpoint";
     }
 };
 
@@ -104,6 +115,8 @@ struct General_Settings
     Config<float> MQTTPublischPeriod;  // check all x seconds if there is a new MQTT message to publish
     Config<float> MQTTListenPeriod;    // check x seconds if there is a new MQTT message to listen to
     Config<float> RS232PublishPeriod;  // send the RS485 Data all x seconds
+    Config<float> TempCorrectionOffset;  // Offset for the temperature correction in Celsius (default is 0.0)
+    Config<float> HumidityCorrectionOffset;  // Offset for the humidity correction in percent (default is 0.0)
     Config<int> smoothingSize;         // size of the buffer for smoothing
     Config<String> Version;            // save the current version of the software
 
@@ -116,6 +129,8 @@ struct General_Settings
                          MQTTListenPeriod("MQTTL", "GS", 0.5),
                          RS232PublishPeriod("RS232P", "GS", 2.0),
                          smoothingSize("Smooth", "GS", 10),
+                         TempCorrectionOffset("TCO_TempratureCorrectionOffset", "GS", 0.0),
+                         HumidityCorrectionOffset("HYO_HumidityCorrectionOffset", "GS", 0.0),
                          Version("Version", "GS", VERSION)
     {
         // Register settings with configManager
@@ -128,6 +143,8 @@ struct General_Settings
         cfg.addSetting(&MQTTListenPeriod);
         cfg.addSetting(&RS232PublishPeriod);
         cfg.addSetting(&smoothingSize);
+        cfg.addSetting(&TempCorrectionOffset);
+        cfg.addSetting(&HumidityCorrectionOffset);
         cfg.addSetting(&Version);
     }
 };
