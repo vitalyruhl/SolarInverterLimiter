@@ -38,6 +38,8 @@
 #define RELAY_MOTOR_LEFT_PIN 26
 #define RELAY_MOTOR_RIGHT_PIN 25
 
+#define JOYSTICK_X_PIN 35 // GPIO pin for the joystick X-axis
+#define JOYSTICK_Y_PIN 34 // GPIO pin for the joystick Y-axis
 
 
 
@@ -46,8 +48,7 @@
 extern ConfigManagerClass cfg;// store it globaly before using it in the settings
 //--------------------------------------------------------------------------------------------------------------
 
-
-struct WiFi_Settings
+struct WiFi_Settings //wifiSettings
 {
     Config<String> wifiSsid;
     Config<String> wifiPassword;
@@ -66,7 +67,7 @@ struct WiFi_Settings
 };
 
 // mqtt-Setup
-struct MQTT_Settings
+struct MQTT_Settings //mqttSettings
 {
     Config<int> mqtt_port; // port for the MQTT broker (default is 1883)
 
@@ -107,6 +108,8 @@ struct MQTT_Settings
 // General configuration (default Settings)
 struct General_Settings
 {
+     Config<int> joystickOffsetX;
+    Config<int> joystickOffsetY;
     Config<bool> enableController;     // set to false to disable the controller and use Maximum power output
     Config<bool> enableMQTT;           // set to false to disable the MQTT connection
     Config<int> maxOutput;             // edit this to limit TOTAL power output in watts
@@ -131,6 +134,8 @@ struct General_Settings
                          smoothingSize("Smooth", "GS", 10),
                          TempCorrectionOffset("TCO_TempratureCorrectionOffset", "GS", 0.0),
                          HumidityCorrectionOffset("HYO_HumidityCorrectionOffset", "GS", 0.0),
+                         joystickOffsetX("JOX_Joystick-Offset-X", "Joystick", 0),
+                         joystickOffsetY("JOY_Joystick-Offset-Y", "Joystick", 0),
                          Version("Version", "GS", VERSION)
     {
         // Register settings with configManager
@@ -145,6 +150,8 @@ struct General_Settings
         cfg.addSetting(&smoothingSize);
         cfg.addSetting(&TempCorrectionOffset);
         cfg.addSetting(&HumidityCorrectionOffset);
+        cfg.addSetting(&joystickOffsetX);
+        cfg.addSetting(&joystickOffsetY);
         cfg.addSetting(&Version);
     }
 };

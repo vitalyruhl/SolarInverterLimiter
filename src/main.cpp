@@ -37,6 +37,8 @@ void SetupStartTemperatureMeasuring();
 bool SetupStartWebServer();
 void ProjectConfig();
 void PinSetup();
+void CalibrateJoystick();
+void ReadJoystick();
 //--------------------------------------------------------------------------------------------------------------
 
 #pragma region configuratio variables
@@ -88,6 +90,7 @@ void setup()
   SetupStartDisplay();
   SetupCheckForResetButton();
   SetupCheckForAPModeButton();
+  CalibrateJoystick();
 
   helpers.blinkBuidInLEDsetpinMode(); // Initialize the built-in LED pin mode
   helpers.blinkBuidInLED(3, 100);     // Blink the built-in LED 3 times with a 100ms delay
@@ -196,6 +199,7 @@ void loop()
     reconnectMQTT();
   }
 
+  ReadJoystick(); // Read the joystick input
   delay(10);
 }
 
@@ -575,5 +579,39 @@ void PinSetup()
 
   pinMode(RELAY_MOTOR_RIGHT_PIN, OUTPUT);
   digitalWrite(RELAY_MOTOR_RIGHT_PIN, HIGH); // set the relay to HIGH (off) at startup
+}
 
+void CalibrateJoystick()
+{
+  // Read the current raw joystick values
+  int rawX = analogRead(JOYSTICK_X_PIN);
+  int rawY = analogRead(JOYSTICK_Y_PIN);
+
+  // Store the offset to subtract later
+  generalSettings.joystickOffsetX.set(rawX);
+  generalSettings.joystickOffsetY.set(rawY);
+
+  int joystickOffsetX = generalSettings.joystickOffsetX.get();
+  int joystickOffsetY = generalSettings.joystickOffsetY.get();
+
+  sl->Printf("Joystick calibrated: OffsetX = %d, OffsetY = %d", joystickOffsetX, joystickOffsetY).Debug();
+}
+
+void ReadJoystick()
+{
+  int rawX = analogRead(JOYSTICK_X_PIN);
+  int rawY = analogRead(JOYSTICK_Y_PIN);
+  // sl->Printf("RawX: %d, RawY: %d", rawX, rawY).Debug();
+
+  int joystickOffsetX = generalSettings.joystickOffsetX.get();
+  int joystickOffsetY = generalSettings.joystickOffsetY.get();
+  // Subtract offset to center the joystick
+  int adjustedX = rawX - joystickOffsetX;
+  int adjustedY = rawY - joystickOffsetY;
+
+  // Map adjusted values to -100 to 100
+    int mappedX = map(adjustedX, -joystickOffsetX, 4095 - joystickOffsetX, -100, 100);
+    int mappedY = map(adjustedY, -joystickOffsetY, 4095 - joystickOffsetY, -100, 100);
+
+  sl->Printf("Joystick X: %d, Y: %d", mappedX, mappedY).Debug();
 }
