@@ -39,9 +39,9 @@
 #define RELAY_MOTOR_RIGHT_PIN 25
 
 #define JOYSTICK_X_PIN 35 // GPIO pin for the joystick X-axis
-#define JOYSTICK_Y_PIN 34 // GPIO pin for the joystick Y-axis
+#define JOYSTICK_Y_PIN 32 // GPIO pin for the joystick Y-axis
 
-
+#define RELAY_VENTILATOR_PIN 23 // GPIO pin for the ventilator (if used, otherwise not needed)
 
 
 
@@ -108,8 +108,12 @@ struct MQTT_Settings //mqttSettings
 // General configuration (default Settings)
 struct General_Settings
 {
-     Config<int> joystickOffsetX;
-    Config<int> joystickOffsetY;
+    Config<int> XjoystickOffset;
+    Config<int> YjoystickOffset;
+    Config<int> OnOffThreshold;
+    Config<float> VentilatorOn;
+    Config<float> VentilatorOFF;
+    Config<bool> VentilatorEnable;
     Config<bool> enableController;     // set to false to disable the controller and use Maximum power output
     Config<bool> enableMQTT;           // set to false to disable the MQTT connection
     Config<int> maxOutput;             // edit this to limit TOTAL power output in watts
@@ -134,8 +138,12 @@ struct General_Settings
                          smoothingSize("Smooth", "GS", 10),
                          TempCorrectionOffset("TCO_TempratureCorrectionOffset", "GS", 0.0),
                          HumidityCorrectionOffset("HYO_HumidityCorrectionOffset", "GS", 0.0),
-                         joystickOffsetX("JOX_Joystick-Offset-X", "Joystick", 0),
-                         joystickOffsetY("JOY_Joystick-Offset-Y", "Joystick", 0),
+                         XjoystickOffset("X_Joystick-Offset-X", "Joystick", 0),
+                         YjoystickOffset("Y_Joystick-Offset-Y", "Joystick", 0),
+                         OnOffThreshold("Joystick-OnOffThreshold", "Joystick", 80),
+                            VentilatorOn("VentilatorOn", "Ventilator", 30.0), // Ventilator ON threshold in watts
+                            VentilatorOFF("VentilatorOFF", "Ventilator", 27.0), // Ventilator OFF threshold in watts
+                            VentilatorEnable("VentilatorEnable", "Ventilator", true), // Enable or disable the ventilator control
                          Version("Version", "GS", VERSION)
     {
         // Register settings with configManager
@@ -150,8 +158,12 @@ struct General_Settings
         cfg.addSetting(&smoothingSize);
         cfg.addSetting(&TempCorrectionOffset);
         cfg.addSetting(&HumidityCorrectionOffset);
-        cfg.addSetting(&joystickOffsetX);
-        cfg.addSetting(&joystickOffsetY);
+        cfg.addSetting(&XjoystickOffset);
+        cfg.addSetting(&YjoystickOffset);
+        cfg.addSetting(&OnOffThreshold);
+        cfg.addSetting(&VentilatorOn);
+        cfg.addSetting(&VentilatorOFF);
+        cfg.addSetting(&VentilatorEnable);
         cfg.addSetting(&Version);
     }
 };

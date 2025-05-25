@@ -39,6 +39,8 @@ void ProjectConfig();
 void PinSetup();
 void CalibrateJoystick();
 void ReadJoystick();
+void SetRalays(int x, int y);
+void CheckVentilator(float aktualTemperature);
 //--------------------------------------------------------------------------------------------------------------
 
 #pragma region configuratio variables
@@ -200,6 +202,7 @@ void loop()
   }
 
   ReadJoystick(); // Read the joystick input
+  CheckVentilator(temperature);
   delay(10);
 }
 
@@ -579,6 +582,9 @@ void PinSetup()
 
   pinMode(RELAY_MOTOR_RIGHT_PIN, OUTPUT);
   digitalWrite(RELAY_MOTOR_RIGHT_PIN, HIGH); // set the relay to HIGH (off) at startup
+
+  pinMode(RELAY_VENTILATOR_PIN, OUTPUT);
+  digitalWrite(RELAY_VENTILATOR_PIN, HIGH); // set the ventilator relay to HIGH (off) at startup
 }
 
 void CalibrateJoystick()
@@ -588,11 +594,11 @@ void CalibrateJoystick()
   int rawY = analogRead(JOYSTICK_Y_PIN);
 
   // Store the offset to subtract later
-  generalSettings.joystickOffsetX.set(rawX);
-  generalSettings.joystickOffsetY.set(rawY);
+  generalSettings.XjoystickOffset.set(rawX);
+  generalSettings.YjoystickOffset.set(rawY);
 
-  int joystickOffsetX = generalSettings.joystickOffsetX.get();
-  int joystickOffsetY = generalSettings.joystickOffsetY.get();
+  int joystickOffsetX = generalSettings.XjoystickOffset.get();
+  int joystickOffsetY = generalSettings.YjoystickOffset.get();
 
   sl->Printf("Joystick calibrated: OffsetX = %d, OffsetY = %d", joystickOffsetX, joystickOffsetY).Debug();
 }
@@ -601,17 +607,75 @@ void ReadJoystick()
 {
   int rawX = analogRead(JOYSTICK_X_PIN);
   int rawY = analogRead(JOYSTICK_Y_PIN);
-  // sl->Printf("RawX: %d, RawY: %d", rawX, rawY).Debug();
+  // sl->Printf("Joystick X: %04d, Y: %04d", rawX, rawY).Debug();
 
-  int joystickOffsetX = generalSettings.joystickOffsetX.get();
-  int joystickOffsetY = generalSettings.joystickOffsetY.get();
+  int joystickOffsetX = generalSettings.XjoystickOffset.get();
+  int joystickOffsetY = generalSettings.YjoystickOffset.get();
   // Subtract offset to center the joystick
   int adjustedX = rawX - joystickOffsetX;
   int adjustedY = rawY - joystickOffsetY;
 
   // Map adjusted values to -100 to 100
-    int mappedX = map(adjustedX, -joystickOffsetX, 4095 - joystickOffsetX, -100, 100);
-    int mappedY = map(adjustedY, -joystickOffsetY, 4095 - joystickOffsetY, -100, 100);
+  int mappedX = map(adjustedX, -joystickOffsetX, 4095 - joystickOffsetX, -100, 100);
+  int mappedY = map(adjustedY, -joystickOffsetY, 4095 - joystickOffsetY, -100, 100);
 
-  sl->Printf("Joystick X: %d, Y: %d", mappedX, mappedY).Debug();
+  // sl->Printf("Joystick X: %04d, Y: %04d", mappedX, mappedY).Debug();
+
+  SetRalays(mappedX, mappedY); // Set the relays based on joystick input
+}
+
+void SetRalays(int x, int y)
+{
+  int Threshold = generalSettings.OnOffThreshold.get(); // Threshold to determine if the joystick is moved enough to activate relays
+  // Set the motor direction based on joystick input
+  if (y > Threshold) // Joystick up
+  {
+    digitalWrite(RELAY_MOTOR_UP_PIN, LOW);   // Activate UP relay
+    digitalWrite(RELAY_MOTOR_DOWN_PIN, HIGH); // Deactivate DOWN relay
+  }
+  else if (y < -Threshold) // Joystick down
+  {
+    digitalWrite(RELAY_MOTOR_UP_PIN, HIGH);  // Deactivate UP relay
+    digitalWrite(RELAY_MOTOR_DOWN_PIN, LOW); // Activate DOWN relay
+  }
+  else
+  {
+    digitalWrite(RELAY_MOTOR_UP_PIN, HIGH);   // Deactivate UP relay
+    digitalWrite(RELAY_MOTOR_DOWN_PIN, HIGH); // Deactivate DOWN relay
+  }
+
+  if (x > Threshold) // Joystick right
+  {
+    digitalWrite(RELAY_MOTOR_RIGHT_PIN, LOW);  // Activate RIGHT relay
+    digitalWrite(RELAY_MOTOR_LEFT_PIN, HIGH);  // Deactivate LEFT relay
+  }
+  else if (x < -Threshold) // Joystick left
+  {
+    digitalWrite(RELAY_MOTOR_RIGHT_PIN, HIGH); // Deactivate RIGHT relay
+    digitalWrite(RELAY_MOTOR_LEFT_PIN, LOW);   // Activate LEFT relay
+  }
+  else
+  {
+    digitalWrite(RELAY_MOTOR_RIGHT_PIN, HIGH); // Deactivate RIGHT relay
+    digitalWrite(RELAY_MOTOR_LEFT_PIN, HIGH);  // Deactivate LEFT relay
+  }
+}
+
+void CheckVentilator(float aktualTemperature){
+  // Check if ventilator control is enabled
+  if (!generalSettings.VentilatorEnable.get())
+  {
+    digitalWrite(RELAY_VENTILATOR_PIN, HIGH); // Deactivate ventilator relay if control is disabled
+    return; // Exit if ventilator control is disabled
+  }
+
+  // Check if the temperature exceeds the ON threshold
+  if (aktualTemperature >= generalSettings.VentilatorOn.get())
+  {
+    digitalWrite(RELAY_VENTILATOR_PIN, LOW); // Activate ventilator relay
+  }
+  else if (aktualTemperature <= generalSettings.VentilatorOFF.get())
+  {
+    digitalWrite(RELAY_VENTILATOR_PIN, HIGH); // Deactivate ventilator relay
+  }
 }
