@@ -41,6 +41,7 @@ void CalibrateJoystick();
 void ReadJoystick();
 void SetRalays(int x, int y);
 void CheckVentilator(float aktualTemperature);
+void readLDRs();
 //--------------------------------------------------------------------------------------------------------------
 
 #pragma region configuratio variables
@@ -203,6 +204,7 @@ void loop()
 
   ReadJoystick(); // Read the joystick input
   CheckVentilator(temperature);
+  readLDRs();
   delay(10);
 }
 
@@ -568,6 +570,8 @@ void WriteToDisplay()
 
 void PinSetup()
 {
+  analogReadResolution(12);  // Use full 12-bit resolution
+
   pinMode(BUTTON_PIN_RESET_TO_DEFAULTS, INPUT_PULLUP); // importand: BUTTON is LOW aktiv!
   pinMode(BUTTON_PIN_AP_MODE, INPUT_PULLUP);           // importand: BUTTON is LOW aktiv!
 
@@ -630,7 +634,7 @@ void SetRalays(int x, int y)
   // Set the motor direction based on joystick input
   if (y > Threshold) // Joystick up
   {
-    digitalWrite(RELAY_MOTOR_UP_PIN, LOW);   // Activate UP relay
+    digitalWrite(RELAY_MOTOR_UP_PIN, LOW);    // Activate UP relay
     digitalWrite(RELAY_MOTOR_DOWN_PIN, HIGH); // Deactivate DOWN relay
   }
   else if (y < -Threshold) // Joystick down
@@ -646,8 +650,8 @@ void SetRalays(int x, int y)
 
   if (x > Threshold) // Joystick right
   {
-    digitalWrite(RELAY_MOTOR_RIGHT_PIN, LOW);  // Activate RIGHT relay
-    digitalWrite(RELAY_MOTOR_LEFT_PIN, HIGH);  // Deactivate LEFT relay
+    digitalWrite(RELAY_MOTOR_RIGHT_PIN, LOW); // Activate RIGHT relay
+    digitalWrite(RELAY_MOTOR_LEFT_PIN, HIGH); // Deactivate LEFT relay
   }
   else if (x < -Threshold) // Joystick left
   {
@@ -661,12 +665,13 @@ void SetRalays(int x, int y)
   }
 }
 
-void CheckVentilator(float aktualTemperature){
+void CheckVentilator(float aktualTemperature)
+{
   // Check if ventilator control is enabled
   if (!generalSettings.VentilatorEnable.get())
   {
     digitalWrite(RELAY_VENTILATOR_PIN, HIGH); // Deactivate ventilator relay if control is disabled
-    return; // Exit if ventilator control is disabled
+    return;                                   // Exit if ventilator control is disabled
   }
 
   // Check if the temperature exceeds the ON threshold
@@ -678,4 +683,42 @@ void CheckVentilator(float aktualTemperature){
   {
     digitalWrite(RELAY_VENTILATOR_PIN, HIGH); // Deactivate ventilator relay
   }
+}
+
+void readLDRs()
+{
+  // Read the LDR values
+    // Read all sensors
+  int ldr1 = analogRead(LDR_PIN1);
+  int ldr2 = analogRead(LDR_PIN2);
+  int ldr3 = analogRead(LDR_PIN3);
+  int ldr4 = analogRead(LDR_PIN4);
+
+
+  // print the raw LDR values to the serial monitor
+  // sl->Printf("LDR1: %04d, LDR2: %04d, LDR3: %04d, LDR4: %04d", ldr1, ldr2, ldr3, ldr4).Debug();
+
+  ldrSettings.ldr1.set(ldr1);
+  ldrSettings.ldr2.set(ldr2);
+  ldrSettings.ldr3.set(ldr3);
+  ldrSettings.ldr4.set(ldr4);
+
+   int verticalDiff = (ldr1 + ldr2) - (ldr3 + ldr4);   // Top vs Bottom
+  int horizontalDiff = (ldr1 + ldr3) - (ldr2 + ldr4);  // Left vs Right
+
+    // Calculate total light for normalization
+  int totalLight = ldr1 + ldr2 + ldr3 + ldr4;
+
+ // Calculate percentages (-100 to 100)
+  int x = 0, y = 0;
+  if (totalLight > 0) {  // Prevent division by zero
+    x = constrain((horizontalDiff * 100) / totalLight, -100, 100);
+    y = constrain((verticalDiff * 100) / totalLight, -100, 100);
+  }
+
+  // Debug output
+  // sl->Printf("X: %04d Y: %04d | Raw: %04d %04d %04d %40d", x, y, ldr1, ldr2, ldr3, ldr4).Debug();
+
+  
+   SetRalays(x, y); // Set the relays based on joystick input
 }

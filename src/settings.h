@@ -2,6 +2,31 @@
 #define SETTINGS_H
 
 #pragma once
+/*
+             .------------------------.
+         3V3 | [ ]                 [ ] | GND
+         EN  | [ ]                 [ ] | D23 <— usable
+         VP  | [ ]  ✅ ADC1 (RO)  [ ] | D22 <— I2C_SCL
+         VN  | [ ]  ✅ ADC1 (RO)  [ ] | D21 <— I2C_SDA
+         34  | [ ]  ✅ ADC1 (RO)  [ ] | D19 ❌ no ADC
+         35  | [ ]  ✅ ADC1 (RO)  [ ] | D18 ❌ no ADC
+         32  | [ ]  ✅ ADC1       [ ] | D5  ❌ no ADC
+         33  | [ ]  ✅ ADC1       [ ] | D17 ❌ no ADC
+         25  | [ ]  ⚠️ ADC2       [ ] | D16 ❌ no ADC
+         26  | [ ]  ⚠️ ADC2       [ ] | D4  ⚠️ ADC2
+         27  | [ ]  ⚠️ ADC2       [ ] | D0  ⚠️ ADC2 (boot)
+         14  | [ ]  ⚠️ ADC2       [ ] | D2  ⚠️ ADC2
+         12  | [ ]  ⚠️ ADC2       [ ] | D15 ⚠️ ADC2
+         GND | [ ]                [ ] | D13 ❌ no ADC
+         VIN | [ ]                [ ] | D1  ❌ no ADC (UART TX)
+             '------------------------'
+
+Legend:
+✅ ADC1       - 12-bit ADC (safe to use with WiFi)
+⚠️ ADC2       - 12-bit ADC (unusable when WiFi is active)
+✅ ADC1 (RO) - Input-only pins with ADC1
+❌ no ADC    - No analog capabilities
+*/
 
 #include <Arduino.h>
 #include <Preferences.h>
@@ -42,7 +67,12 @@
 #define JOYSTICK_Y_PIN 32 // GPIO pin for the joystick Y-axis
 
 #define RELAY_VENTILATOR_PIN 23 // GPIO pin for the ventilator (if used, otherwise not needed)
+// #define RELAY_HEATER_PIN 34 // GPIO pin for the Heater (if used, otherwise not needed)
 
+#define LDR_PIN1 33 //Top left      //analog pin for the first LDR
+#define LDR_PIN2 34 //Top right     //analog pin for the second LDR   
+#define LDR_PIN3 36 //Bottom left   //vp
+#define LDR_PIN4 39 //Bottom right  //vn
 
 
 extern ConfigManagerClass cfg;// store it globaly before using it in the settings
@@ -168,6 +198,26 @@ struct General_Settings
     }
 };
 
+
+struct LDR_Settings // ldrSettings
+{
+    Config<int> ldr1; // LDR 1
+    Config<int> ldr2; // LDR 2
+    Config<int> ldr3; // LDR 3
+    Config<int> ldr4; // LDR 4
+
+    LDR_Settings() : ldr1("LDR1", "LDR", 0),
+                     ldr2("LDR2", "LDR", 0),
+                     ldr3("LDR3", "LDR", 0),
+                     ldr4("LDR4", "LDR", 0)
+    {
+        cfg.addSetting(&ldr1);
+        cfg.addSetting(&ldr2);
+        cfg.addSetting(&ldr3);
+        cfg.addSetting(&ldr4);
+    }
+};
+
 // RS485 configuration (default Settings)
 struct RS485_Settings
 {
@@ -186,5 +236,6 @@ extern General_Settings generalSettings;
 extern RS485_Settings rs485settings;
 extern SigmaLogLevel logLevel;
 extern WiFi_Settings wifiSettings;
+extern LDR_Settings ldrSettings;
 
 #endif // SETTINGS_H
