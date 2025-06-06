@@ -37,11 +37,9 @@ void SetupStartTemperatureMeasuring();
 bool SetupStartWebServer();
 void ProjectConfig();
 void PinSetup();
-void CalibrateJoystick();
-void ReadJoystick();
 void SetRalays(int x, int y);
 void CheckVentilator(float aktualTemperature);
-void readLDRs();
+void CheckHeater(float aktualTemperature);
 //--------------------------------------------------------------------------------------------------------------
 
 #pragma region configuratio variables
@@ -67,12 +65,13 @@ Smoother powerSmoother(
     generalSettings.maxOutput.get());
 
 // globale helpers variables
-int AktualImportFromGrid = 0; // amount of electricity being imported from grid
-int inverterSetValue = 0;     // current power inverter should deliver (default to zero)
-float temperature = 0.0;      // current temperature in Celsius
-float Dewpoint = 0.0;         // current dewpoint in Celsius
-float Humidity = 0.0;         // current humidity in percent
-bool tickerActive = false;    // flag to indicate if the ticker is active
+int AktualImportFromGrid = 0;            // amount of electricity being imported from grid
+int inverterSetValue = 0;                // current power inverter should deliver (default to zero)
+float temperature = 0.0;                 // current temperature in Celsius
+bool TemperatureSensorAvailable = false; // flag to indicate if the temperature sensor is available
+float Dewpoint = 0.0;                    // current dewpoint in Celsius
+float Humidity = 0.0;                    // current humidity in percent
+bool tickerActive = false;               // flag to indicate if the ticker is active
 
 #pragma endregion configuration variables
 
@@ -93,7 +92,6 @@ void setup()
   SetupStartDisplay();
   SetupCheckForResetButton();
   SetupCheckForAPModeButton();
-  CalibrateJoystick();
 
   helpers.blinkBuidInLEDsetpinMode(); // Initialize the built-in LED pin mode
   helpers.blinkBuidInLED(3, 100);     // Blink the built-in LED 3 times with a 100ms delay
@@ -202,9 +200,8 @@ void loop()
     reconnectMQTT();
   }
 
-  ReadJoystick(); // Read the joystick input
   CheckVentilator(temperature);
-  readLDRs();
+  CheckHeater(temperature);
   delay(10);
 }
 
@@ -513,11 +510,23 @@ bool SetupStartWebServer()
 
 void readBme280()
 {
-  // todo: add settings for correcting the values!!!
   //   set sea-level pressure
   bme280.setSeaLevelPressure(1010);
 
   bme280.read();
+
+  // check if the BME280 sensor is available and has no read errors
+  if (bme280.data.temperature == 0.0 && bme280.data.humidity == 0.0 && bme280.data.pressure == 0.0)
+  {
+    sl->Printf("BME280 sensor not available or read error!").Error();
+    sll->Printf("BME280 sensor not available or read error!").Error();
+    TemperatureSensorAvailable = false;
+  }
+  else
+
+  {
+    TemperatureSensorAvailable = true;
+  }
 
   temperature = bme280.data.temperature + generalSettings.TempCorrectionOffset.get(); // store the temperature value in the global variable
   Humidity = bme280.data.humidity + generalSettings.HumidityCorrectionOffset.get();   // store the temperature value in the global variable
@@ -570,99 +579,16 @@ void WriteToDisplay()
 
 void PinSetup()
 {
-  analogReadResolution(12);  // Use full 12-bit resolution
+  // analogReadResolution(12); // Use full 12-bit resolution
 
   pinMode(BUTTON_PIN_RESET_TO_DEFAULTS, INPUT_PULLUP); // importand: BUTTON is LOW aktiv!
   pinMode(BUTTON_PIN_AP_MODE, INPUT_PULLUP);           // importand: BUTTON is LOW aktiv!
 
-  pinMode(RELAY_MOTOR_UP_PIN, OUTPUT);
-  digitalWrite(RELAY_MOTOR_UP_PIN, HIGH); // set the relay to HIGH (off) at startup
-
-  pinMode(RELAY_MOTOR_DOWN_PIN, OUTPUT);
-  digitalWrite(RELAY_MOTOR_DOWN_PIN, HIGH); // set the relay to HIGH (off) at startup
-
-  pinMode(RELAY_MOTOR_LEFT_PIN, OUTPUT);
-  digitalWrite(RELAY_MOTOR_LEFT_PIN, HIGH); // set the relay to HIGH (off) at startup
-
-  pinMode(RELAY_MOTOR_RIGHT_PIN, OUTPUT);
-  digitalWrite(RELAY_MOTOR_RIGHT_PIN, HIGH); // set the relay to HIGH (off) at startup
-
   pinMode(RELAY_VENTILATOR_PIN, OUTPUT);
   digitalWrite(RELAY_VENTILATOR_PIN, HIGH); // set the ventilator relay to HIGH (off) at startup
-}
 
-void CalibrateJoystick()
-{
-  // Read the current raw joystick values
-  int rawX = analogRead(JOYSTICK_X_PIN);
-  int rawY = analogRead(JOYSTICK_Y_PIN);
-
-  // Store the offset to subtract later
-  generalSettings.XjoystickOffset.set(rawX);
-  generalSettings.YjoystickOffset.set(rawY);
-
-  int joystickOffsetX = generalSettings.XjoystickOffset.get();
-  int joystickOffsetY = generalSettings.YjoystickOffset.get();
-
-  sl->Printf("Joystick calibrated: OffsetX = %d, OffsetY = %d", joystickOffsetX, joystickOffsetY).Debug();
-}
-
-void ReadJoystick()
-{
-  int rawX = analogRead(JOYSTICK_X_PIN);
-  int rawY = analogRead(JOYSTICK_Y_PIN);
-  // sl->Printf("Joystick X: %04d, Y: %04d", rawX, rawY).Debug();
-
-  int joystickOffsetX = generalSettings.XjoystickOffset.get();
-  int joystickOffsetY = generalSettings.YjoystickOffset.get();
-  // Subtract offset to center the joystick
-  int adjustedX = rawX - joystickOffsetX;
-  int adjustedY = rawY - joystickOffsetY;
-
-  // Map adjusted values to -100 to 100
-  int mappedX = map(adjustedX, -joystickOffsetX, 4095 - joystickOffsetX, -100, 100);
-  int mappedY = map(adjustedY, -joystickOffsetY, 4095 - joystickOffsetY, -100, 100);
-
-  // sl->Printf("Joystick X: %04d, Y: %04d", mappedX, mappedY).Debug();
-
-  SetRalays(mappedX, mappedY); // Set the relays based on joystick input
-}
-
-void SetRalays(int x, int y)
-{
-  int Threshold = generalSettings.OnOffThreshold.get(); // Threshold to determine if the joystick is moved enough to activate relays
-  // Set the motor direction based on joystick input
-  if (y > Threshold) // Joystick up
-  {
-    digitalWrite(RELAY_MOTOR_UP_PIN, LOW);    // Activate UP relay
-    digitalWrite(RELAY_MOTOR_DOWN_PIN, HIGH); // Deactivate DOWN relay
-  }
-  else if (y < -Threshold) // Joystick down
-  {
-    digitalWrite(RELAY_MOTOR_UP_PIN, HIGH);  // Deactivate UP relay
-    digitalWrite(RELAY_MOTOR_DOWN_PIN, LOW); // Activate DOWN relay
-  }
-  else
-  {
-    digitalWrite(RELAY_MOTOR_UP_PIN, HIGH);   // Deactivate UP relay
-    digitalWrite(RELAY_MOTOR_DOWN_PIN, HIGH); // Deactivate DOWN relay
-  }
-
-  if (x > Threshold) // Joystick right
-  {
-    digitalWrite(RELAY_MOTOR_RIGHT_PIN, LOW); // Activate RIGHT relay
-    digitalWrite(RELAY_MOTOR_LEFT_PIN, HIGH); // Deactivate LEFT relay
-  }
-  else if (x < -Threshold) // Joystick left
-  {
-    digitalWrite(RELAY_MOTOR_RIGHT_PIN, HIGH); // Deactivate RIGHT relay
-    digitalWrite(RELAY_MOTOR_LEFT_PIN, LOW);   // Activate LEFT relay
-  }
-  else
-  {
-    digitalWrite(RELAY_MOTOR_RIGHT_PIN, HIGH); // Deactivate RIGHT relay
-    digitalWrite(RELAY_MOTOR_LEFT_PIN, HIGH);  // Deactivate LEFT relay
-  }
+  pinMode(RELAY_HEATER_PIN, OUTPUT);
+  digitalWrite(RELAY_HEATER_PIN, HIGH); // set the heater relay to HIGH (off) at startup
 }
 
 void CheckVentilator(float aktualTemperature)
@@ -672,6 +598,14 @@ void CheckVentilator(float aktualTemperature)
   {
     digitalWrite(RELAY_VENTILATOR_PIN, HIGH); // Deactivate ventilator relay if control is disabled
     return;                                   // Exit if ventilator control is disabled
+  }
+
+  // check if TemperatureSensorAvailable = false, exit
+  if (!TemperatureSensorAvailable)
+  {
+    // Not heating if temperature sensor is not available
+    digitalWrite(RELAY_VENTILATOR_PIN, HIGH); // Deactivate ven relay if sensor is not available
+    return;
   }
 
   // Check if the temperature exceeds the ON threshold
@@ -685,40 +619,30 @@ void CheckVentilator(float aktualTemperature)
   }
 }
 
-void readLDRs()
+void CheckHeater(float aktualTemperature)
 {
-  // Read the LDR values
-    // Read all sensors
-  int ldr1 = analogRead(LDR_PIN1);
-  int ldr2 = analogRead(LDR_PIN2);
-  int ldr3 = analogRead(LDR_PIN3);
-  int ldr4 = analogRead(LDR_PIN4);
-
-
-  // print the raw LDR values to the serial monitor
-  // sl->Printf("LDR1: %04d, LDR2: %04d, LDR3: %04d, LDR4: %04d", ldr1, ldr2, ldr3, ldr4).Debug();
-
-  ldrSettings.ldr1.set(ldr1);
-  ldrSettings.ldr2.set(ldr2);
-  ldrSettings.ldr3.set(ldr3);
-  ldrSettings.ldr4.set(ldr4);
-
-   int verticalDiff = (ldr1 + ldr2) - (ldr3 + ldr4);   // Top vs Bottom
-  int horizontalDiff = (ldr1 + ldr3) - (ldr2 + ldr4);  // Left vs Right
-
-    // Calculate total light for normalization
-  int totalLight = ldr1 + ldr2 + ldr3 + ldr4;
-
- // Calculate percentages (-100 to 100)
-  int x = 0, y = 0;
-  if (totalLight > 0) {  // Prevent division by zero
-    x = constrain((horizontalDiff * 100) / totalLight, -100, 100);
-    y = constrain((verticalDiff * 100) / totalLight, -100, 100);
+  // Check if heater control is enabled
+  if (!generalSettings.HeaterEnable.get())
+  {
+    digitalWrite(RELAY_HEATER_PIN, HIGH); // Deactivate heater relay if control is disabled
+    return;                               // Exit if heater control is disabled
   }
 
-  // Debug output
-  // sl->Printf("X: %04d Y: %04d | Raw: %04d %04d %04d %40d", x, y, ldr1, ldr2, ldr3, ldr4).Debug();
+  // check if TemperatureSensorAvailable = false, exit
+  if (!TemperatureSensorAvailable)
+  {
+    // Not heating if temperature sensor is not available
+    digitalWrite(RELAY_HEATER_PIN, HIGH); // Deactivate heater relay if sensor is not available
+    return;
+  }
 
-  
-   SetRalays(x, y); // Set the relays based on joystick input
+  // Check if the temperature exceeds the ON threshold
+  if (aktualTemperature <= generalSettings.HeaterOn.get())
+  {
+    digitalWrite(RELAY_HEATER_PIN, LOW); // Activate heater relay
+  }
+  else if (aktualTemperature >= generalSettings.HeaterOFF.get())
+  {
+    digitalWrite(RELAY_HEATER_PIN, HIGH); // Deactivate heater relay
+  }
 }

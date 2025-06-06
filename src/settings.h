@@ -2,30 +2,53 @@
 #define SETTINGS_H
 
 #pragma once
-/*
-             .------------------------.
-         3V3 | [ ]                 [ ] | GND
-         EN  | [ ]                 [ ] | D23 <— usable
-         VP  | [ ]  ✅ ADC1 (RO)  [ ] | D22 <— I2C_SCL
-         VN  | [ ]  ✅ ADC1 (RO)  [ ] | D21 <— I2C_SDA
-         34  | [ ]  ✅ ADC1 (RO)  [ ] | D19 ❌ no ADC
-         35  | [ ]  ✅ ADC1 (RO)  [ ] | D18 ❌ no ADC
-         32  | [ ]  ✅ ADC1       [ ] | D5  ❌ no ADC
-         33  | [ ]  ✅ ADC1       [ ] | D17 ❌ no ADC
-         25  | [ ]  ⚠️ ADC2       [ ] | D16 ❌ no ADC
-         26  | [ ]  ⚠️ ADC2       [ ] | D4  ⚠️ ADC2
-         27  | [ ]  ⚠️ ADC2       [ ] | D0  ⚠️ ADC2 (boot)
-         14  | [ ]  ⚠️ ADC2       [ ] | D2  ⚠️ ADC2
-         12  | [ ]  ⚠️ ADC2       [ ] | D15 ⚠️ ADC2
-         GND | [ ]                [ ] | D13 ❌ no ADC
-         VIN | [ ]                [ ] | D1  ❌ no ADC (UART TX)
-             '------------------------'
 
-Legend:
-✅ ADC1       - 12-bit ADC (safe to use with WiFi)
-⚠️ ADC2       - 12-bit ADC (unusable when WiFi is active)
-✅ ADC1 (RO) - Input-only pins with ADC1
-❌ no ADC    - No analog capabilities
+/*
+                                .------------      ------------.
+                                |           | USB  |           |
+                                |           |______|           |
+     Input only (ADC1)       EN | [ ]                      [ ] | D23 ❌ No ADC - SPI MOSI / Usable digital I/O
+     ✅ ADC1 (RO)            VP | [ ]             I2C_SCL->[x] | D22 ✅ I2C_SCL, Usable digital I/O
+     ✅ ADC1 (RO)            VN | [ ]                      [ ] | TX0 ✅ Serial, Boot output
+     ✅ ADC1 (RO)            34 | [ ]                      [ ] | RX0 ✅ Serial, Boot input
+     ✅ ADC1 (RO)            35 | [ ]             I2C_SDA->[x] | D21 ✅ I2C_SDA
+     ✅ ADC1                 32 | [ ]             Heater-> [x] | D19 ❌ No ADC - SPI MISO / Usable digital I/O
+     ✅ ADC1                 33 | [ ]                VEN-> [x] | D18 ❌ No ADC - SPI CLK / Usable digital I/O
+     ✅ ADC1                 25 | [ ]                      [ ] | D5  ❌ No ADC - SPI CS / Output-only at boot
+     ⚠️ ADC2                 26 | [ ]                      [ ] | D17 ❌ No ADC - Usable digital I/O
+     ⚠️ ADC2                 27 | [ ]   [PWR]      [LED]   [ ] | D16 ❌ No ADC - Used for PSRAM on some modules
+     ⚠️ ADC2                 14 | [ ]              [D2]    [ ] | D4  ⚠️ ADC2 - Onboard LED on some boards
+     ⚠️ ADC2                 12 | [ ]                      [ ] | D2  ⚠️ ADC2 - Strapping pin (boot issues if high)
+     ⚠️ ADC2                 13 | [x]<--AP-Mode    ReSet-> [x] | D15 ⚠️ ADC2 - Strapping pin, avoid high at boot
+                            GND | [ ]                      [ ] | GND
+                            VIN | [ ]                      [ ] | 3.3V
+                                |                              |
+                                '------------------------------'
+
+LEGEND:
+✅ ADC1 (RO)   - Input-only, safe with WiFi
+✅ ADC1        - 12-bit ADC, works with WiFi and Bluetooth
+⚠️ ADC2        - Disabled when WiFi or BT is active (shared internal resources)
+❌ No ADC      - Only digital I/O, some used by peripherals (SPI, UART, etc.)
+[xx] Onboard  - Pins possibly used by onboard components (e.g. LED, PSRAM)
+[Boot]        - Strapping pins: must be LOW or HIGH at boot (see note)
+
+NOTES:
+- Pins 34–39 are **input only** and do **not** support pullups/pulldowns.
+- ADC2 pins become **unusable** when WiFi or Bluetooth is enabled.
+- Strapping pins (GPIO0, GPIO2, GPIO12, GPIO15) affect boot behavior:
+    * GPIO0 = Flash Mode Select (LOW = download mode)
+    * GPIO2 = Must be LOW at boot, HIGH might cause issues
+    * GPIO12 = Must be LOW for 3.3V flash, HIGH causes fail
+    * GPIO15 = Must be LOW at boot (often pulled down)
+- Avoid using strapping pins for output, especially at startup.
+- GPIO1 (TX0) and GPIO3 (RX0) are used for serial debugging by default.
+
+RECOMMENDED USAGE:
+- GPIO21/22 for I2C
+- GPIO25–33 for ADC (non-strapping, ADC1)
+- GPIO4/5/18/19/23 for digital I/O (avoid at boot if needed)
+
 */
 
 #include <Arduino.h>
@@ -35,8 +58,8 @@ Legend:
 
 #include "ConfigManager.h"
 
-#define VERSION "0.7.0"           // version of the software (major.minor.patch) (Version 0.6.0 Has Breaking Changes!)
-#define VERSION_DATE "23.05.2025" // date of the version
+#define VERSION "0.8.0"           // version of the software (major.minor.patch) (Version 0.6.0 Has Breaking Changes!)
+#define VERSION_DATE "06.06.2025" // date of the version
 
 //--------------------------------------------------------------------------------------------------------------
 // set the I2C address for the BME280 sensor for temperature and humidity
@@ -58,27 +81,13 @@ Legend:
 #define BUTTON_PIN_RESET_TO_DEFAULTS 15 // GPIO pin for the button (check on boot)
 #define WDT_TIMEOUT 60                  // in seconds, if esp32 is not responding within this time, the ESP32 will reboot automatically
 
-#define RELAY_MOTOR_UP_PIN 14
-#define RELAY_MOTOR_DOWN_PIN 27
-#define RELAY_MOTOR_LEFT_PIN 26
-#define RELAY_MOTOR_RIGHT_PIN 25
+#define RELAY_VENTILATOR_PIN 18 // GPIO pin for the ventilator (if used, otherwise not needed)
+#define RELAY_HEATER_PIN 19     // GPIO pin for the Heater (if used, otherwise not needed)
 
-#define JOYSTICK_X_PIN 35 // GPIO pin for the joystick X-axis
-#define JOYSTICK_Y_PIN 32 // GPIO pin for the joystick Y-axis
-
-#define RELAY_VENTILATOR_PIN 23 // GPIO pin for the ventilator (if used, otherwise not needed)
-// #define RELAY_HEATER_PIN 34 // GPIO pin for the Heater (if used, otherwise not needed)
-
-#define LDR_PIN1 33 //Top left      //analog pin for the first LDR
-#define LDR_PIN2 34 //Top right     //analog pin for the second LDR   
-#define LDR_PIN3 36 //Bottom left   //vp
-#define LDR_PIN4 39 //Bottom right  //vn
-
-
-extern ConfigManagerClass cfg;// store it globaly before using it in the settings
+extern ConfigManagerClass cfg; // store it globaly before using it in the settings
 //--------------------------------------------------------------------------------------------------------------
 
-struct WiFi_Settings //wifiSettings
+struct WiFi_Settings // wifiSettings
 {
     Config<String> wifiSsid;
     Config<String> wifiPassword;
@@ -97,7 +106,7 @@ struct WiFi_Settings //wifiSettings
 };
 
 // mqtt-Setup
-struct MQTT_Settings //mqttSettings
+struct MQTT_Settings // mqttSettings
 {
     Config<int> mqtt_port; // port for the MQTT broker (default is 1883)
 
@@ -138,24 +147,24 @@ struct MQTT_Settings //mqttSettings
 // General configuration (default Settings)
 struct General_Settings
 {
-    Config<int> XjoystickOffset;
-    Config<int> YjoystickOffset;
-    Config<int> OnOffThreshold;
+    Config<bool> VentilatorEnable;
     Config<float> VentilatorOn;
     Config<float> VentilatorOFF;
-    Config<bool> VentilatorEnable;
-    Config<bool> enableController;     // set to false to disable the controller and use Maximum power output
-    Config<bool> enableMQTT;           // set to false to disable the MQTT connection
-    Config<int> maxOutput;             // edit this to limit TOTAL power output in watts
-    Config<int> minOutput;             // minimum output power in watts
-    Config<int> inputCorrectionOffset; // Adjust Correction Offset (Input + Offet + Smoothing --> Limmiter = Output)
-    Config<float> MQTTPublischPeriod;  // check all x seconds if there is a new MQTT message to publish
-    Config<float> MQTTListenPeriod;    // check x seconds if there is a new MQTT message to listen to
-    Config<float> RS232PublishPeriod;  // send the RS485 Data all x seconds
-    Config<float> TempCorrectionOffset;  // Offset for the temperature correction in Celsius (default is 0.0)
-    Config<float> HumidityCorrectionOffset;  // Offset for the humidity correction in percent (default is 0.0)
-    Config<int> smoothingSize;         // size of the buffer for smoothing
-    Config<String> Version;            // save the current version of the software
+    Config<float> HeaterOn;
+    Config<float> HeaterOFF;
+    Config<bool> HeaterEnable;
+    Config<bool> enableController;          // set to false to disable the controller and use Maximum power output
+    Config<bool> enableMQTT;                // set to false to disable the MQTT connection
+    Config<int> maxOutput;                  // edit this to limit TOTAL power output in watts
+    Config<int> minOutput;                  // minimum output power in watts
+    Config<int> inputCorrectionOffset;      // Adjust Correction Offset (Input + Offet + Smoothing --> Limmiter = Output)
+    Config<float> MQTTPublischPeriod;       // check all x seconds if there is a new MQTT message to publish
+    Config<float> MQTTListenPeriod;         // check x seconds if there is a new MQTT message to listen to
+    Config<float> RS232PublishPeriod;       // send the RS485 Data all x seconds
+    Config<float> TempCorrectionOffset;     // Offset for the temperature correction in Celsius (default is 0.0)
+    Config<float> HumidityCorrectionOffset; // Offset for the humidity correction in percent (default is 0.0)
+    Config<int> smoothingSize;              // size of the buffer for smoothing
+    Config<String> Version;                 // save the current version of the software
 
     General_Settings() : enableController("enCtrl", "GS", true),
                          enableMQTT("enMQTT", "GS", true),
@@ -168,12 +177,12 @@ struct General_Settings
                          smoothingSize("Smooth", "GS", 10),
                          TempCorrectionOffset("TCO_TempratureCorrectionOffset", "GS", 0.0),
                          HumidityCorrectionOffset("HYO_HumidityCorrectionOffset", "GS", 0.0),
-                         XjoystickOffset("X_Joystick-Offset-X", "Joystick", 0),
-                         YjoystickOffset("Y_Joystick-Offset-Y", "Joystick", 0),
-                         OnOffThreshold("Joystick-OnOffThreshold", "Joystick", 80),
-                            VentilatorOn("VentilatorOn", "Ventilator", 30.0), // Ventilator ON threshold in watts
-                            VentilatorOFF("VentilatorOFF", "Ventilator", 27.0), // Ventilator OFF threshold in watts
-                            VentilatorEnable("VentilatorEnable", "Ventilator", true), // Enable or disable the ventilator control
+                         VentilatorOn("VentilatorOn", "Ven", 30.0),
+                         VentilatorOFF("VentilatorOFF", "Ven", 27.0),
+                         VentilatorEnable("VentilatorEnable", "Ven", true),
+                         HeaterOn("HeateratorOn", "Heater", 2.0),
+                         HeaterOFF("HeateratorOFF", "Heater", 5.0),
+                         HeaterEnable("HeateratorEnable", "Heater", true),
                          Version("Version", "GS", VERSION)
     {
         // Register settings with configManager
@@ -188,33 +197,15 @@ struct General_Settings
         cfg.addSetting(&smoothingSize);
         cfg.addSetting(&TempCorrectionOffset);
         cfg.addSetting(&HumidityCorrectionOffset);
-        cfg.addSetting(&XjoystickOffset);
-        cfg.addSetting(&YjoystickOffset);
-        cfg.addSetting(&OnOffThreshold);
+
         cfg.addSetting(&VentilatorOn);
         cfg.addSetting(&VentilatorOFF);
         cfg.addSetting(&VentilatorEnable);
+        cfg.addSetting(&HeaterOn);
+        cfg.addSetting(&HeaterOFF);
+        cfg.addSetting(&HeaterEnable);
+
         cfg.addSetting(&Version);
-    }
-};
-
-
-struct LDR_Settings // ldrSettings
-{
-    Config<int> ldr1; // LDR 1
-    Config<int> ldr2; // LDR 2
-    Config<int> ldr3; // LDR 3
-    Config<int> ldr4; // LDR 4
-
-    LDR_Settings() : ldr1("LDR1", "LDR", 0),
-                     ldr2("LDR2", "LDR", 0),
-                     ldr3("LDR3", "LDR", 0),
-                     ldr4("LDR4", "LDR", 0)
-    {
-        cfg.addSetting(&ldr1);
-        cfg.addSetting(&ldr2);
-        cfg.addSetting(&ldr3);
-        cfg.addSetting(&ldr4);
     }
 };
 
@@ -236,6 +227,5 @@ extern General_Settings generalSettings;
 extern RS485_Settings rs485settings;
 extern SigmaLogLevel logLevel;
 extern WiFi_Settings wifiSettings;
-extern LDR_Settings ldrSettings;
 
 #endif // SETTINGS_H
