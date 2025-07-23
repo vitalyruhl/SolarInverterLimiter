@@ -25,6 +25,7 @@ This is an Project, that not ready yet. Wait to Version 1.0.0 for the first stab
 ## Wiring Diagram
 
 - connect the RS485 module to the ESP32 microcontroller as follows:
+- see Wokwi for a wiring example
 
 ```
 ESP32 Pin  | RS485 Pin

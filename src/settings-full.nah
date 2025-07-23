@@ -58,21 +58,21 @@ Legend:
 #define BUTTON_PIN_RESET_TO_DEFAULTS 15 // GPIO pin for the button (check on boot)
 #define WDT_TIMEOUT 60                  // in seconds, if esp32 is not responding within this time, the ESP32 will reboot automatically
 
-// #define RELAY_MOTOR_UP_PIN 14
-// #define RELAY_MOTOR_DOWN_PIN 27
-// #define RELAY_MOTOR_LEFT_PIN 26
-// #define RELAY_MOTOR_RIGHT_PIN 25
+#define RELAY_MOTOR_UP_PIN 14
+#define RELAY_MOTOR_DOWN_PIN 27
+#define RELAY_MOTOR_LEFT_PIN 26
+#define RELAY_MOTOR_RIGHT_PIN 25
 
-// #define JOYSTICK_X_PIN 35 // GPIO pin for the joystick X-axis
-// #define JOYSTICK_Y_PIN 32 // GPIO pin for the joystick Y-axis
+#define JOYSTICK_X_PIN 35 // GPIO pin for the joystick X-axis
+#define JOYSTICK_Y_PIN 32 // GPIO pin for the joystick Y-axis
 
 #define RELAY_VENTILATOR_PIN 23 // GPIO pin for the ventilator (if used, otherwise not needed)
 // #define RELAY_HEATER_PIN 34 // GPIO pin for the Heater (if used, otherwise not needed)
 
-// #define LDR_PIN1 33 //Top left      //analog pin for the first LDR
-// #define LDR_PIN2 34 //Top right     //analog pin for the second LDR   
-// #define LDR_PIN3 36 //Bottom left   //vp
-// #define LDR_PIN4 39 //Bottom right  //vn
+#define LDR_PIN1 33 //Top left      //analog pin for the first LDR
+#define LDR_PIN2 34 //Top right     //analog pin for the second LDR   
+#define LDR_PIN3 36 //Bottom left   //vp
+#define LDR_PIN4 39 //Bottom right  //vn
 
 
 extern ConfigManagerClass cfg;// store it globaly before using it in the settings
@@ -138,9 +138,9 @@ struct MQTT_Settings //mqttSettings
 // General configuration (default Settings)
 struct General_Settings
 {
-    // Config<int> XjoystickOffset;
-    // Config<int> YjoystickOffset;
-    // Config<int> OnOffThreshold;
+    Config<int> XjoystickOffset;
+    Config<int> YjoystickOffset;
+    Config<int> OnOffThreshold;
     Config<float> VentilatorOn;
     Config<float> VentilatorOFF;
     Config<bool> VentilatorEnable;
@@ -168,9 +168,9 @@ struct General_Settings
                          smoothingSize("Smooth", "GS", 10),
                          TempCorrectionOffset("TCO_TempratureCorrectionOffset", "GS", 0.0),
                          HumidityCorrectionOffset("HYO_HumidityCorrectionOffset", "GS", 0.0),
-                        //  XjoystickOffset("X_Joystick-Offset-X", "Joystick", 0),
-                        //  YjoystickOffset("Y_Joystick-Offset-Y", "Joystick", 0),
-                        //  OnOffThreshold("Joystick-OnOffThreshold", "Joystick", 80),
+                         XjoystickOffset("X_Joystick-Offset-X", "Joystick", 0),
+                         YjoystickOffset("Y_Joystick-Offset-Y", "Joystick", 0),
+                         OnOffThreshold("Joystick-OnOffThreshold", "Joystick", 80),
                             VentilatorOn("VentilatorOn", "Ventilator", 30.0), // Ventilator ON threshold in watts
                             VentilatorOFF("VentilatorOFF", "Ventilator", 27.0), // Ventilator OFF threshold in watts
                             VentilatorEnable("VentilatorEnable", "Ventilator", true), // Enable or disable the ventilator control
@@ -188,9 +188,9 @@ struct General_Settings
         cfg.addSetting(&smoothingSize);
         cfg.addSetting(&TempCorrectionOffset);
         cfg.addSetting(&HumidityCorrectionOffset);
-        // cfg.addSetting(&XjoystickOffset);
-        // cfg.addSetting(&YjoystickOffset);
-        // cfg.addSetting(&OnOffThreshold);
+        cfg.addSetting(&XjoystickOffset);
+        cfg.addSetting(&YjoystickOffset);
+        cfg.addSetting(&OnOffThreshold);
         cfg.addSetting(&VentilatorOn);
         cfg.addSetting(&VentilatorOFF);
         cfg.addSetting(&VentilatorEnable);
@@ -199,24 +199,24 @@ struct General_Settings
 };
 
 
-// struct LDR_Settings // ldrSettings
-// {
-//     Config<int> ldr1; // LDR 1
-//     Config<int> ldr2; // LDR 2
-//     Config<int> ldr3; // LDR 3
-//     Config<int> ldr4; // LDR 4
+struct LDR_Settings // ldrSettings
+{
+    Config<int> ldr1; // LDR 1
+    Config<int> ldr2; // LDR 2
+    Config<int> ldr3; // LDR 3
+    Config<int> ldr4; // LDR 4
 
-//     LDR_Settings() : ldr1("LDR1", "LDR", 0),
-//                      ldr2("LDR2", "LDR", 0),
-//                      ldr3("LDR3", "LDR", 0),
-//                      ldr4("LDR4", "LDR", 0)
-//     {
-//         cfg.addSetting(&ldr1);
-//         cfg.addSetting(&ldr2);
-//         cfg.addSetting(&ldr3);
-//         cfg.addSetting(&ldr4);
-//     }
-// };
+    LDR_Settings() : ldr1("LDR1", "LDR", 0),
+                     ldr2("LDR2", "LDR", 0),
+                     ldr3("LDR3", "LDR", 0),
+                     ldr4("LDR4", "LDR", 0)
+    {
+        cfg.addSetting(&ldr1);
+        cfg.addSetting(&ldr2);
+        cfg.addSetting(&ldr3);
+        cfg.addSetting(&ldr4);
+    }
+};
 
 // RS485 configuration (default Settings)
 struct RS485_Settings
@@ -236,6 +236,6 @@ extern General_Settings generalSettings;
 extern RS485_Settings rs485settings;
 extern SigmaLogLevel logLevel;
 extern WiFi_Settings wifiSettings;
-// extern LDR_Settings ldrSettings;
+extern LDR_Settings ldrSettings;
 
 #endif // SETTINGS_H
