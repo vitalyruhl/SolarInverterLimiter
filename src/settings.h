@@ -2,31 +2,52 @@
 #define SETTINGS_H
 
 #pragma once
+
 /*
-             .------------------------.
-         3V3 | [ ]                 [ ] | GND
-         EN  | [ ]                 [ ] | D23 <— usable
-         VP  | [ ]  ✅ ADC1 (RO)  [ ] | D22 <— I2C_SCL
-         VN  | [ ]  ✅ ADC1 (RO)  [ ] | D21 <— I2C_SDA
-         34  | [ ]  ✅ ADC1 (RO)  [ ] | D19 ❌ no ADC
-         35  | [ ]  ✅ ADC1 (RO)  [ ] | D18 ❌ no ADC
-         32  | [ ]  ✅ ADC1       [ ] | D5  ❌ no ADC
-         33  | [ ]  ✅ ADC1       [ ] | D17 ❌ no ADC
-         25  | [ ]  ⚠️ ADC2       [ ] | D16 ❌ no ADC
-         26  | [ ]  ⚠️ ADC2       [ ] | D4  ⚠️ ADC2
-         27  | [ ]  ⚠️ ADC2       [ ] | D0  ⚠️ ADC2 (boot)
-         14  | [ ]  ⚠️ ADC2       [ ] | D2  ⚠️ ADC2
-         12  | [ ]  ⚠️ ADC2       [ ] | D15 ⚠️ ADC2
-         GND | [ ]                [ ] | D13 ❌ no ADC
-         VIN | [ ]                [ ] | D1  ❌ no ADC (UART TX)
-             '------------------------'
+                                  __________________________ 
+                                  | .--------------------. |
+                                  | .   ~~~~~~~~~~~~~~   . |
+                                  | .   ~~~~~~~~~~~~~~   . |
+VP   ✅ ADC1 (RO)                | [ ]                 [x] | D23 <— Used for Fan-Relay
+VN   ✅ ADC1 (RO)                | [ ]                 [x] | D22 <— I2C_SCL
+D34  ✅ ADC1 (RO)                | [ ]                 [ ] | GPIO1 (TXD) <— UART TX (⚠️ avoid if possible)
+D35  ✅ ADC1 (RO)                | [ ]                 [ ] | GPIO3 (RXD) <— UART RX (⚠️ avoid if possible)
+D32  ✅ ADC1                     | [ ]                 [x] | D21 <— I2C_SDA
+D33  ✅ ADC1                     | [ ]                 [ ] | D19 ❌ no ADC
+D25  ⚠️ ADC2                     | [ ]                 [ ] | D18 ❌ no ADC
+D26  ⚠️ ADC2                     | [ ]                 [ ] | D5  ❌ no ADC
+D27  ⚠️ ADC2                     | [ ]                 [ ] | D17 ❌ no ADC
+D14  ⚠️ ADC2                     | [ ]                 [ ] | D16 ❌ no ADC
+D12  ⚠️ ADC2 (boot pin)          | [ ]                 [ ] | D4  ⚠️ ADC2 (boot pin)
+D13  ❌ no ADC (Btn-AP-Mode)     | [x]                 [x] | D15 ⚠️ ADC2 (boot pin - must be LOW on boot) (Used for Reset Button)
+EN                                | [ ]                 [ ] | GND
+VIN (5V!)                         | [ ]                 [ ] | 3V3
+                                  |                         |
+                                  |   [pwr-LED]  [D2-LED]   |               
+                                  |        _______          |
+                                  |        |     |          |
+                                  '--------|-----|---------'
 
 Legend:
-✅ ADC1       - 12-bit ADC (safe to use with WiFi)
-⚠️ ADC2       - 12-bit ADC (unusable when WiFi is active)
-✅ ADC1 (RO) - Input-only pins with ADC1
-❌ no ADC    - No analog capabilities
+[x] in use    - Pin is already used in your project
+✅ ADC1        - 12-bit ADC, usable even with WiFi
+✅ ADC1 (RO)   - Input-only pins with ADC1 (GPIO36–39)
+⚠️ ADC2        - 12-bit ADC, unusable when WiFi is active
+❌ no ADC     - No analog capability
+⚠️ Boot pin   - Must be LOW or unconnected at boot to avoid boot failure
+
+Notes:
+- GPIO0, GPIO2, GPIO12, GPIO15 are boot strapping pins — avoid pulling HIGH at boot.
+- GPIO6–11 are used for internal flash – **never use**.
+- GPIO1 (TX) and GPIO3 (RX) are used for serial output – use only if UART0 not needed.
+
+- EN Turn to Low to reset the ESP32. On goint High, the ESP32 boots.
+- VIN (5V!) is the power input pin, connect to 5V.
+- VP (GPIO36) ADC1 (RO) No Pull-up/down possible.
+- VN (GPIO39) ADC1 (RO) No Pull-up/down possible.
 */
+
+
 
 #include <Arduino.h>
 #include <Preferences.h>
@@ -156,6 +177,7 @@ struct General_Settings
     Config<float> HumidityCorrectionOffset;  // Offset for the humidity correction in percent (default is 0.0)
     Config<int> smoothingSize;         // size of the buffer for smoothing
     Config<String> Version;            // save the current version of the software
+     Config<bool> unconfigured; // flag to indicate if the device is unconfigured (default is true)
 
     General_Settings() : enableController("enCtrl", "GS", true),
                          enableMQTT("enMQTT", "GS", true),
@@ -174,6 +196,7 @@ struct General_Settings
                             VentilatorOn("VentilatorOn", "Ventilator", 30.0), // Ventilator ON threshold in watts
                             VentilatorOFF("VentilatorOFF", "Ventilator", 27.0), // Ventilator OFF threshold in watts
                             VentilatorEnable("VentilatorEnable", "Ventilator", true), // Enable or disable the ventilator control
+                            unconfigured("Unconfigured", "GS", true, false), // flag to indicate if the device is unconfigured (default is true)
                          Version("Version", "GS", VERSION)
     {
         // Register settings with configManager
@@ -195,6 +218,7 @@ struct General_Settings
         cfg.addSetting(&VentilatorOFF);
         cfg.addSetting(&VentilatorEnable);
         cfg.addSetting(&Version);
+        cfg.addSetting(&unconfigured);
     }
 };
 

@@ -83,11 +83,11 @@ bool tickerActive = false;    // flag to indicate if the ticker is active
 void setup()
 {
 
-  PinSetup();
   LoggerSetupSerial(); // Initialize the serial logger
   sl->Printf("System setup start...").Debug();
-
+  
   cfg.loadAll();
+  PinSetup();
 
   // init modules...
   SetupStartDisplay();
@@ -421,6 +421,7 @@ void SetupCheckForResetButton()
     sll->Internal("Resett all settings!");
     cfg.clearAllFromPrefs(); // Clear all settings from EEPROM
     delay(10000);            // Wait for 10 seconds to avoid multiple resets
+    generalSettings.unconfigured.set(true); // Set the unconfigured flag to true
     cfg.saveAll();           // Save the default settings to EEPROM
     delay(10000);            // Wait for 10 seconds to avoid multiple resets
     ESP.restart();           // Restart the ESP32
@@ -432,10 +433,12 @@ void SetupCheckForAPModeButton()
   String APName = "ESP32_Config";
   String pwd = "config1234"; // Default AP password
 
-  if (wifiSettings.wifiSsid.get().length() == 0)
+  if (wifiSettings.wifiSsid.get().length() == 0 || generalSettings.unconfigured.get())
   {
     sl->Printf("⚠️ SETUP: wifiSsid.get() ist empty! [%s]", wifiSettings.wifiSsid.get().c_str()).Error();
     cfg.startAccessPoint("192.168.4.1", "255.255.255.0", APName, "");
+    generalSettings.unconfigured.set(false); // Set the unconfigured flag to false after starting the access point
+    cfg.saveAll(); // Save the settings to EEPROM
   }
 
   // check for pressed AP-Mode button
