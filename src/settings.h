@@ -117,6 +117,9 @@ struct WiFi_Settings //wifiSettings
     }
 };
 
+    // String APName = "ESP32_Config";
+    // String pwd = "config1234"; // Default AP password
+
 // mqtt-Setup
 struct MQTT_Settings //mqttSettings
 {
@@ -196,7 +199,7 @@ struct General_Settings
                             VentilatorOn("VentilatorOn", "Ventilator", 30.0), // Ventilator ON threshold in watts
                             VentilatorOFF("VentilatorOFF", "Ventilator", 27.0), // Ventilator OFF threshold in watts
                             VentilatorEnable("VentilatorEnable", "Ventilator", true), // Enable or disable the ventilator control
-                            unconfigured("Unconfigured", "GS", true, false), // flag to indicate if the device is unconfigured (default is true)
+                            unconfigured("Unconfigured", "GS", true, false,false), // flag to indicate if the device is unconfigured (default is true)
                          Version("Version", "GS", VERSION)
     {
         // Register settings with configManager
