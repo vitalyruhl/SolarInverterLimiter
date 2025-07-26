@@ -13,8 +13,8 @@ VN   ✅ ADC1 (RO)                | [ ]                 [x] | D22 <— I2C_SCL
 D34  ✅ ADC1 (RO)                | [ ]                 [ ] | GPIO1 (TXD) <— UART TX (⚠️ avoid if possible)
 D35  ✅ ADC1 (RO)                | [ ]                 [ ] | GPIO3 (RXD) <— UART RX (⚠️ avoid if possible)
 D32  ✅ ADC1                     | [ ]                 [x] | D21 <— I2C_SDA
-D33  ✅ ADC1                     | [ ]                 [ ] | D19 ❌ no ADC
-D25  ⚠️ ADC2                     | [ ]                 [ ] | D18 ❌ no ADC
+D33  ✅ ADC1                     | [ ]                 [x] | D19 ❌ no ADC (Tx Pin for Serial2 = RS232-to-RS485)
+D25  ⚠️ ADC2                     | [ ]                 [x] | D18 ❌ no ADC (Rx Pin for Serial2 = RS232-to-RS485)
 D26  ⚠️ ADC2                     | [ ]                 [ ] | D5  ❌ no ADC
 D27  ⚠️ ADC2                     | [ ]                 [ ] | D17 ❌ no ADC
 D14  ⚠️ ADC2                     | [ ]                 [ ] | D16 ❌ no ADC
@@ -45,6 +45,13 @@ Notes:
 - VIN (5V!) is the power input pin, connect to 5V.
 - VP (GPIO36) ADC1 (RO) No Pull-up/down possible.
 - VN (GPIO39) ADC1 (RO) No Pull-up/down possible.
+
+UART	TX	RX
+UART0	GPIO1	GPIO3
+UART1	GPIO10	GPIO9
+UART2	GPIO17	GPIO16
+
+
 */
 
 

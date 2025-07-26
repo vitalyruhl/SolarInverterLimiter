@@ -36,7 +36,7 @@ void Smoother::setLimits(int min, int max) {
 }
 
 int Smoother::applyLimiter(int value) {
-  if (value > maxLimit) return maxLimit;
+  if (value >= maxLimit) return maxLimit;
   if (value < minLimit) return minLimit;
   return value;
 }
