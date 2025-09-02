@@ -163,10 +163,9 @@ struct General_Settings
         cfg.addSetting(&MQTTPublischPeriod);
         cfg.addSetting(&MQTTListenPeriod);
         cfg.addSetting(&RS232PublishPeriod);
-        cfg.addSetting(&smoothingSize);
         cfg.addSetting(&TempCorrectionOffset);
         cfg.addSetting(&HumidityCorrectionOffset);
-
+        
         cfg.addSetting(&VentilatorOn);
         cfg.addSetting(&VentilatorOFF);
         cfg.addSetting(&VentilatorEnable);
@@ -175,7 +174,9 @@ struct General_Settings
         cfg.addSetting(&displayShowTime);
         cfg.addSetting(&allowOTA);
         cfg.addSetting(&otaPassword);
-
+        
+        cfg.addSetting(&smoothingSize);
+        
         cfg.addSetting(&Version);
     }
 };
