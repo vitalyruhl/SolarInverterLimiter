@@ -38,6 +38,7 @@
 
 
 extern ConfigManagerClass cfg;// store it globaly before using it in the settings
+
 //--------------------------------------------------------------------------------------------------------------
 
 struct WiFi_Settings //wifiSettings

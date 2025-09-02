@@ -61,11 +61,13 @@ WiFiClient espClient;
 PubSubClient client(espClient);
 
 // Smoothing Values
-Smoother powerSmoother(
-    generalSettings.smoothingSize.get(),
-    generalSettings.inputCorrectionOffset.get(),
-    generalSettings.minOutput.get(),
-    generalSettings.maxOutput.get());
+// Smoother powerSmoother(
+//     generalSettings.smoothingSize.get(),
+//     generalSettings.inputCorrectionOffset.get(),
+//     generalSettings.minOutput.get(),
+//     generalSettings.maxOutput.get());
+
+Smoother* powerSmoother = nullptr;
 
 // globale helpers variables
 int AktualImportFromGrid = 0; // amount of electricity being imported from grid
@@ -86,32 +88,37 @@ void setup()
 {
 
   LoggerSetupSerial(); // Initialize the serial logger
-  // Wire.begin(I2C_SDA, I2C_SCL);
-  // Wire.setClock(I2C_FREQUENCY);
 
   sl->Printf("System setup start...").Debug();
 
+  PinSetup();
+  sl->Printf("Check for reset/AP button...").Debug();
+  SetupCheckForResetButton();
+  SetupCheckForAPModeButton();
+
   // sl->Printf("Clear Settings...").Debug();
-  //  cfg.clearAllFromPrefs();
+  // cfg.clearAllFromPrefs();
 
   sl->Printf("Load configuration...").Debug();
   cfg.loadAll();
-  // PinSetup();
 
   // init modules...
   sl->Printf("init modules...").Debug();
   SetupStartDisplay();
   ShowDisplay();
 
-  sl->Printf("Check for reset/AP button...").Debug();
-  SetupCheckForResetButton();
-  SetupCheckForAPModeButton();
-
   helpers.blinkBuidInLEDsetpinMode(); // Initialize the built-in LED pin mode
   helpers.blinkBuidInLED(3, 100);     // Blink the built-in LED 3 times with a 100ms delay
 
   sl->Printf("Init buffer...!").Debug();
-  powerSmoother.fillBufferOnStart(generalSettings.minOutput.get());
+  // powerSmoother.fillBufferOnStart(generalSettings.minOutput.get());
+  powerSmoother = new Smoother(
+        generalSettings.smoothingSize.get(),
+        generalSettings.inputCorrectionOffset.get(),
+        generalSettings.minOutput.get(),
+        generalSettings.maxOutput.get()
+      );
+  powerSmoother->fillBufferOnStart(generalSettings.minOutput.get());
 
   sl->Printf("Configuration printout:").Debug();
   Serial.println(cfg.toJSON(false)); // Print the configuration to the serial monitor
@@ -318,7 +325,8 @@ void reconnectMQTT()
     if (AktualImportFromGrid > 0)
     {
       AktualImportFromGrid = AktualImportFromGrid - 10;
-      inverterSetValue = powerSmoother.smooth(AktualImportFromGrid);
+      // inverterSetValue = powerSmoother.smooth(AktualImportFromGrid);
+      inverterSetValue = powerSmoother->smooth(AktualImportFromGrid);
     }
     // AktualImportFromGrid
     // delay(1000);   // Wait for 1 second before restarting
@@ -402,11 +410,14 @@ void cb_MQTTListener()
 
 void cb_RS485Listener()
 {
-  inverterSetValue = powerSmoother.smooth(AktualImportFromGrid);
+  // inverterSetValue = powerSmoother.smooth(AktualImportFromGrid);
+  inverterSetValue = powerSmoother->smooth(AktualImportFromGrid);
+  // if (generalSettings.enableController.get())
   if (generalSettings.enableController.get())
   {
     // rs485.sendToRS485(static_cast<uint16_t>(inverterSetValue));
-    powerSmoother.setCorrectionOffset(generalSettings.inputCorrectionOffset.get()); // apply the correction offset to the smoother, if needed
+    // powerSmoother.setCorrectionOffset(generalSettings.inputCorrectionOffset.get()); // apply the correction offset to the smoother, if needed
+    powerSmoother->setCorrectionOffset(generalSettings.inputCorrectionOffset.get()); // apply the correction offset to the smoother, if needed
     sendToRS485(static_cast<uint16_t>(inverterSetValue));
   }
   else
@@ -612,18 +623,6 @@ void PinSetup()
   pinMode(BUTTON_PIN_RESET_TO_DEFAULTS, INPUT_PULLUP); // importand: BUTTON is LOW aktiv!
   pinMode(BUTTON_PIN_AP_MODE, INPUT_PULLUP);           // importand: BUTTON is LOW aktiv!
 
-  // pinMode(RELAY_MOTOR_UP_PIN, OUTPUT);
-  // digitalWrite(RELAY_MOTOR_UP_PIN, HIGH); // set the relay to HIGH (off) at startup
-
-  // pinMode(RELAY_MOTOR_DOWN_PIN, OUTPUT);
-  // digitalWrite(RELAY_MOTOR_DOWN_PIN, HIGH); // set the relay to HIGH (off) at startup
-
-  // pinMode(RELAY_MOTOR_LEFT_PIN, OUTPUT);
-  // digitalWrite(RELAY_MOTOR_LEFT_PIN, HIGH); // set the relay to HIGH (off) at startup
-
-  // pinMode(RELAY_MOTOR_RIGHT_PIN, OUTPUT);
-  // digitalWrite(RELAY_MOTOR_RIGHT_PIN, HIGH); // set the relay to HIGH (off) at startup
-
   pinMode(RELAY_VENTILATOR_PIN, OUTPUT);
   digitalWrite(RELAY_VENTILATOR_PIN, HIGH); // set the ventilator relay to HIGH (off) at startup
 }
@@ -653,31 +652,31 @@ void CheckButtons()
   if (digitalRead(BUTTON_PIN_RESET_TO_DEFAULTS) == LOW)
   {
     sl->Internal("Reset-Button pressed after reboot... -> Start Display Ticker...");
-
-
+    ShowDisplay();
   }
 
   if (digitalRead(BUTTON_PIN_AP_MODE) == LOW)
   {
     sl->Internal("AP-Mode-Button pressed after reboot... -> Start Display Ticker...");
+    ShowDisplay();
   }
-
-
 }
 
 void ShowDisplay()
 {
-  // displayTicker.detach(); // Stop the ticker to prevent multiple calls
+  displayTicker.detach(); // Stop the ticker to prevent multiple calls
   // // display.ssd1306_command(SSD1306_DISPLAYON); // Turn on the display
-
-  // displayTicker.attach(generalSettings.displayShowTime.get(), ShowDisplayOff); // Reattach the ticker to turn off the display after the specified time
+  displayTicker.attach(generalSettings.displayShowTime.get(), ShowDisplayOff); // Reattach the ticker to turn off the display after the specified time
   displayActive = true;
 }
 
 void ShowDisplayOff()
 {
-  // displayTicker.detach(); // Stop the ticker to prevent multiple calls
+  displayTicker.detach(); // Stop the ticker to prevent multiple calls
   // // display.ssd1306_command(SSD1306_DISPLAYOFF); // Turn off the display
-  // display.fillRect(0, 0, 128, 24, BLACK); // Clear the previous message area
-  displayActive = false;
+  display.fillRect(0, 0, 128, 24, BLACK); // Clear the previous message area
+
+  if (generalSettings.saveDisplay.get()){
+    // displayActive = false;
+  }
 }
