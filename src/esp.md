@@ -49,3 +49,10 @@ UART2	GPIO17	GPIO16
 
 
 */
+
+
+mklink /D "C:\Users\admin\Documents\privat\SolarInverterLimiter\.pio\libdeps\mgr\ESP32 Configuration Manager" "C:\Users\admin\Documents\privat\ConfigurationsManager"
+
+New-Item -ItemType SymbolicLink -Path "C:\Users\admin\Documents\privat\SolarInverterLimiter\.pio\libdeps\mgr\ESP32 Configuration Manager" -Target "C:\Users\admin\Documents\privat\ConfigurationsManager"
+
+Remove-Item -Path "C:\Users\admin\Documents\privat\SolarInverterLimiter\.pio\libdeps\mgr\ESP32 Configuration Manager" -Force
