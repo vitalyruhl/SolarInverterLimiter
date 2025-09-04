@@ -102,6 +102,9 @@ void setup()
   sl->Printf("Load configuration...").Debug();
   cfg.loadAll();
 
+  //04.09.2025 new function to check all settings with errors
+  cfg.checkSettingsForErrors();
+
   // init modules...
   sl->Printf("init modules...").Debug();
   SetupStartDisplay();
@@ -677,6 +680,6 @@ void ShowDisplayOff()
   display.fillRect(0, 0, 128, 24, BLACK); // Clear the previous message area
 
   if (generalSettings.saveDisplay.get()){
-    // displayActive = false;
+    displayActive = false;
   }
 }

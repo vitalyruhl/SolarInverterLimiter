@@ -104,80 +104,95 @@ struct MQTT_Settings //mqttSettings
 // General configuration (default Settings)
 struct General_Settings
 {
-    Config<float> VentilatorOn;
-    Config<float> VentilatorOFF;
-    Config<bool> VentilatorEnable;
     Config<bool> enableController;     // set to false to disable the controller and use Maximum power output
     Config<bool> enableMQTT;           // set to false to disable the MQTT connection
+
     Config<int> maxOutput;             // edit this to limit TOTAL power output in watts
     Config<int> minOutput;             // minimum output power in watts
     Config<int> inputCorrectionOffset; // Adjust Correction Offset (Input + Offet + Smoothing --> Limmiter = Output)
+
     Config<float> MQTTPublischPeriod;  // check all x seconds if there is a new MQTT message to publish
     Config<float> MQTTListenPeriod;    // check x seconds if there is a new MQTT message to listen to
-    Config<float> RS232PublishPeriod;  // send the RS485 Data all x seconds
+
     Config<float> TempCorrectionOffset;  // Offset for the temperature correction in Celsius (default is 0.0)
     Config<float> HumidityCorrectionOffset;  // Offset for the humidity correction in percent (default is 0.0)
-    Config<int> smoothingSize;         // size of the buffer for smoothing
-    Config<String> Version;            // save the current version of the software
-    Config<bool> unconfigured; // flag to indicate if the device is unconfigured (default is true)
+
+    Config<float> VentilatorOn;
+    Config<float> VentilatorOFF;
+    Config<bool> VentilatorEnable;
+
     Config<bool> saveDisplay; // to turn off the display
     Config<int> displayShowTime; // time in seconds to show the display after boot or button press (default is 60 seconds, 0 = 10s)
+
     Config<bool> allowOTA; // allow OTA updates (default is true, set to false to disable OTA updates)
     Config<String> otaPassword; // password for OTA updates (default is "ota1234", change it to a secure password)
 
-    General_Settings() :enableController("enCtrl", "GS","Enable Limitation", true),
-                        enableMQTT("enMQTT", "GS","Enable MQTT Propagation", true),
+    Config<float> RS232PublishPeriod;  // send the RS485 Data all x seconds
+    Config<int> smoothingSize;         // size of the buffer for smoothing
 
-                        maxOutput("MaxO", "GS","Max-Output", 1100),
-                        minOutput("MinO", "GS","Min-Output", 500),
-                        inputCorrectionOffset("ICO", "GS","Correction-Offset", 50),
+    Config<bool> unconfigured; // flag to indicate if the device is unconfigured (default is true)
+    Config<String> Version;            // save the current version of the software
 
-                        MQTTPublischPeriod("MQTTP", "GS","MQTT Publisching Periode", 5.0),
-                        MQTTListenPeriod("MQTTL", "GS","MQTT Listening Periode", 0.5),
+    General_Settings() :enableController("enCtrl", "Limiter","Enable Limitation", true),
+                        enableMQTT("enMQTT", "Limiter","Enable MQTT Propagation", true),
 
-                        TempCorrectionOffset("TCO_TempratureCorrectionOffset","Temperature Correction", "GS", 0.0),
-                        HumidityCorrectionOffset("HYO_HumidityCorrectionOffset","Humidity Correction", "GS", 0.0),
+                        maxOutput("MaxO", "Limiter","Max-Output", 1100),
+                        minOutput("MinO", "Limiter","Min-Output", 500),
+                        inputCorrectionOffset("ICO", "Limiter","Correction-Offset", 50),
+
+                        MQTTPublischPeriod("MQTTP", "System","MQTT Publisching Periode", 5.0),
+                        MQTTListenPeriod("MQTTL", "System","MQTT Listening Periode", 0.5),
+
+                        TempCorrectionOffset("TCO", "Temp","Temperature Correction", 0.1),
+                        HumidityCorrectionOffset("HYO", "Temp","Humidity Correction", 0.1),
 
                         VentilatorOn("VentOn", "Vent", "Ventilator On over", 30.0),
                         VentilatorOFF("VentOff", "Vent", "Ventilator Off under", 27.0),
                         VentilatorEnable("VentEn", "Vent", "Enable Ventilator Control", true),
 
-                        saveDisplay("DispSave", "GS", "Turn Display Off", true),
-                        displayShowTime("DispTime", "GS", "Display On-Time in Sec", 60),
+                        saveDisplay("DispSave", "Display", "Turn Display Off", true),
+                        displayShowTime("DispTime", "Display", "Display On-Time in Sec", 60),
 
-                        allowOTA("OTAEn", "GS", "Allow OTA Updates", true),
-                        otaPassword("OTAPass", "GS", "OTA Password", "ota1234", true, true),
-                        
-                        RS232PublishPeriod("RS232P", "GS","RS232 Publisching Periode", 2.0),
-                        smoothingSize("Smooth", "GS","Smoothing Level", 10),
+                        allowOTA("OTAEn", "System", "Allow OTA Updates", true),
+                        otaPassword("OTAPass", "System", "OTA Password", "ota1234", true, true),
+
+                        RS232PublishPeriod("RS232P", "RS232","RS232 Publisching Periode", 2.0),
+                        smoothingSize("Smooth", "RS232","Smoothing Level", 10),
 
                         unconfigured("Unconfigured", "GS","ESP is unconfigured", true, false), // flag to indicate if the device is unconfigured (default is true)
-                        Version("Version", "GS","Programm-Version", VERSION)
+                        Version("Version", "System","Programm-Version", VERSION)
     {
         // Register settings with configManager
         cfg.addSetting(&enableController);
         cfg.addSetting(&enableMQTT);
+
         cfg.addSetting(&maxOutput);
         cfg.addSetting(&minOutput);
         cfg.addSetting(&inputCorrectionOffset);
+
         cfg.addSetting(&MQTTPublischPeriod);
         cfg.addSetting(&MQTTListenPeriod);
-        cfg.addSetting(&RS232PublishPeriod);
+
         cfg.addSetting(&TempCorrectionOffset);
         cfg.addSetting(&HumidityCorrectionOffset);
-        
+
         cfg.addSetting(&VentilatorOn);
         cfg.addSetting(&VentilatorOFF);
         cfg.addSetting(&VentilatorEnable);
-        cfg.addSetting(&unconfigured);
+
         cfg.addSetting(&saveDisplay);
         cfg.addSetting(&displayShowTime);
+
         cfg.addSetting(&allowOTA);
         cfg.addSetting(&otaPassword);
-        
+
+        cfg.addSetting(&RS232PublishPeriod);
         cfg.addSetting(&smoothingSize);
-        
+
+        cfg.addSetting(&unconfigured);
+
         cfg.addSetting(&Version);
+
     }
 };
 
