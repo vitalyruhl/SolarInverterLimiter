@@ -46,6 +46,7 @@ struct WiFi_Settings //wifiSettings
     Config<String> wifiSsid;
     Config<String> wifiPassword;
     Config<bool> useDhcp;
+    //todo: add static-IP settings
     WiFi_Settings() :
 
                       wifiSsid("ssid", "wifi", "WiFi SSID", "MyWiFi"),
@@ -84,7 +85,7 @@ struct MQTT_Settings //mqttSettings
                       mqtt_server("Server", "MQTT","MQTT-Server-IP", "192.168.2.3"),
                       mqtt_username("User", "MQTT","MQTT-User", "housebattery"),
                       mqtt_password("Pass", "MQTT","MQTT-Passwort", "mqttsecret", true, true),
-                      mqtt_sensor_powerusage_topic("PowerUsage", "MQTT","Topic Powerusage" ,"emon/emonpi/power1")
+                      mqtt_sensor_powerusage_topic("PUT", "MQTT","Topic Powerusage" ,"emon/emonpi/power1")
     {
         cfg.addSetting(&mqtt_port);
         cfg.addSetting(&mqtt_server);
@@ -159,7 +160,7 @@ struct General_Settings
                         RS232PublishPeriod("RS232P", "RS232","RS232 Publisching Periode", 2.0),
                         smoothingSize("Smooth", "RS232","Smoothing Level", 10),
 
-                        unconfigured("Unconfigured", "GS","ESP is unconfigured", true, false), // flag to indicate if the device is unconfigured (default is true)
+                        unconfigured("Unconfigured", "GS","ESP is unconfigured", true, true), // flag to indicate if the device is unconfigured (default is true)
                         Version("Version", "System","Programm-Version", VERSION)
     {
         // Register settings with configManager

@@ -184,13 +184,13 @@ void loop()
       ListenMQTTTicker.detach();   // Stop the ticker if WiFi is not connected or in AP mode
       tickerActive = false;        // Set the flag to indicate that the ticker is not active
 
-      //check if ota is active and settings is off, reboot device, to stop ota (//TODO: implement it in the cfg class)
-      // if (generalSettings.allowOTA.get() == false && cfg.isOTAInitialized())
-      // {
-      //   sll->Debug("Stop OTA-Modeule");
-      //   // cfg.stopOTA();//TODO: implement it in the cfg class
-      //   cfg.reboot();
-      // }
+      // check if ota is active and settings is off, reboot device, to stop ota
+      if (generalSettings.allowOTA.get() == false && cfg.isOTAInitialized())
+      {
+        sll->Debug("Stop OTA-Modeule");
+        cfg.stopOTA();//TODO: implemented, but not tested yet
+        // cfg.reboot();
+      }
     }
   }
   else
@@ -202,11 +202,11 @@ void loop()
       sll->Debug("Reattach ticker.");
       PublischMQTTTicker.attach(generalSettings.MQTTPublischPeriod.get(), cb_PublishToMQTT); // Reattach the ticker if WiFi is connected
       ListenMQTTTicker.attach(generalSettings.MQTTListenPeriod.get(), cb_MQTTListener);      // Reattach the ticker if WiFi is connected
-      // if(generalSettings.allowOTA.get()){
-      //   sll->Debug("Start OTA-Modeule");
-      //   cfg.setupOTA("Ota-esp32-device", generalSettings.otaPassword.get().c_str());
-      // }
-      tickerActive = true;                                              // Set the flag to indicate that the ticker is active
+      if(generalSettings.allowOTA.get()){
+        sll->Debug("Start OTA-Modeule");
+        cfg.setupOTA("Ota-esp32-device", generalSettings.otaPassword.get().c_str());
+      }
+      tickerActive = true; // Set the flag to indicate that the ticker is active
     }
   }
 
@@ -225,7 +225,7 @@ void loop()
       sl->Debug("❌ WiFi not connected!");
       sll->Debug("reconnect to WiFi...");
       cfg.reconnectWifi();
-      delay(1000);
+      delay(5000);
       return;
     }
     // blinkBuidInLED(1, 100); // not used here, because blinker is used if we get a message from MQTT
@@ -239,9 +239,9 @@ void loop()
     reconnectMQTT();
   }
 
-  // CheckButtons();
+  CheckButtons();
   CheckVentilator(temperature);
-  // readLDRs();
+
   delay(10);
 }
 
@@ -475,9 +475,10 @@ void SetupCheckForAPModeButton()
   String APName = "ESP32_Config";
   String pwd = "config1234"; // Default AP password
 
-  if (wifiSettings.wifiSsid.get().length() == 0 || generalSettings.unconfigured.get())
+  // if (wifiSettings.wifiSsid.get().length() == 0 || generalSettings.unconfigured.get())
+  if (wifiSettings.wifiSsid.get().length() == 0 )
   {
-    sl->Printf("⚠️ SETUP: wifiSsid.get() ist empty! [%s]", wifiSettings.wifiSsid.get().c_str()).Error();
+    sl->Printf("⚠️ SETUP: wifiSsid.get() ist empty? [%s], or unconfigured flag is active", wifiSettings.wifiSsid.get().c_str()).Error();
     cfg.startAccessPoint("192.168.4.1", "255.255.255.0", APName, "");
     generalSettings.unconfigured.set(false); // Set the unconfigured flag to false after starting the access point
     cfg.saveAll(); // Save the settings to EEPROM
@@ -668,7 +669,7 @@ void CheckButtons()
 void ShowDisplay()
 {
   displayTicker.detach(); // Stop the ticker to prevent multiple calls
-  // // display.ssd1306_command(SSD1306_DISPLAYON); // Turn on the display
+  display.ssd1306_command(SSD1306_DISPLAYON); // Turn on the display
   displayTicker.attach(generalSettings.displayShowTime.get(), ShowDisplayOff); // Reattach the ticker to turn off the display after the specified time
   displayActive = true;
 }
@@ -676,8 +677,8 @@ void ShowDisplay()
 void ShowDisplayOff()
 {
   displayTicker.detach(); // Stop the ticker to prevent multiple calls
-  // // display.ssd1306_command(SSD1306_DISPLAYOFF); // Turn off the display
-  display.fillRect(0, 0, 128, 24, BLACK); // Clear the previous message area
+  display.ssd1306_command(SSD1306_DISPLAYOFF); // Turn off the display
+  // display.fillRect(0, 0, 128, 24, BLACK); // Clear the previous message area
 
   if (generalSettings.saveDisplay.get()){
     displayActive = false;
