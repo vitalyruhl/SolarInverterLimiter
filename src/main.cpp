@@ -619,21 +619,25 @@ void PinSetup()
 
 void CheckVentilator(float aktualTemperature)
 {
+  // sl->Printf("Check Ventilator...\nCurrent Temperature: %2.3f °C", aktualTemperature);
   // Check if ventilator control is enabled
   if (!generalSettings.VentilatorEnable.get())
   {
-    digitalWrite(RELAY_VENTILATOR_PIN, HIGH); // Deactivate ventilator relay if control is disabled
+    // sl->Debug("Ventilator control is disabled.");
+    digitalWrite(RELAY_VENTILATOR_PIN, LOW); // Deactivate ventilator relay if control is disabled
     return;                                   // Exit if ventilator control is disabled
   }
 
   // Check if the temperature exceeds the ON threshold
   if (aktualTemperature >= generalSettings.VentilatorOn.get())
   {
-    digitalWrite(RELAY_VENTILATOR_PIN, LOW); // Activate ventilator relay
+    // sl->Debug("Ventilator ON - Temperature threshold exceeded.");
+    digitalWrite(RELAY_VENTILATOR_PIN, HIGH); // Activate ventilator relay
   }
   else if (aktualTemperature <= generalSettings.VentilatorOFF.get())
   {
-    digitalWrite(RELAY_VENTILATOR_PIN, HIGH); // Deactivate ventilator relay
+    // sl->Debug("Ventilator OFF - Temperature below OFF threshold.");
+    digitalWrite(RELAY_VENTILATOR_PIN, LOW); // Deactivate ventilator relay
   }
 }
 

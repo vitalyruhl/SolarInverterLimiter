@@ -168,9 +168,9 @@ struct General_Settings
                         TempCorrectionOffset("TCO", "Temp","Temperature Correction", 0.1),
                         HumidityCorrectionOffset("HYO", "Temp","Humidity Correction", 0.1),
 
-                        VentilatorOn("VentOn", "Vent", "Ventilator On over", 30.0),
-                        VentilatorOFF("VentOff", "Vent", "Ventilator Off under", 27.0),
-                        VentilatorEnable("VentEn", "Vent", "Enable Ventilator Control", true),
+                        VentilatorOn("VentOn", "FAN", "FAN Control", "FAN On over", 30.0),
+                        VentilatorOFF("VentOff", "FAN", "FAN Control", "FAN Off under", 27.0),
+                        VentilatorEnable("VentEn", "FAN", "FAN Control", "Enable Fan Control", true),
 
                         saveDisplay("DispSave", "Display", "Turn Display Off", true),
                         displayShowTime("DispTime", "Display", "Display On-Time in Sec", 60),
