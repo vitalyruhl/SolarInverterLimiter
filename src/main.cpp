@@ -13,11 +13,6 @@
 #include "helpers/helpers.h"
 #include "Smoother/Smoother.h"
 
-/*
-Todo:
-mqtt reconnect on display
-*/
-
 // predefine the functions
 void SetupStartDisplay(); //setup the display
 void reconnectMQTT(); //reconnect to the MQTT broker
@@ -25,7 +20,7 @@ void cb_MQTT(char *topic, byte *message, unsigned int length); //callback functi
 void publishToMQTT(); //publish the current values to the MQTT broker
 void cb_PublishToMQTT(); //ticker callback function to publish the current values to the MQTT broker
 void cb_MQTTListener(); //ticker callback function to listen for incoming MQTT messages
-void cb_RS485Listener(); //ticker callback function to read from RS485
+void cb_RS485Listener(); //ticker callback function to read/write RS485
 void testRS232(); //test the RS232 communication (not used in normal operation)
 
 void readBme280(); //read the values from the BME280 (Temperature, Humidity) and calculate the dewpoint
@@ -60,14 +55,7 @@ Ticker displayTicker;
 WiFiClient espClient;
 PubSubClient client(espClient);
 
-// Smoothing Values
-// Smoother powerSmoother(
-//     generalSettings.smoothingSize.get(),
-//     generalSettings.inputCorrectionOffset.get(),
-//     generalSettings.minOutput.get(),
-//     generalSettings.maxOutput.get());
-
-Smoother* powerSmoother = nullptr;
+Smoother* powerSmoother = nullptr; //there is a memory allocation in setup, better use a pointer here
 
 // globale helpers variables
 int AktualImportFromGrid = 0; // amount of electricity being imported from grid
@@ -105,6 +93,9 @@ void setup()
   //04.09.2025 new function to check all settings with errors
   cfg.checkSettingsForErrors();
 
+  //05.09.2025 add new updateTopics function to the mqttSettings
+  mqttSettings.updateTopics(); // better restart the device after changing the Publish_Topic to prevent fragmentation of the memory and overflow of the heap
+
   // init modules...
   sl->Printf("init modules...").Debug();
   SetupStartDisplay();
@@ -134,7 +125,7 @@ void setup()
 
   sl->Printf("SETUP: Check and start BME280!").Debug();
   sll->Printf("Check and start BME280!").Debug();
-  SetupStartTemperatureMeasuring();
+  SetupStartTemperatureMeasuring(); //also starts the temperature ticker, its allways active
 
   //----------------------------------------
 
@@ -147,15 +138,10 @@ void setup()
   client.setServer(mqttSettings.mqtt_server.get().c_str(), static_cast<uint16_t>(mqttSettings.mqtt_port.get())); // Set the MQTT server and port
   client.setCallback(cb_MQTT);
 
-  sl->Debug("Attaching tickers...");
-  sll->Debug("Attaching tickers...");
-  PublischMQTTTicker.attach(generalSettings.MQTTPublischPeriod.get(), cb_PublishToMQTT);
-  ListenMQTTTicker.attach(generalSettings.MQTTListenPeriod.get(), cb_MQTTListener);
+  //set rs232 ticker, its always active
+  sl->Debug("Setup RS485 ticker...");
+  sll->Debug("Setup RS485 ticker...");
   RS485Ticker.attach(generalSettings.RS232PublishPeriod.get(), cb_RS485Listener);
-
-  tickerActive = true; // Set the flag to indicate that the ticker is active
-  sll->Debug("Connecting to MQTT");
-  reconnectMQTT();     // connect to MQTT broker
 
   sl->Debug("System setup completed.");
   sll->Debug("Setup completed.");
@@ -163,6 +149,7 @@ void setup()
 
 void loop()
 {
+  CheckButtons();
   if (WiFi.status() == WL_CONNECTED && client.connected())
   {
     digitalWrite(LED_BUILTIN, LOW); // show that we are connected
@@ -176,6 +163,7 @@ void loop()
   {
     if (tickerActive) // Check if the ticker is already active
     {
+      ShowDisplay(); // Show the display to indicate WiFi is lost
       sl->Debug("WiFi not connected or in AP mode! deactivate ticker.");
       sll->Debug("WiFi lost connection!");
       sll->Debug("or run in AP mode!");
@@ -192,11 +180,19 @@ void loop()
         // cfg.reboot();
       }
     }
+    //reconnect, if not in ap mode
+    if (WiFi.getMode() != WIFI_AP){
+      sl->Debug("reconnect to WiFi...");
+      sll->Debug("reconnect to WiFi...");
+      // WiFi.reconnect(); // try to reconnect to WiFi
+      bool isStartedAsAP = SetupStartWebServer();
+    }
   }
   else
   {
     if (!tickerActive) // Check if the ticker is not already active
     {
+      ShowDisplay(); // Show the display
       sl->Debug("WiFi connected! Reattach ticker.");
       sll->Debug("WiFi reconnected!");
       sll->Debug("Reattach ticker.");
@@ -206,51 +202,40 @@ void loop()
         sll->Debug("Start OTA-Modeule");
         cfg.setupOTA("Ota-esp32-device", generalSettings.otaPassword.get().c_str());
       }
+      ShowDisplay();               // Show the display
       tickerActive = true; // Set the flag to indicate that the ticker is active
     }
   }
 
   WriteToDisplay();
 
-  if (WiFi.getMode() == WIFI_AP)
-  {
+  if (WiFi.getMode() == WIFI_AP) {
     helpers.blinkBuidInLED(5, 50); // show we are in AP mode
     sll->Debug("or run in AP mode!");
-  }
-
-  else
-  {
-    if (WiFi.status() != WL_CONNECTED)
-    {
+  } else {
+    if (WiFi.status() != WL_CONNECTED) {
       sl->Debug("❌ WiFi not connected!");
       sll->Debug("reconnect to WiFi...");
       cfg.reconnectWifi();
-      delay(5000);
+      delay(1000);
       return;
     }
     // blinkBuidInLED(1, 100); // not used here, because blinker is used if we get a message from MQTT
   }
 
-  cfg.handleClient();
+
 
   if (!client.connected())
   {
-    // logv("MQTT Not Connected!");
+    sll->Debug("MQTT Not Connected! -> reconnecting...");
     reconnectMQTT();
   }
 
-  CheckButtons();
+
   CheckVentilator(temperature);
-
+  cfg.handleClient();
+  cfg.handleOTA();
   delay(10);
-}
-
-void yield()
-{
-  // This function is called to yield control to other tasks
-  // It can be used to prevent watchdog timer resets
-
-  delay(1);
 }
 
 //----------------------------------------
@@ -291,7 +276,7 @@ void reconnectMQTT()
 
     // print the mqtt settings
     sl->Printf("Connecting to MQTT broker...").Debug();
-    sl->Printf("MQTT Hostname: %s", mqttSettings.mqtt_hostname.c_str()).Debug();
+    sl->Printf("MQTT Hostname: %s", mqttSettings.Publish_Topic.get().c_str()).Debug();
     sl->Printf("MQTT Server: %s", mqttSettings.mqtt_server.get().c_str()).Debug();
     sl->Printf("MQTT Port: %d", mqttSettings.mqtt_port.get()).Debug();
     sl->Printf("MQTT User: %s", mqttSettings.mqtt_username.get().c_str()).Debug();
@@ -299,7 +284,7 @@ void reconnectMQTT()
     sl->Printf("MQTT Password: ***").Debug();
     sl->Printf("MQTT Sensor Power Usage Topic: %s", mqttSettings.mqtt_sensor_powerusage_topic.get().c_str()).Debug();
 
-    client.connect(mqttSettings.mqtt_hostname.c_str(), mqttSettings.mqtt_username.get().c_str(), mqttSettings.mqtt_password.get().c_str()); // Connect to the MQTT broker
+    client.connect(mqttSettings.Publish_Topic.get().c_str(), mqttSettings.mqtt_username.get().c_str(), mqttSettings.mqtt_password.get().c_str()); // Connect to the MQTT broker
     delay(2000);
 
     if (client.connected())
@@ -422,6 +407,7 @@ void cb_RS485Listener()
     // powerSmoother.setCorrectionOffset(generalSettings.inputCorrectionOffset.get()); // apply the correction offset to the smoother, if needed
     powerSmoother->setCorrectionOffset(generalSettings.inputCorrectionOffset.get()); // apply the correction offset to the smoother, if needed
     sendToRS485(static_cast<uint16_t>(inverterSetValue));
+    sl->Printf("controller is enabled! Set inverter to %d W", inverterSetValue).Debug();
   }
   else
   {
@@ -429,7 +415,7 @@ void cb_RS485Listener()
     sl->Debug("MAX-POWER!");
     sll->Debug("Limiter is didabled!");
     sll->Debug("MAX-POWER!");
-    sendToRS485(generalSettings.maxOutput.get()); // send the maxOutput to the RS485 module
+    sendToRS485(generalSettings.maxOutput.get()); // send the maxOutput to the RS485 module");
   }
 }
 
@@ -532,8 +518,7 @@ bool SetupStartWebServer()
     cfg.startAccessPoint();
   }
 
-  if (WiFi.getMode() == WIFI_AP)
-  {
+  if (WiFi.getMode() == WIFI_AP) {
     sl->Printf("🖥️ Run in AP Mode! ");
     sll->Printf("Run in AP Mode! ");
     return false; // Skip webserver setup in AP mode
@@ -550,7 +535,8 @@ bool SetupStartWebServer()
   else
   {
     sl->Printf("DHCP disabled");
-    cfg.startWebServer("192.168.2.122", "255.255.255.0", "192.168.2.250", wifiSettings.wifiSsid.get(), wifiSettings.wifiPassword.get());
+    // cfg.startWebServer("192.168.2.126", "255.255.255.0", "192.168.2.250", wifiSettings.wifiSsid.get(), wifiSettings.wifiPassword.get());
+    cfg.startWebServer(wifiSettings.staticIp.get(), wifiSettings.subnet.get(), wifiSettings.gateway.get(), wifiSettings.wifiSsid.get(), wifiSettings.wifiPassword.get());
   }
   sl->Printf("🖥️ Webserver running at: %s", WiFi.localIP().toString().c_str());
   sll->Printf("Web: %s", WiFi.localIP().toString().c_str());
@@ -653,6 +639,7 @@ void CheckVentilator(float aktualTemperature)
 
 void CheckButtons()
 {
+  // sl->Debug("Check Buttons...");
   if (digitalRead(BUTTON_PIN_RESET_TO_DEFAULTS) == LOW)
   {
     sl->Internal("Reset-Button pressed after reboot... -> Start Display Ticker...");

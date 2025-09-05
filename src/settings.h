@@ -10,7 +10,7 @@
 
 #include "ConfigManager.h"
 
-#define VERSION "0.8.0"           // version of the software (major.minor.patch) (Version 0.6.0 Has Breaking Changes!)
+#define VERSION "2.1.0"           // version of the software (major.minor.patch) (Version 0.6.0 Has Breaking Changes!)
 #define VERSION_DATE "02.09.2025" // date of the version
 
 //--------------------------------------------------------------------------------------------------------------
@@ -46,17 +46,27 @@ struct WiFi_Settings //wifiSettings
     Config<String> wifiSsid;
     Config<String> wifiPassword;
     Config<bool> useDhcp;
+    Config<String> staticIp;
+    Config<String> gateway;
+    Config<String> subnet;
+
     //todo: add static-IP settings
     WiFi_Settings() :
 
-                      wifiSsid("ssid", "wifi", "WiFi SSID", "MyWiFi"),
-                      wifiPassword("password", "wifi", "WiFi Password", "secretpass", true, true),
-                      useDhcp("dhcp", "network", "Use DHCP", false)
+                    wifiSsid("ssid", "wifi", "WiFi SSID", "MyWiFi"),
+                    wifiPassword("password", "wifi", "WiFi Password", "secretpass", true, true),
+                    useDhcp("dhcp", "network", "Use DHCP", false),
+                    staticIp("sIP", "network", "Static IP", "192.168.2.126"),
+                    subnet("subnet", "network", "Subnet-Mask", "255.255.255.0"),
+                    gateway("GW", "network", "Gateway", "192.168.2.250")
 
     {
         cfg.addSetting(&wifiSsid);
         cfg.addSetting(&wifiPassword);
         cfg.addSetting(&useDhcp);
+        cfg.addSetting(&staticIp);
+        cfg.addSetting(&gateway);
+        cfg.addSetting(&subnet);
     }
 };
 
@@ -64,43 +74,54 @@ struct WiFi_Settings //wifiSettings
     // String pwd = "config1234"; // Default AP password
 
 // mqtt-Setup
-struct MQTT_Settings //mqttSettings
-{
-    Config<int> mqtt_port; // port for the MQTT broker (default is 1883)
+struct MQTT_Settings {
+    Config<int> mqtt_port;
+    Config<String> mqtt_server;
+    Config<String> mqtt_username;
+    Config<String> mqtt_password;
+    Config<String> mqtt_sensor_powerusage_topic;
+    Config<String> Publish_Topic;
 
-    Config<String> mqtt_server;                  // IP address of the MQTT broker (Mosquitto)
-    Config<String> mqtt_username;                // username for the MQTT broker
-    Config<String> mqtt_password;                // password for the MQTT broker
-    Config<String> mqtt_sensor_powerusage_topic; // topic for the power usage sensor
-
-    String mqtt_hostname = "SolarLimiter";
+    // for dynamic topics based on Publish_Topic
     String mqtt_publish_setvalue_topic;
     String mqtt_publish_getvalue_topic;
     String mqtt_publish_Temperature_topic;
     String mqtt_publish_Humidity_topic;
     String mqtt_publish_Dewpoint_topic;
 
-    // constructor for setting dependent fields
-    MQTT_Settings() : mqtt_port("Port", "MQTT","MQTT-Port", 1883),
-                      mqtt_server("Server", "MQTT","MQTT-Server-IP", "192.168.2.3"),
-                      mqtt_username("User", "MQTT","MQTT-User", "housebattery"),
-                      mqtt_password("Pass", "MQTT","MQTT-Passwort", "mqttsecret", true, true),
-                      mqtt_sensor_powerusage_topic("PUT", "MQTT","Topic Powerusage" ,"emon/emonpi/power1")
+    MQTT_Settings() :
+        mqtt_port("Port", "MQTT", "MQTT-Port", 1883),
+        mqtt_server("Server", "MQTT", "MQTT-Server-IP", "192.168.2.3"),
+        mqtt_username("User", "MQTT", "MQTT-User", "housebattery"),
+        mqtt_password("Pass", "MQTT", "MQTT-Passwort", "mqttsecret", true, true),
+        mqtt_sensor_powerusage_topic("PUT", "MQTT", "Topic Powerusage", "emon/emonpi/power1"),
+        Publish_Topic("MQTTT", "MQTT", "Publish-Topic", "SolarLimiter")
     {
         cfg.addSetting(&mqtt_port);
         cfg.addSetting(&mqtt_server);
         cfg.addSetting(&mqtt_username);
         cfg.addSetting(&mqtt_password);
         cfg.addSetting(&mqtt_sensor_powerusage_topic);
+        cfg.addSetting(&Publish_Topic);
 
-        // set the mqtt topics
-        mqtt_publish_setvalue_topic = mqtt_hostname + "/SetValue";
-        mqtt_publish_getvalue_topic = mqtt_hostname + "/GetValue";
-        mqtt_publish_Temperature_topic = mqtt_hostname + "/Temperature";
-        mqtt_publish_Humidity_topic = mqtt_hostname + "/Humidity";
-        mqtt_publish_Dewpoint_topic = mqtt_hostname + "/Dewpoint";
+        // callback to update topics when Publish_Topic changes
+        Publish_Topic.setCallback([this](String newValue) {
+            this->updateTopics();
+        });
+
+        updateTopics(); // make sure topics are initialized
+    }
+
+    void updateTopics() {
+        String hostname = Publish_Topic.get(); //you can trow an error here if its empty
+        mqtt_publish_setvalue_topic = hostname + "/SetValue";
+        mqtt_publish_getvalue_topic = hostname + "/GetValue";
+        mqtt_publish_Temperature_topic = hostname + "/Temperature";
+        mqtt_publish_Humidity_topic = hostname + "/Humidity";
+        mqtt_publish_Dewpoint_topic = hostname + "/Dewpoint";
     }
 };
+
 
 // General configuration (default Settings)
 struct General_Settings
