@@ -13,35 +13,30 @@
 #include "helpers/helpers.h"
 #include "Smoother/Smoother.h"
 
-/*
-Todo:
-mqtt reconnect on display
-*/
-
 // predefine the functions
-void SetupStartDisplay();
-void reconnectMQTT();
-void cb_MQTT(char *topic, byte *message, unsigned int length);
-void publishToMQTT();
-void cb_PublishToMQTT();
-void cb_MQTTListener();
-void cb_RS485Listener();
-void testRS232();
+void SetupStartDisplay(); //setup the display
+void reconnectMQTT(); //reconnect to the MQTT broker
+void cb_MQTT(char *topic, byte *message, unsigned int length); //callback function for incoming MQTT messages
+void publishToMQTT(); //publish the current values to the MQTT broker
+void cb_PublishToMQTT(); //ticker callback function to publish the current values to the MQTT broker
+void cb_MQTTListener(); //ticker callback function to listen for incoming MQTT messages
+void cb_RS485Listener(); //ticker callback function to read/write RS485
+void testRS232(); //test the RS232 communication (not used in normal operation)
 
-void readBme280();
-void WriteToDisplay();
+void readBme280(); //read the values from the BME280 (Temperature, Humidity) and calculate the dewpoint
+void WriteToDisplay();//write the values to the display
 
-void SetupCheckForResetButton();
-void SetupCheckForAPModeButton();
-void SetupStartTemperatureMeasuring();
-bool SetupStartWebServer();
-void ProjectConfig();
-void PinSetup();
-// void CalibrateJoystick();
-// void ReadJoystick();
-// void SetRalays(int x, int y);
-void CheckVentilator(float aktualTemperature);
-// void readLDRs();
+void SetupCheckForResetButton();//check if button is pressed on boot for reset to defaults
+void SetupCheckForAPModeButton(); //check if button is pressed on boot for starting AP mode
+void SetupStartTemperatureMeasuring(); //setup the BME280 temperature and humidity sensor
+bool SetupStartWebServer(); //setup and start the web server
+void ProjectConfig(); //project specific configuration
+void PinSetup(); //setup the pins
+void CheckButtons(); //check if buttons are pressed after boot
+void ShowDisplay(); //start the display for a defined time
+void ShowDisplayOff(); //turn off the display
+void CheckVentilator(float aktualTemperature); //check if the ventilator should be turned on or off
+
 //--------------------------------------------------------------------------------------------------------------
 
 #pragma region configuratio variables
@@ -55,16 +50,12 @@ Ticker PublischMQTTTSettingsTicker;
 Ticker ListenMQTTTicker;
 Ticker RS485Ticker;
 Ticker temperatureTicker;
+Ticker displayTicker;
 
 WiFiClient espClient;
 PubSubClient client(espClient);
 
-// Smoothing Values
-Smoother powerSmoother(
-    generalSettings.smoothingSize.get(),
-    generalSettings.inputCorrectionOffset.get(),
-    generalSettings.minOutput.get(),
-    generalSettings.maxOutput.get());
+Smoother* powerSmoother = nullptr; //there is a memory allocation in setup, better use a pointer here
 
 // globale helpers variables
 int AktualImportFromGrid = 0; // amount of electricity being imported from grid
@@ -73,6 +64,7 @@ float temperature = 0.0;      // current temperature in Celsius
 float Dewpoint = 0.0;         // current dewpoint in Celsius
 float Humidity = 0.0;         // current humidity in percent
 bool tickerActive = false;    // flag to indicate if the ticker is active
+bool displayActive = true;   // flag to indicate if the display is active
 
 #pragma endregion configuration variables
 
@@ -84,24 +76,45 @@ void setup()
 {
 
   LoggerSetupSerial(); // Initialize the serial logger
-  sl->Printf("System setup start...").Debug();
-  
-  cfg.loadAll();
-  PinSetup();
 
-  // init modules...
-  SetupStartDisplay();
+  sl->Printf("System setup start...").Debug();
+
+  PinSetup();
+  sl->Printf("Check for reset/AP button...").Debug();
   SetupCheckForResetButton();
   SetupCheckForAPModeButton();
-  // CalibrateJoystick();
+
+  // sl->Printf("Clear Settings...").Debug();
+  // cfg.clearAllFromPrefs();
+
+  sl->Printf("Load configuration...").Debug();
+  cfg.loadAll();
+
+  //04.09.2025 new function to check all settings with errors
+  cfg.checkSettingsForErrors();
+
+  //05.09.2025 add new updateTopics function to the mqttSettings
+  mqttSettings.updateTopics(); // better restart the device after changing the Publish_Topic to prevent fragmentation of the memory and overflow of the heap
+
+  // init modules...
+  sl->Printf("init modules...").Debug();
+  SetupStartDisplay();
+  ShowDisplay();
 
   helpers.blinkBuidInLEDsetpinMode(); // Initialize the built-in LED pin mode
   helpers.blinkBuidInLED(3, 100);     // Blink the built-in LED 3 times with a 100ms delay
 
-  powerSmoother.fillBufferOnStart(generalSettings.minOutput.get());
+  sl->Printf("Init buffer...!").Debug();
+  // powerSmoother.fillBufferOnStart(generalSettings.minOutput.get());
+  powerSmoother = new Smoother(
+        generalSettings.smoothingSize.get(),
+        generalSettings.inputCorrectionOffset.get(),
+        generalSettings.minOutput.get(),
+        generalSettings.maxOutput.get()
+      );
+  powerSmoother->fillBufferOnStart(generalSettings.minOutput.get());
 
   sl->Printf("Configuration printout:").Debug();
-  // sl->Printf("/s", cfg.toJSON(false)).Debug();
   Serial.println(cfg.toJSON(false)); // Print the configuration to the serial monitor
   // testRS232();
 
@@ -112,7 +125,7 @@ void setup()
 
   sl->Printf("SETUP: Check and start BME280!").Debug();
   sll->Printf("Check and start BME280!").Debug();
-  SetupStartTemperatureMeasuring();
+  SetupStartTemperatureMeasuring(); //also starts the temperature ticker, its allways active
 
   //----------------------------------------
 
@@ -125,19 +138,18 @@ void setup()
   client.setServer(mqttSettings.mqtt_server.get().c_str(), static_cast<uint16_t>(mqttSettings.mqtt_port.get())); // Set the MQTT server and port
   client.setCallback(cb_MQTT);
 
-  sl->Debug("Attaching tickers...");
-  sll->Debug("Attaching tickers...");
-  PublischMQTTTicker.attach(generalSettings.MQTTPublischPeriod.get(), cb_PublishToMQTT);
-  ListenMQTTTicker.attach(generalSettings.MQTTListenPeriod.get(), cb_MQTTListener);
+  //set rs232 ticker, its always active
+  sl->Debug("Setup RS485 ticker...");
+  sll->Debug("Setup RS485 ticker...");
   RS485Ticker.attach(generalSettings.RS232PublishPeriod.get(), cb_RS485Listener);
-  tickerActive = true; // Set the flag to indicate that the ticker is active
-  reconnectMQTT();     // connect to MQTT broker
+
   sl->Debug("System setup completed.");
   sll->Debug("Setup completed.");
 }
 
 void loop()
 {
+  CheckButtons();
   if (WiFi.status() == WL_CONNECTED && client.connected())
   {
     digitalWrite(LED_BUILTIN, LOW); // show that we are connected
@@ -151,6 +163,7 @@ void loop()
   {
     if (tickerActive) // Check if the ticker is already active
     {
+      ShowDisplay(); // Show the display to indicate WiFi is lost
       sl->Debug("WiFi not connected or in AP mode! deactivate ticker.");
       sll->Debug("WiFi lost connection!");
       sll->Debug("or run in AP mode!");
@@ -158,61 +171,72 @@ void loop()
       PublischMQTTTicker.detach(); // Stop the ticker if WiFi is not connected or in AP mode
       ListenMQTTTicker.detach();   // Stop the ticker if WiFi is not connected or in AP mode
       tickerActive = false;        // Set the flag to indicate that the ticker is not active
+
+      // check if ota is active and settings is off, reboot device, to stop ota
+      if (generalSettings.allowOTA.get() == false && cfg.isOTAInitialized())
+      {
+        sll->Debug("Stop OTA-Modeule");
+        cfg.stopOTA();//TODO: implemented, but not tested yet
+        // cfg.reboot();
+      }
+    }
+    //reconnect, if not in ap mode
+    if (WiFi.getMode() != WIFI_AP){
+      sl->Debug("reconnect to WiFi...");
+      sll->Debug("reconnect to WiFi...");
+      // WiFi.reconnect(); // try to reconnect to WiFi
+      bool isStartedAsAP = SetupStartWebServer();
     }
   }
   else
   {
     if (!tickerActive) // Check if the ticker is not already active
     {
+      ShowDisplay(); // Show the display
       sl->Debug("WiFi connected! Reattach ticker.");
       sll->Debug("WiFi reconnected!");
       sll->Debug("Reattach ticker.");
       PublischMQTTTicker.attach(generalSettings.MQTTPublischPeriod.get(), cb_PublishToMQTT); // Reattach the ticker if WiFi is connected
       ListenMQTTTicker.attach(generalSettings.MQTTListenPeriod.get(), cb_MQTTListener);      // Reattach the ticker if WiFi is connected
-      tickerActive = true;                                                                   // Set the flag to indicate that the ticker is active
+      if(generalSettings.allowOTA.get()){
+        sll->Debug("Start OTA-Modeule");
+        cfg.setupOTA("Ota-esp32-device", generalSettings.otaPassword.get().c_str());
+      }
+      ShowDisplay();               // Show the display
+      tickerActive = true; // Set the flag to indicate that the ticker is active
     }
   }
 
   WriteToDisplay();
 
-  if (WiFi.getMode() == WIFI_AP)
-  {
+  if (WiFi.getMode() == WIFI_AP) {
     helpers.blinkBuidInLED(5, 50); // show we are in AP mode
     sll->Debug("or run in AP mode!");
-  }
-
-  else
-  {
-    if (WiFi.status() != WL_CONNECTED)
-    {
+  } else {
+    if (WiFi.status() != WL_CONNECTED) {
       sl->Debug("❌ WiFi not connected!");
       sll->Debug("reconnect to WiFi...");
-      cfg.reconnectWifi();
+      // cfg.reconnectWifi();
+      SetupStartWebServer();
       delay(1000);
       return;
     }
     // blinkBuidInLED(1, 100); // not used here, because blinker is used if we get a message from MQTT
   }
 
-  cfg.handleClient();
+
 
   if (!client.connected())
   {
-    // logv("MQTT Not Connected!");
+    sll->Debug("MQTT Not Connected! -> reconnecting...");
     reconnectMQTT();
   }
 
-  // ReadJoystick(); // Read the joystick input
-  CheckVentilator(temperature);
-  // readLDRs();
-  delay(10);
-}
 
-void yield()
-{
-  // This function is called to yield control to other tasks
-  // It can be used to prevent watchdog timer resets
-  delay(1);
+  CheckVentilator(temperature);
+  cfg.handleClient();
+  cfg.handleOTA();
+  delay(100);
 }
 
 //----------------------------------------
@@ -253,7 +277,7 @@ void reconnectMQTT()
 
     // print the mqtt settings
     sl->Printf("Connecting to MQTT broker...").Debug();
-    sl->Printf("MQTT Hostname: %s", mqttSettings.mqtt_hostname.c_str()).Debug();
+    sl->Printf("MQTT Hostname: %s", mqttSettings.Publish_Topic.get().c_str()).Debug();
     sl->Printf("MQTT Server: %s", mqttSettings.mqtt_server.get().c_str()).Debug();
     sl->Printf("MQTT Port: %d", mqttSettings.mqtt_port.get()).Debug();
     sl->Printf("MQTT User: %s", mqttSettings.mqtt_username.get().c_str()).Debug();
@@ -261,7 +285,7 @@ void reconnectMQTT()
     sl->Printf("MQTT Password: ***").Debug();
     sl->Printf("MQTT Sensor Power Usage Topic: %s", mqttSettings.mqtt_sensor_powerusage_topic.get().c_str()).Debug();
 
-    client.connect(mqttSettings.mqtt_hostname.c_str(), mqttSettings.mqtt_username.get().c_str(), mqttSettings.mqtt_password.get().c_str()); // Connect to the MQTT broker
+    client.connect(mqttSettings.Publish_Topic.get().c_str(), mqttSettings.mqtt_username.get().c_str(), mqttSettings.mqtt_password.get().c_str()); // Connect to the MQTT broker
     delay(2000);
 
     if (client.connected())
@@ -290,7 +314,8 @@ void reconnectMQTT()
     if (AktualImportFromGrid > 0)
     {
       AktualImportFromGrid = AktualImportFromGrid - 10;
-      inverterSetValue = powerSmoother.smooth(AktualImportFromGrid);
+      // inverterSetValue = powerSmoother.smooth(AktualImportFromGrid);
+      inverterSetValue = powerSmoother->smooth(AktualImportFromGrid);
     }
     // AktualImportFromGrid
     // delay(1000);   // Wait for 1 second before restarting
@@ -374,12 +399,16 @@ void cb_MQTTListener()
 
 void cb_RS485Listener()
 {
-  inverterSetValue = powerSmoother.smooth(AktualImportFromGrid);
+  // inverterSetValue = powerSmoother.smooth(AktualImportFromGrid);
+  inverterSetValue = powerSmoother->smooth(AktualImportFromGrid);
+  // if (generalSettings.enableController.get())
   if (generalSettings.enableController.get())
   {
     // rs485.sendToRS485(static_cast<uint16_t>(inverterSetValue));
-    powerSmoother.setCorrectionOffset(generalSettings.inputCorrectionOffset.get()); // apply the correction offset to the smoother, if needed
+    // powerSmoother.setCorrectionOffset(generalSettings.inputCorrectionOffset.get()); // apply the correction offset to the smoother, if needed
+    powerSmoother->setCorrectionOffset(generalSettings.inputCorrectionOffset.get()); // apply the correction offset to the smoother, if needed
     sendToRS485(static_cast<uint16_t>(inverterSetValue));
+    sl->Printf("controller is enabled! Set inverter to %d W", inverterSetValue).Debug();
   }
   else
   {
@@ -387,7 +416,7 @@ void cb_RS485Listener()
     sl->Debug("MAX-POWER!");
     sll->Debug("Limiter is didabled!");
     sll->Debug("MAX-POWER!");
-    sendToRS485(generalSettings.maxOutput.get()); // send the maxOutput to the RS485 module
+    sendToRS485(generalSettings.maxOutput.get()); // send the maxOutput to the RS485 module");
   }
 }
 
@@ -433,9 +462,10 @@ void SetupCheckForAPModeButton()
   String APName = "ESP32_Config";
   String pwd = "config1234"; // Default AP password
 
-  if (wifiSettings.wifiSsid.get().length() == 0 || generalSettings.unconfigured.get())
+  // if (wifiSettings.wifiSsid.get().length() == 0 || generalSettings.unconfigured.get())
+  if (wifiSettings.wifiSsid.get().length() == 0 )
   {
-    sl->Printf("⚠️ SETUP: wifiSsid.get() ist empty! [%s]", wifiSettings.wifiSsid.get().c_str()).Error();
+    sl->Printf("⚠️ SETUP: wifiSsid.get() ist empty? [%s], or unconfigured flag is active", wifiSettings.wifiSsid.get().c_str()).Error();
     cfg.startAccessPoint("192.168.4.1", "255.255.255.0", APName, "");
     generalSettings.unconfigured.set(false); // Set the unconfigured flag to false after starting the access point
     cfg.saveAll(); // Save the settings to EEPROM
@@ -480,37 +510,51 @@ void SetupStartTemperatureMeasuring()
 
 bool SetupStartWebServer()
 {
-
+  sl->Printf("⚠️ SETUP: Starting Webserver...!").Debug();
+  sll->Printf("Starting Webserver...!").Debug();
+  
   if (wifiSettings.wifiSsid.get().length() == 0)
   {
-    sl->Printf("No SSID!").Debug();
+    sl->Printf("No SSID! --> Start AP!").Debug();
     sll->Printf("No SSID!").Debug();
     sll->Printf("Start AP!").Debug();
     cfg.startAccessPoint();
+    delay(1000);
+    return true; // Skip webserver setup if no SSID is set
   }
 
-  if (WiFi.getMode() == WIFI_AP)
-  {
+  if (WiFi.getMode() == WIFI_AP) {
     sl->Printf("🖥️ Run in AP Mode! ");
     sll->Printf("Run in AP Mode! ");
     return false; // Skip webserver setup in AP mode
   }
 
-  cfg.reconnectWifi();
-  delay(1000);
+  if (WiFi.status() != WL_CONNECTED) {
+    if (wifiSettings.useDhcp.get())
+    {
+      sl->Printf("startWebServer: DHCP enabled\n");
+      cfg.startWebServer(wifiSettings.wifiSsid.get(), wifiSettings.wifiPassword.get());
+    }
+    else
+    {
+      sl->Printf("startWebServer: DHCP disabled\n");
+      // cfg.startWebServer("192.168.2.127", "192.168.2.250", "255.255.255.0", wifiSettings.wifiSsid.get(), wifiSettings.wifiPassword.get());
+      cfg.startWebServer(wifiSettings.staticIp.get(), wifiSettings.gateway.get(), wifiSettings.subnet.get(), 
+                  wifiSettings.wifiSsid.get(), wifiSettings.wifiPassword.get());
+    }
+    // cfg.reconnectWifi();
+    WiFi.setSleep(false);
+    delay(1000);
+  }
+  sl->Printf("\n\nWebserver running at: %s\n", WiFi.localIP().toString().c_str());
+  sll->Printf("Web: %s\n\n", WiFi.localIP().toString().c_str());
+  sl->Printf("WLAN-Strength: %d dBm\n", WiFi.RSSI());
+  sl->Printf("WLAN-Strength is: %s\n\n", WiFi.RSSI() > -70 ? "good" : (WiFi.RSSI() > -80 ? "ok" : "weak"));
+  sll->Printf("WLAN: %s\n", WiFi.RSSI() > -70 ? "good" : (WiFi.RSSI() > -80 ? "ok" : "weak"));
 
-  if (wifiSettings.useDhcp.get())
-  {
-    sl->Printf("DHCP enabled");
-    cfg.startWebServer(wifiSettings.wifiSsid.get(), wifiSettings.wifiPassword.get());
-  }
-  else
-  {
-    sl->Printf("DHCP disabled");
-    cfg.startWebServer("192.168.2.122", "255.255.255.0", "192.168.2.250", wifiSettings.wifiSsid.get(), wifiSettings.wifiPassword.get());
-  }
-  sl->Printf("🖥️ Webserver running at: %s", WiFi.localIP().toString().c_str());
-  sll->Printf("Web: %s", WiFi.localIP().toString().c_str());
+
+
+
   return true; // Webserver setup completed
 }
 
@@ -543,6 +587,12 @@ void WriteToDisplay()
 {
   // display.clearDisplay();
   display.fillRect(0, 0, 128, 24, BLACK); // Clear the previous message area
+
+  if (displayActive == false)
+  {
+    return; // exit the function if the display is not active
+  }
+
   display.drawRect(0, 0, 128, 24, WHITE);
 
   display.setTextSize(1);
@@ -578,150 +628,65 @@ void PinSetup()
   pinMode(BUTTON_PIN_RESET_TO_DEFAULTS, INPUT_PULLUP); // importand: BUTTON is LOW aktiv!
   pinMode(BUTTON_PIN_AP_MODE, INPUT_PULLUP);           // importand: BUTTON is LOW aktiv!
 
-  // pinMode(RELAY_MOTOR_UP_PIN, OUTPUT);
-  // digitalWrite(RELAY_MOTOR_UP_PIN, HIGH); // set the relay to HIGH (off) at startup
-
-  // pinMode(RELAY_MOTOR_DOWN_PIN, OUTPUT);
-  // digitalWrite(RELAY_MOTOR_DOWN_PIN, HIGH); // set the relay to HIGH (off) at startup
-
-  // pinMode(RELAY_MOTOR_LEFT_PIN, OUTPUT);
-  // digitalWrite(RELAY_MOTOR_LEFT_PIN, HIGH); // set the relay to HIGH (off) at startup
-
-  // pinMode(RELAY_MOTOR_RIGHT_PIN, OUTPUT);
-  // digitalWrite(RELAY_MOTOR_RIGHT_PIN, HIGH); // set the relay to HIGH (off) at startup
-
   pinMode(RELAY_VENTILATOR_PIN, OUTPUT);
   digitalWrite(RELAY_VENTILATOR_PIN, HIGH); // set the ventilator relay to HIGH (off) at startup
 }
 
-// void CalibrateJoystick()
-// {
-//   // Read the current raw joystick values
-//   int rawX = analogRead(JOYSTICK_X_PIN);
-//   int rawY = analogRead(JOYSTICK_Y_PIN);
-
-//   // Store the offset to subtract later
-//   generalSettings.XjoystickOffset.set(rawX);
-//   generalSettings.YjoystickOffset.set(rawY);
-
-//   int joystickOffsetX = generalSettings.XjoystickOffset.get();
-//   int joystickOffsetY = generalSettings.YjoystickOffset.get();
-
-//   sl->Printf("Joystick calibrated: OffsetX = %d, OffsetY = %d", joystickOffsetX, joystickOffsetY).Debug();
-// }
-
-// void ReadJoystick()
-// {
-//   int rawX = analogRead(JOYSTICK_X_PIN);
-//   int rawY = analogRead(JOYSTICK_Y_PIN);
-//   // sl->Printf("Joystick X: %04d, Y: %04d", rawX, rawY).Debug();
-
-//   int joystickOffsetX = generalSettings.XjoystickOffset.get();
-//   int joystickOffsetY = generalSettings.YjoystickOffset.get();
-//   // Subtract offset to center the joystick
-//   int adjustedX = rawX - joystickOffsetX;
-//   int adjustedY = rawY - joystickOffsetY;
-
-//   // Map adjusted values to -100 to 100
-//   int mappedX = map(adjustedX, -joystickOffsetX, 4095 - joystickOffsetX, -100, 100);
-//   int mappedY = map(adjustedY, -joystickOffsetY, 4095 - joystickOffsetY, -100, 100);
-
-//   // sl->Printf("Joystick X: %04d, Y: %04d", mappedX, mappedY).Debug();
-
-//   SetRalays(mappedX, mappedY); // Set the relays based on joystick input
-// }
-
-// void SetRalays(int x, int y)
-// {
-//   int Threshold = generalSettings.OnOffThreshold.get(); // Threshold to determine if the joystick is moved enough to activate relays
-//   // Set the motor direction based on joystick input
-//   if (y > Threshold) // Joystick up
-//   {
-//     digitalWrite(RELAY_MOTOR_UP_PIN, LOW);    // Activate UP relay
-//     digitalWrite(RELAY_MOTOR_DOWN_PIN, HIGH); // Deactivate DOWN relay
-//   }
-//   else if (y < -Threshold) // Joystick down
-//   {
-//     digitalWrite(RELAY_MOTOR_UP_PIN, HIGH);  // Deactivate UP relay
-//     digitalWrite(RELAY_MOTOR_DOWN_PIN, LOW); // Activate DOWN relay
-//   }
-//   else
-//   {
-//     digitalWrite(RELAY_MOTOR_UP_PIN, HIGH);   // Deactivate UP relay
-//     digitalWrite(RELAY_MOTOR_DOWN_PIN, HIGH); // Deactivate DOWN relay
-//   }
-
-//   if (x > Threshold) // Joystick right
-//   {
-//     digitalWrite(RELAY_MOTOR_RIGHT_PIN, LOW); // Activate RIGHT relay
-//     digitalWrite(RELAY_MOTOR_LEFT_PIN, HIGH); // Deactivate LEFT relay
-//   }
-//   else if (x < -Threshold) // Joystick left
-//   {
-//     digitalWrite(RELAY_MOTOR_RIGHT_PIN, HIGH); // Deactivate RIGHT relay
-//     digitalWrite(RELAY_MOTOR_LEFT_PIN, LOW);   // Activate LEFT relay
-//   }
-//   else
-//   {
-//     digitalWrite(RELAY_MOTOR_RIGHT_PIN, HIGH); // Deactivate RIGHT relay
-//     digitalWrite(RELAY_MOTOR_LEFT_PIN, HIGH);  // Deactivate LEFT relay
-//   }
-// }
-
 void CheckVentilator(float aktualTemperature)
 {
+  // sl->Printf("Check Ventilator...\nCurrent Temperature: %2.3f °C", aktualTemperature);
   // Check if ventilator control is enabled
   if (!generalSettings.VentilatorEnable.get())
   {
-    digitalWrite(RELAY_VENTILATOR_PIN, HIGH); // Deactivate ventilator relay if control is disabled
+    // sl->Debug("Ventilator control is disabled.");
+    digitalWrite(RELAY_VENTILATOR_PIN, LOW); // Deactivate ventilator relay if control is disabled
     return;                                   // Exit if ventilator control is disabled
   }
 
   // Check if the temperature exceeds the ON threshold
   if (aktualTemperature >= generalSettings.VentilatorOn.get())
   {
-    digitalWrite(RELAY_VENTILATOR_PIN, LOW); // Activate ventilator relay
+    // sl->Debug("Ventilator ON - Temperature threshold exceeded.");
+    digitalWrite(RELAY_VENTILATOR_PIN, HIGH); // Activate ventilator relay
   }
   else if (aktualTemperature <= generalSettings.VentilatorOFF.get())
   {
-    digitalWrite(RELAY_VENTILATOR_PIN, HIGH); // Deactivate ventilator relay
+    // sl->Debug("Ventilator OFF - Temperature below OFF threshold.");
+    digitalWrite(RELAY_VENTILATOR_PIN, LOW); // Deactivate ventilator relay
   }
 }
 
-// void readLDRs()
-// {
-//   // Read the LDR values
-//     // Read all sensors
-//   int ldr1 = analogRead(LDR_PIN1);
-//   int ldr2 = analogRead(LDR_PIN2);
-//   int ldr3 = analogRead(LDR_PIN3);
-//   int ldr4 = analogRead(LDR_PIN4);
+void CheckButtons()
+{
+  // sl->Debug("Check Buttons...");
+  if (digitalRead(BUTTON_PIN_RESET_TO_DEFAULTS) == LOW)
+  {
+    sl->Internal("Reset-Button pressed after reboot... -> Start Display Ticker...");
+    ShowDisplay();
+  }
 
+  if (digitalRead(BUTTON_PIN_AP_MODE) == LOW)
+  {
+    sl->Internal("AP-Mode-Button pressed after reboot... -> Start Display Ticker...");
+    ShowDisplay();
+  }
+}
 
-//   // print the raw LDR values to the serial monitor
-//   // sl->Printf("LDR1: %04d, LDR2: %04d, LDR3: %04d, LDR4: %04d", ldr1, ldr2, ldr3, ldr4).Debug();
+void ShowDisplay()
+{
+  displayTicker.detach(); // Stop the ticker to prevent multiple calls
+  display.ssd1306_command(SSD1306_DISPLAYON); // Turn on the display
+  displayTicker.attach(generalSettings.displayShowTime.get(), ShowDisplayOff); // Reattach the ticker to turn off the display after the specified time
+  displayActive = true;
+}
 
-//   ldrSettings.ldr1.set(ldr1);
-//   ldrSettings.ldr2.set(ldr2);
-//   ldrSettings.ldr3.set(ldr3);
-//   ldrSettings.ldr4.set(ldr4);
+void ShowDisplayOff()
+{
+  displayTicker.detach(); // Stop the ticker to prevent multiple calls
+  display.ssd1306_command(SSD1306_DISPLAYOFF); // Turn off the display
+  // display.fillRect(0, 0, 128, 24, BLACK); // Clear the previous message area
 
-//    int verticalDiff = (ldr1 + ldr2) - (ldr3 + ldr4);   // Top vs Bottom
-//   int horizontalDiff = (ldr1 + ldr3) - (ldr2 + ldr4);  // Left vs Right
-
-//     // Calculate total light for normalization
-//   int totalLight = ldr1 + ldr2 + ldr3 + ldr4;
-
-//  // Calculate percentages (-100 to 100)
-//   int x = 0, y = 0;
-//   if (totalLight > 0) {  // Prevent division by zero
-//     x = constrain((horizontalDiff * 100) / totalLight, -100, 100);
-//     y = constrain((verticalDiff * 100) / totalLight, -100, 100);
-//   }
-
-//   // Debug output
-//   // sl->Printf("X: %04d Y: %04d | Raw: %04d %04d %04d %40d", x, y, ldr1, ldr2, ldr3, ldr4).Debug();
-
-  
-//    SetRalays(x, y); // Set the relays based on joystick input
-// }
+  if (generalSettings.saveDisplay.get()){
+    displayActive = false;
+  }
+}

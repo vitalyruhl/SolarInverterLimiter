@@ -27,7 +27,7 @@ void LoggerSetupSerial()
     Serial.begin(115200);
     while (!Serial)
     {
-        delay(10); // wait for serial port to connect. Needed for native USB port only
+        delay(50); // wait for serial port to connect. Needed for native USB port only
     }
     sl->Debug("Serial started!");
     sll->Debug("LCD started!");
