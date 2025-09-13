@@ -216,7 +216,8 @@ void loop()
     if (WiFi.status() != WL_CONNECTED) {
       sl->Debug("❌ WiFi not connected!");
       sll->Debug("reconnect to WiFi...");
-      cfg.reconnectWifi();
+      // cfg.reconnectWifi();
+      SetupStartWebServer();
       delay(1000);
       return;
     }
@@ -235,7 +236,7 @@ void loop()
   CheckVentilator(temperature);
   cfg.handleClient();
   cfg.handleOTA();
-  delay(10);
+  delay(100);
 }
 
 //----------------------------------------
@@ -509,13 +510,17 @@ void SetupStartTemperatureMeasuring()
 
 bool SetupStartWebServer()
 {
-
+  sl->Printf("⚠️ SETUP: Starting Webserver...!").Debug();
+  sll->Printf("Starting Webserver...!").Debug();
+  
   if (wifiSettings.wifiSsid.get().length() == 0)
   {
-    sl->Printf("No SSID!").Debug();
+    sl->Printf("No SSID! --> Start AP!").Debug();
     sll->Printf("No SSID!").Debug();
     sll->Printf("Start AP!").Debug();
     cfg.startAccessPoint();
+    delay(1000);
+    return true; // Skip webserver setup if no SSID is set
   }
 
   if (WiFi.getMode() == WIFI_AP) {
@@ -524,22 +529,28 @@ bool SetupStartWebServer()
     return false; // Skip webserver setup in AP mode
   }
 
-  cfg.reconnectWifi();
-  delay(1000);
+  if (WiFi.status() != WL_CONNECTED) {
+    if (wifiSettings.useDhcp.get())
+    {
+      sl->Printf("startWebServer: DHCP enabled\n");
+      cfg.startWebServer(wifiSettings.wifiSsid.get(), wifiSettings.wifiPassword.get());
+    }
+    else
+    {
+      sl->Printf("startWebServer: DHCP disabled\n");
+      // cfg.startWebServer("192.168.2.127", "192.168.2.250", "255.255.255.0", wifiSettings.wifiSsid.get(), wifiSettings.wifiPassword.get());
+      cfg.startWebServer(wifiSettings.staticIp.get(), wifiSettings.gateway.get(), wifiSettings.subnet.get(), 
+                  wifiSettings.wifiSsid.get(), wifiSettings.wifiPassword.get());
+    }
+    // cfg.reconnectWifi();
+    delay(1000);
+  }
 
-  if (wifiSettings.useDhcp.get())
-  {
-    sl->Printf("DHCP enabled");
-    cfg.startWebServer(wifiSettings.wifiSsid.get(), wifiSettings.wifiPassword.get());
-  }
-  else
-  {
-    sl->Printf("DHCP disabled");
-    // cfg.startWebServer("192.168.2.126", "255.255.255.0", "192.168.2.250", wifiSettings.wifiSsid.get(), wifiSettings.wifiPassword.get());
-    cfg.startWebServer(wifiSettings.staticIp.get(), wifiSettings.subnet.get(), wifiSettings.gateway.get(), wifiSettings.wifiSsid.get(), wifiSettings.wifiPassword.get());
-  }
-  sl->Printf("🖥️ Webserver running at: %s", WiFi.localIP().toString().c_str());
-  sll->Printf("Web: %s", WiFi.localIP().toString().c_str());
+  sl->Printf("\n\nWebserver running at: %s\n", WiFi.localIP().toString().c_str());
+  sll->Printf("Web: %s\n\n", WiFi.localIP().toString().c_str());
+
+
+
   return true; // Webserver setup completed
 }
 

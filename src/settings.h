@@ -10,8 +10,20 @@
 
 #include "ConfigManager.h"
 
-#define VERSION "2.1.0"           // version of the software (major.minor.patch) (Version 0.6.0 Has Breaking Changes!)
-#define VERSION_DATE "02.09.2025" // date of the version
+// -------------------------------------------------------------------------------------------------------------
+// Migrated to ConfigManager V2.3.1 (breaking changes: legacy Config constructors replaced by ConfigOptions)
+// -------------------------------------------------------------------------------------------------------------
+// NOTES ABOUT NEW API:
+//  - Use designated initialization with ConfigOptions<T>{ .keyName = "...", .category = "...", .defaultValue = ... }
+//  - Optional UI fields: .prettyName, .prettyCat
+//  - Visibility / secrets: .showInWeb, .isPassword
+//  - Dynamic visibility: .showIf (std::function<bool()>)
+//  - Callback (primitive pointer) .cb OR after construction: instance.setCallback(std::function<>)
+//  - Key length limit (category + '_' + key) <= 15 chars (storage). Longer parts are truncated automatically.
+// -------------------------------------------------------------------------------------------------------------
+
+#define VERSION "2.3.1"           // version of the software (major.minor.patch)
+#define VERSION_DATE "13.09.2025" // date of the version
 
 //--------------------------------------------------------------------------------------------------------------
 // set the I2C address for the BME280 sensor for temperature and humidity
@@ -41,25 +53,63 @@ extern ConfigManagerClass cfg;// store it globaly before using it in the setting
 
 //--------------------------------------------------------------------------------------------------------------
 
-struct WiFi_Settings //wifiSettings
+struct WiFi_Settings // wifiSettings (migrated to new ConfigOptions API)
 {
     Config<String> wifiSsid;
     Config<String> wifiPassword;
-    Config<bool> useDhcp;
+    Config<bool>   useDhcp;
     Config<String> staticIp;
     Config<String> gateway;
     Config<String> subnet;
 
-    //todo: add static-IP settings
     WiFi_Settings() :
-
-                    wifiSsid("ssid", "wifi", "WiFi SSID", "MyWiFi"),
-                    wifiPassword("password", "wifi", "WiFi Password", "secretpass", true, true),
-                    useDhcp("dhcp", "network", "Use DHCP", false),
-                    staticIp("sIP", "network", "Static IP", "192.168.2.126"),
-                    subnet("subnet", "network", "Subnet-Mask", "255.255.255.0"),
-                    gateway("GW", "network", "Gateway", "192.168.2.250")
-
+        wifiSsid(ConfigOptions<String>{
+            .keyName = "ssid",
+            .category = "wifi",
+            .defaultValue = String("MyWiFi"),
+            .prettyName = "WiFi SSID",
+            .prettyCat = "Network Settings"
+        }),
+        wifiPassword(ConfigOptions<String>{
+            .keyName = "password",
+            .category = "wifi",
+            .defaultValue = String("secretpass"),
+            .prettyName = "WiFi Password",
+            .prettyCat = "Network Settings",
+            .showInWeb = true,
+            .isPassword = true
+        }),
+        useDhcp(ConfigOptions<bool>{
+            .keyName = "dhcp",
+            .category = "network",
+            .defaultValue = false,
+            .prettyName = "Use DHCP",
+            .prettyCat = "Network Settings"
+        }),
+        staticIp(ConfigOptions<String>{
+            .keyName = "sIP",
+            .category = "network",
+            .defaultValue = String("192.168.2.126"),
+            .prettyName = "Static IP",
+            .prettyCat = "Network Settings",
+            .showIf = [this](){ return !this->useDhcp.get(); }
+        }),
+        gateway(ConfigOptions<String>{
+            .keyName = "GW",
+            .category = "network",
+            .defaultValue = String("192.168.2.250"),
+            .prettyName = "Gateway",
+            .prettyCat = "Network Settings",
+            .showIf = [this](){ return !this->useDhcp.get(); }
+        }),
+        subnet(ConfigOptions<String>{
+            .keyName = "subnet",
+            .category = "network",
+            .defaultValue = String("255.255.255.0"),
+            .prettyName = "Subnet-Mask",
+            .prettyCat = "Network Settings",
+            .showIf = [this](){ return !this->useDhcp.get(); }
+        })
     {
         cfg.addSetting(&wifiSsid);
         cfg.addSetting(&wifiPassword);
@@ -75,14 +125,14 @@ struct WiFi_Settings //wifiSettings
 
 // mqtt-Setup
 struct MQTT_Settings {
-    Config<int> mqtt_port;
+    Config<int>    mqtt_port;
     Config<String> mqtt_server;
     Config<String> mqtt_username;
     Config<String> mqtt_password;
     Config<String> mqtt_sensor_powerusage_topic;
     Config<String> Publish_Topic;
 
-    // for dynamic topics based on Publish_Topic
+    // dynamic topics (derived)
     String mqtt_publish_setvalue_topic;
     String mqtt_publish_getvalue_topic;
     String mqtt_publish_Temperature_topic;
@@ -90,12 +140,50 @@ struct MQTT_Settings {
     String mqtt_publish_Dewpoint_topic;
 
     MQTT_Settings() :
-        mqtt_port("Port", "MQTT", "MQTT-Port", 1883),
-        mqtt_server("Server", "MQTT", "MQTT-Server-IP", "192.168.2.3"),
-        mqtt_username("User", "MQTT", "MQTT-User", "housebattery"),
-        mqtt_password("Pass", "MQTT", "MQTT-Passwort", "mqttsecret", true, true),
-        mqtt_sensor_powerusage_topic("PUT", "MQTT", "Topic Powerusage", "emon/emonpi/power1"),
-        Publish_Topic("MQTTT", "MQTT", "Publish-Topic", "SolarLimiter")
+        mqtt_port(ConfigOptions<int>{
+            .keyName = "Port",
+            .category = "MQTT",
+            .defaultValue = 1883,
+            .prettyName = "Port",
+            .prettyCat = "MQTT-Section"
+        }),
+        mqtt_server(ConfigOptions<String>{
+            .keyName = "Server",
+            .category = "MQTT",
+            .defaultValue = String("192.168.2.3"),
+            .prettyName = "Server-IP",
+            .prettyCat = "MQTT-Section"
+        }),
+        mqtt_username(ConfigOptions<String>{
+            .keyName = "User",
+            .category = "MQTT",
+            .defaultValue = String("housebattery"),
+            .prettyName = "User",
+            .prettyCat = "MQTT-Section"
+        }),
+        mqtt_password(ConfigOptions<String>{
+            .keyName = "Pass",
+            .category = "MQTT",
+            .defaultValue = String("mqttsecret"),
+            .prettyName = "Password",
+            .prettyCat = "MQTT-Section",
+            .showInWeb = true,
+            .isPassword = true
+        }),
+        mqtt_sensor_powerusage_topic(ConfigOptions<String>{
+            .keyName = "PUT",
+            .category = "MQTT",
+            .defaultValue = String("emon/emonpi/power1"),
+            .prettyName = "Powerusage Topic",
+            .prettyCat = "MQTT-Section"
+        }),
+        Publish_Topic(ConfigOptions<String>{
+            .keyName = "MQTTT",
+            .category = "MQTT",
+            .defaultValue = String("SolarLimiter"),
+            .prettyName = "Publish-Topic",
+            .prettyCat = "MQTT-Section"
+        })
     {
         cfg.addSetting(&mqtt_port);
         cfg.addSetting(&mqtt_server);
@@ -104,21 +192,18 @@ struct MQTT_Settings {
         cfg.addSetting(&mqtt_sensor_powerusage_topic);
         cfg.addSetting(&Publish_Topic);
 
-        // callback to update topics when Publish_Topic changes
-        Publish_Topic.setCallback([this](String newValue) {
-            this->updateTopics();
-        });
-
-        updateTopics(); // make sure topics are initialized
+        // capturing lambda requires std::function path -> use setCallback after construction
+        Publish_Topic.setCallback([this](String){ this->updateTopics(); });
+        updateTopics();
     }
 
     void updateTopics() {
-        String hostname = Publish_Topic.get(); //you can trow an error here if its empty
-        mqtt_publish_setvalue_topic = hostname + "/SetValue";
-        mqtt_publish_getvalue_topic = hostname + "/GetValue";
-        mqtt_publish_Temperature_topic = hostname + "/Temperature";
-        mqtt_publish_Humidity_topic = hostname + "/Humidity";
-        mqtt_publish_Dewpoint_topic = hostname + "/Dewpoint";
+        String hostname = Publish_Topic.get();
+        mqtt_publish_setvalue_topic      = hostname + "/SetValue";
+        mqtt_publish_getvalue_topic      = hostname + "/GetValue";
+        mqtt_publish_Temperature_topic   = hostname + "/Temperature";
+        mqtt_publish_Humidity_topic      = hostname + "/Humidity";
+        mqtt_publish_Dewpoint_topic      = hostname + "/Dewpoint";
     }
 };
 
@@ -126,95 +211,115 @@ struct MQTT_Settings {
 // General configuration (default Settings)
 struct General_Settings
 {
-    Config<bool> enableController;     // set to false to disable the controller and use Maximum power output
-    Config<bool> enableMQTT;           // set to false to disable the MQTT connection
-
-    Config<int> maxOutput;             // edit this to limit TOTAL power output in watts
-    Config<int> minOutput;             // minimum output power in watts
-    Config<int> inputCorrectionOffset; // Adjust Correction Offset (Input + Offet + Smoothing --> Limmiter = Output)
-
-    Config<float> MQTTPublischPeriod;  // check all x seconds if there is a new MQTT message to publish
-    Config<float> MQTTListenPeriod;    // check x seconds if there is a new MQTT message to listen to
-
-    Config<float> TempCorrectionOffset;  // Offset for the temperature correction in Celsius (default is 0.0)
-    Config<float> HumidityCorrectionOffset;  // Offset for the humidity correction in percent (default is 0.0)
-
+    Config<bool>  enableController;
+    Config<bool>  enableMQTT;
+    Config<int>   maxOutput;
+    Config<int>   minOutput;
+    Config<int>   inputCorrectionOffset;
+    Config<float> MQTTPublischPeriod;
+    Config<float> MQTTListenPeriod;
+    Config<float> TempCorrectionOffset;
+    Config<float> HumidityCorrectionOffset;
     Config<float> VentilatorOn;
     Config<float> VentilatorOFF;
-    Config<bool> VentilatorEnable;
+    Config<bool>  VentilatorEnable;
+    Config<bool>  saveDisplay;
+    Config<int>   displayShowTime;
+    Config<bool>  allowOTA;
+    Config<String> otaPassword;
+    Config<float> RS232PublishPeriod;
+    Config<int>   smoothingSize;
+    Config<bool>  unconfigured;
+    Config<String> Version;
 
-    Config<bool> saveDisplay; // to turn off the display
-    Config<int> displayShowTime; // time in seconds to show the display after boot or button press (default is 60 seconds, 0 = 10s)
+    General_Settings() :
+        enableController(ConfigOptions<bool>{
+            .keyName = "enCtrl", .category = "Limiter", .defaultValue = true, .prettyName = "Enable Limitation"
+        }),
+        enableMQTT(ConfigOptions<bool>{
+            .keyName = "enMQTT", .category = "Limiter", .defaultValue = true, .prettyName = "Enable MQTT Propagation", .prettyCat = "MQTT-Section"
+        }),
+        maxOutput(ConfigOptions<int>{
+            .keyName = "MaxO", .category = "Limiter", .defaultValue = 1100, .prettyName = "Max-Output"
+        }),
+        minOutput(ConfigOptions<int>{
+            .keyName = "MinO", .category = "Limiter", .defaultValue = 500, .prettyName = "Min-Output"
+        }),
+        inputCorrectionOffset(ConfigOptions<int>{
+            .keyName = "ICO", .category = "Limiter", .defaultValue = 50, .prettyName = "Correction-Offset"
+        }),
+        MQTTPublischPeriod(ConfigOptions<float>{
+            .keyName = "MQTTP", .category = "System", .defaultValue = 5.0f, .prettyName = "MQTT Publishing Period", .prettyCat = "MQTT-Section"
+        }),
+        MQTTListenPeriod(ConfigOptions<float>{
+            .keyName = "MQTTL", .category = "System", .defaultValue = 0.5f, .prettyName = "MQTT Listening Period", .prettyCat = "MQTT-Section"
+        }),
+        TempCorrectionOffset(ConfigOptions<float>{
+            .keyName = "TCO", .category = "Temp", .defaultValue = 0.1f, .prettyName = "Temperature Correction", .prettyCat = "Temperature Settings"
 
-    Config<bool> allowOTA; // allow OTA updates (default is true, set to false to disable OTA updates)
-    Config<String> otaPassword; // password for OTA updates (default is "ota1234", change it to a secure password)
+        }),
+        HumidityCorrectionOffset(ConfigOptions<float>{
+            .keyName = "HYO", .category = "Temp", .defaultValue = 0.1f, .prettyName = "Humidity Correction", .prettyCat = "Temperature Settings"
+        }),
 
-    Config<float> RS232PublishPeriod;  // send the RS485 Data all x seconds
-    Config<int> smoothingSize;         // size of the buffer for smoothing
+        VentilatorOn(ConfigOptions<float>{
+            .keyName = "VentOn", .category = "FAN", .defaultValue = 30.0f, .prettyName = "Fan On over", .prettyCat = "FAN Control",
+            .showIf = [this](){ return this->VentilatorEnable.get();}
+        }),
+        VentilatorOFF(ConfigOptions<float>{
+            .keyName = "VentOff", .category = "FAN", .defaultValue = 27.0f, .prettyName = "Fan Off under", .prettyCat = "FAN Control",
+            .showIf = [this](){ return this->VentilatorEnable.get();}
+        }),
+        VentilatorEnable(ConfigOptions<bool>{
+            .keyName = "VentEn", .category = "FAN", .defaultValue = true, .prettyName = "Enable Fan Control", .prettyCat = "FAN Control"
+        }),
 
-    Config<bool> unconfigured; // flag to indicate if the device is unconfigured (default is true)
-    Config<String> Version;            // save the current version of the software
 
-    General_Settings() :enableController("enCtrl", "Limiter","Enable Limitation", true),
-                        enableMQTT("enMQTT", "Limiter","Enable MQTT Propagation", true),
-
-                        maxOutput("MaxO", "Limiter","Max-Output", 1100),
-                        minOutput("MinO", "Limiter","Min-Output", 500),
-                        inputCorrectionOffset("ICO", "Limiter","Correction-Offset", 50),
-
-                        MQTTPublischPeriod("MQTTP", "System","MQTT Publisching Periode", 5.0),
-                        MQTTListenPeriod("MQTTL", "System","MQTT Listening Periode", 0.5),
-
-                        TempCorrectionOffset("TCO", "Temp","Temperature Correction", 0.1),
-                        HumidityCorrectionOffset("HYO", "Temp","Humidity Correction", 0.1),
-
-                        VentilatorOn("VentOn", "FAN", "FAN Control", "FAN On over", 30.0),
-                        VentilatorOFF("VentOff", "FAN", "FAN Control", "FAN Off under", 27.0),
-                        VentilatorEnable("VentEn", "FAN", "FAN Control", "Enable Fan Control", true),
-
-                        saveDisplay("DispSave", "Display", "Turn Display Off", true),
-                        displayShowTime("DispTime", "Display", "Display On-Time in Sec", 60),
-
-                        allowOTA("OTAEn", "System", "Allow OTA Updates", true),
-                        otaPassword("OTAPass", "System", "OTA Password", "ota1234", true, true),
-
-                        RS232PublishPeriod("RS232P", "RS232","RS232 Publisching Periode", 2.0),
-                        smoothingSize("Smooth", "RS232","Smoothing Level", 10),
-
-                        unconfigured("Unconfigured", "GS","ESP is unconfigured", true, true), // flag to indicate if the device is unconfigured (default is true)
-                        Version("Version", "System","Programm-Version", VERSION)
+        saveDisplay(ConfigOptions<bool>{
+            .keyName = "DispSave", .category = "Display", .defaultValue = true, .prettyName = "Turn Display Off", .prettyCat = "Display Settings"
+        }),
+        displayShowTime(ConfigOptions<int>{
+            .keyName = "DispTime", .category = "Display", .defaultValue = 60, .prettyName = "Display On-Time (s)", .prettyCat = "Display Settings"
+        }),
+        allowOTA(ConfigOptions<bool>{
+            .keyName = "OTAEn", .category = "System", .defaultValue = true, .prettyName = "Allow OTA Updates"
+        }),
+        otaPassword(ConfigOptions<String>{
+            .keyName = "OTAPass", .category = "System", .defaultValue = String("ota1234"), .prettyName = "OTA Password", .showInWeb = true, .isPassword = true
+        }),
+        RS232PublishPeriod(ConfigOptions<float>{
+            .keyName = "RS232P", .category = "RS232", .defaultValue = 2.0f, .prettyName = "RS232 Publish Period"
+        }),
+        smoothingSize(ConfigOptions<int>{
+            .keyName = "Smooth", .category = "RS232", .defaultValue = 10, .prettyName = "Smoothing Level"
+        }),
+        unconfigured(ConfigOptions<bool>{
+            .keyName = "Unconfigured", .category = "GS", .defaultValue = true, .prettyName = "ESP is unconfigured", .showInWeb = false, .isPassword = false
+        }),
+        Version(ConfigOptions<String>{
+            .keyName = "Version", .category = "System", .defaultValue = String(VERSION), .prettyName = "Program Version"
+        })
     {
-        // Register settings with configManager
         cfg.addSetting(&enableController);
         cfg.addSetting(&enableMQTT);
-
         cfg.addSetting(&maxOutput);
         cfg.addSetting(&minOutput);
         cfg.addSetting(&inputCorrectionOffset);
-
         cfg.addSetting(&MQTTPublischPeriod);
         cfg.addSetting(&MQTTListenPeriod);
-
         cfg.addSetting(&TempCorrectionOffset);
         cfg.addSetting(&HumidityCorrectionOffset);
-
         cfg.addSetting(&VentilatorOn);
         cfg.addSetting(&VentilatorOFF);
         cfg.addSetting(&VentilatorEnable);
-
         cfg.addSetting(&saveDisplay);
         cfg.addSetting(&displayShowTime);
-
         cfg.addSetting(&allowOTA);
         cfg.addSetting(&otaPassword);
-
         cfg.addSetting(&RS232PublishPeriod);
         cfg.addSetting(&smoothingSize);
-
         cfg.addSetting(&unconfigured);
-
         cfg.addSetting(&Version);
-
     }
 };
 
