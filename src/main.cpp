@@ -543,11 +543,15 @@ bool SetupStartWebServer()
                   wifiSettings.wifiSsid.get(), wifiSettings.wifiPassword.get());
     }
     // cfg.reconnectWifi();
+    WiFi.setSleep(false);
     delay(1000);
   }
-
   sl->Printf("\n\nWebserver running at: %s\n", WiFi.localIP().toString().c_str());
   sll->Printf("Web: %s\n\n", WiFi.localIP().toString().c_str());
+  sl->Printf("WLAN-Strength: %d dBm\n", WiFi.RSSI());
+  sl->Printf("WLAN-Strength is: %s\n\n", WiFi.RSSI() > -70 ? "good" : (WiFi.RSSI() > -80 ? "ok" : "weak"));
+  sll->Printf("WLAN: %s\n", WiFi.RSSI() > -70 ? "good" : (WiFi.RSSI() > -80 ? "ok" : "weak"));
+
 
 
 
