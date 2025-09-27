@@ -36,7 +36,7 @@ void CheckButtons(); //check if buttons are pressed after boot
 void ShowDisplay(); //start the display for a defined time
 void ShowDisplayOff(); //turn off the display
 void CheckVentilator(float aktualTemperature); //check if the ventilator should be turned on or off
-
+static float computeDewPoint(float temperatureC, float relHumidityPct); //compute the dewpoint from temperature and humidity
 //--------------------------------------------------------------------------------------------------------------
 
 #pragma region configuratio variables
@@ -558,6 +558,18 @@ bool SetupStartWebServer()
   return true; // Webserver setup completed
 }
 
+static float computeDewPoint(float temperatureC, float relHumidityPct) {
+    if (isnan(temperatureC) || isnan(relHumidityPct)) return NAN;
+    if (relHumidityPct <= 0.0f) relHumidityPct = 0.1f;       // Unterlauf abfangen
+    if (relHumidityPct > 100.0f) relHumidityPct = 100.0f;    // Clamp
+    const float a = 17.62f;
+    const float b = 243.12f;
+    float rh = relHumidityPct / 100.0f;
+    float gamma = (a * temperatureC) / (b + temperatureC) + log(rh);
+    float dew = (b * gamma) / (a - gamma);
+    return dew;
+}
+
 void readBme280()
 {
   // todo: add settings for correcting the values!!!
@@ -568,10 +580,7 @@ void readBme280()
 
   temperature = bme280.data.temperature + generalSettings.TempCorrectionOffset.get(); // store the temperature value in the global variable
   Humidity = bme280.data.humidity + generalSettings.HumidityCorrectionOffset.get();   // store the temperature value in the global variable
-
-  // calculate drewpoint
-  //  Dewpoint = T - ((100 - RH) / 5.0)
-  Dewpoint = bme280.data.temperature - ((100 - bme280.data.humidity) / 5.0);
+  Dewpoint = computeDewPoint(temperature, Humidity);
 
   // output formatted values to serial console
   sl->Printf("-----------------------").Debug();
