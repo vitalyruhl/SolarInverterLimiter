@@ -31,7 +31,7 @@
 #define WDT_TIMEOUT 60                  // in seconds, if esp32 is not responding within this time, the ESP32 will reboot automatically
 
 #define RELAY_VENTILATOR_PIN 23 // GPIO pin for the ventilator (if used, otherwise not needed)
-#define RELAY_HEATER_PIN 25 // GPIO pin for the Heater (if used, otherwise not needed)
+#define RELAY_HEATER_PIN 33 // GPIO pin for the Heater (if used, otherwise not needed)
 
 // -------------------------------------------------------------
 // Relay logic levels
@@ -243,6 +243,9 @@ struct General_Settings
     Config<int>   wifiRebootTimeoutMin; // minutes without WiFi before auto reboot (0=disabled)
 
     Config<bool>  enableHeater;
+    Config<float> HeaterOnTemp;      // turn heater on below this temperature
+    Config<float> HeaterOffTemp;     // turn heater off above this temperature
+    Config<bool>  heaterBatterySaveMode; // battery save mode inhibits heater
 
     Config<bool>  unconfigured;
     Config<String> Version;
@@ -297,6 +300,18 @@ struct General_Settings
         enableHeater(ConfigOptions<bool>{
             .keyName = "HeatEn", .category = "Heater", .defaultValue = false, .prettyName = "Enable Heater Control", .prettyCat = "Heater Control"
         }),
+        HeaterOnTemp(ConfigOptions<float>{
+            .keyName = "HOn", .category = "Heater", .defaultValue = 0.0f, .prettyName = "Heater ON below", .prettyCat = "Heater Control",
+            .showIf = [this](){ return this->enableHeater.get(); }
+        }),
+        HeaterOffTemp(ConfigOptions<float>{
+            .keyName = "HOff", .category = "Heater", .defaultValue = 0.5f, .prettyName = "Heater OFF above", .prettyCat = "Heater Control",
+            .showIf = [this](){ return this->enableHeater.get(); }
+        }),
+        heaterBatterySaveMode(ConfigOptions<bool>{
+            .keyName = "HBatSv", .category = "Heater", .defaultValue = false, .prettyName = "Battery-Save-Mode", .prettyCat = "Heater Control",
+            .showIf = [this](){ return this->enableHeater.get(); }
+        }),
 
         // Display settings
         saveDisplay(ConfigOptions<bool>{
@@ -346,6 +361,9 @@ struct General_Settings
         cfg.addSetting(&ReadTemperatureTicker);
 
         cfg.addSetting(&enableHeater);
+        cfg.addSetting(&HeaterOnTemp);
+        cfg.addSetting(&HeaterOffTemp);
+        cfg.addSetting(&heaterBatterySaveMode);
 
         cfg.addSetting(&VentilatorOn);
         cfg.addSetting(&VentilatorOFF);

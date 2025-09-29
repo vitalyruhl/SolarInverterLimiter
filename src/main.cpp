@@ -35,7 +35,8 @@ bool SetupStartWebServer();
 void ProjectConfig();
 void PinSetup();
 void CheckButtons();
-void CheckVentilator(float aktualTemperature);
+void CheckVentilator(float currentTemperature);
+void EvaluateHeater(float currentTemperature);
 void ShowDisplay();
 void ShowDisplayOff();
 static float computeDewPoint(float temperatureC, float relHumidityPct);
@@ -70,6 +71,9 @@ float Pressure = 0.0;         // current pressure in hPa
 
 bool tickerActive = false;    // flag to indicate if the ticker is active
 bool displayActive = true;   // flag to indicate if the display is active
+static bool dewpointRiskActive = false; // tracks dewpoint alarm state
+static bool heaterLatchedState = false; // hysteresis latch for heater
+static String heaterReason = String("init"); // textual reason for current heater decision
 
 // WiFi downtime tracking for auto reboot
 static unsigned long wifiLastGoodMillis = 0;     // last time WiFi was connected (and not AP)
@@ -170,33 +174,30 @@ void setup()
         .fill = [](JsonObject &o){
             o["freeHeap"] = ESP.getFreeHeap();
             o["rssi"] = WiFi.RSSI();
+      o["heaterEnabled"] = generalSettings.enableHeater.get();
+      o["batterySave"] = generalSettings.heaterBatterySaveMode.get();
+      o["Fan"] = generalSettings.VentilatorEnable.get();
         }
     });
     cfg.defineRuntimeField("system", "freeHeap", "Free Heap", "B", 0);
     cfg.defineRuntimeField("system", "rssi", "WiFi RSSI", "dBm", 0);
-
+    cfg.defineRuntimeBool("system", "heaterEnabled", "Heater Feature Enabled");
+    cfg.defineRuntimeBool("system", "batterySave", "Battery Save Mode Feature Enabled");
+    cfg.defineRuntimeBool("system", "Fan", "Fan Feature Enabled");
 
   // Runtime live values provider for relay outputs
   cfg.addRuntimeProvider({
     .name = String("Outputs"),
     .fill = [] (JsonObject &o){
         o["ventilator"] = Relays::getVentilator();
-#ifdef RELAY_HEATER_PIN
-  o["heater"] = Relays::getHeater();
-  o["heaterEnabled"] = generalSettings.enableHeater.get();
-#else
-        o["heater"] = false;
-  o["heaterEnabled"] = false;
-#endif
+        o["heater"] = Relays::getHeater();
+        o["heaterReason"] = heaterReason;
     }
   });
 
   // Optional: define meta (labels, etc.) - simple minimal example
   cfg.defineRuntimeBool("Outputs", "ventilator", "Ventilator Active");
-#ifdef RELAY_HEATER_PIN
   cfg.defineRuntimeBool("Outputs", "heater", "Heater Active");
-  cfg.defineRuntimeBool("system", "heaterEnabled", "Heater Feature Enabled");
-#endif
 
 
     HeaterControl(false); // make sure heater is off at startup
@@ -312,6 +313,7 @@ void loop()
 
 
   CheckVentilator(temperature);
+  EvaluateHeater(temperature);
   cfg.handleClient();
   cfg.handleOTA();
   delay(100);
@@ -523,9 +525,9 @@ void SetupCheckForResetButton()
 
   if (digitalRead(BUTTON_PIN_RESET_TO_DEFAULTS) == LOW)
   {
-    sl->Internal("Reset-Button pressed... -> Resett all settings...");
-    sll->Internal("Reset-Button pressed!");
-    sll->Internal("Resett all settings!");
+  sl->Internal("Reset button pressed -> Reset all settings...");
+  sll->Internal("Reset button pressed!");
+  sll->Internal("Reset all settings!");
     cfg.clearAllFromPrefs(); // Clear all settings from EEPROM
     delay(10000);            // Wait for 10 seconds to avoid multiple resets
     generalSettings.unconfigured.set(true); // Set the unconfigured flag to true
@@ -543,19 +545,19 @@ void SetupCheckForAPModeButton()
   // if (wifiSettings.wifiSsid.get().length() == 0 || generalSettings.unconfigured.get())
   if (wifiSettings.wifiSsid.get().length() == 0 )
   {
-    sl->Printf("⚠️ SETUP: wifiSsid.get() ist empty? [%s], or unconfigured flag is active", wifiSettings.wifiSsid.get().c_str()).Error();
+  sl->Printf("⚠️ SETUP: WiFi SSID is empty [%s] (fresh/unconfigured)", wifiSettings.wifiSsid.get().c_str()).Error();
     cfg.startAccessPoint("192.168.4.1", "255.255.255.0", APName, "");
     generalSettings.unconfigured.set(false); // Set the unconfigured flag to false after starting the access point
     cfg.saveAll(); // Save the settings to EEPROM
   }
 
-  // check for pressed AP-Mode button
+  // check for pressed AP mode button
 
   if (digitalRead(BUTTON_PIN_AP_MODE) == LOW)
   {
-    sl->Internal("AP-Mode-Button pressed... -> Start AP-Mode...");
-    sll->Internal("AP-Mode-Button!");
-    sll->Internal("-> Start AP-Mode...");
+  sl->Internal("AP mode button pressed -> starting AP mode...");
+  sll->Internal("AP mode button!");
+  sll->Internal("-> starting AP mode...");
     cfg.startAccessPoint("192.168.4.1", "255.255.255.0", APName, "");
   }
 }
@@ -579,7 +581,7 @@ void SetupStartTemperatureMeasuring()
   }
   else
   {
-    sl->Printf("ready to using BME280. Sart Ticker...").Debug();
+  sl->Printf("BME280 ready. Start measurement ticker...").Debug();
     sll->Printf("BME280 detected!").Debug();
 
  // Sensor data provider
@@ -613,60 +615,29 @@ void SetupStartTemperatureMeasuring()
     cfg.defineRuntimeField("sensors", "Pressure", "Pressure", "hPa", 1);
 
     // Cross-field alarm: temperature within 1.0°C above dewpoint (risk of condensation)
-    cfg.defineRuntimeAlarm(
-        "dewpoint_risk",
-        [](const JsonObject &root){
-            if(!root.containsKey("sensors")) return false;
-            const JsonObject sensors = root["sensors"].as<JsonObject>();
-            if(!sensors.containsKey("temp") || !sensors.containsKey("dew")) return false;
-            float t = sensors["temp"].as<float>();
-            float d = sensors["dew"].as<float>();
-            return (t - d) <= 1.2f; // risk window
-        },
-        [](){ 
-          sl->Printf("[ALARM] Dewpoint proximity risk ENTER, set heater ON").Debug();
-          sll->Printf("[ALARM] Dewpoint").Debug();
-          HeaterControl(true);
-        }, 
-        [](){ 
-          sl->Printf("[ALARM] Dewpoint proximity risk EXIT, set heater OFF").Debug(); 
-          sll->Printf("[Info] Alarm Dewpoint gone").Debug();
-          HeaterControl(false);
-        }
-    );
-
-    // Runtime boolean alarm
-    cfg.defineRuntimeBool("alarms", "dewpoint_risk", "Dewpoint Risk", true); // show as bool alarm when true
-
-
-    // Temperature MIN alarm -> Heater relay ON when temperature below alarmMin (0.0°C) and OFF when recovered.
-    // Uses a little hysteresis (enter < 0.0, exit > 0.5) to avoid fast toggling.
-    cfg.defineRuntimeAlarm(
-        "temp_low",
-        [](const JsonObject &root){
-            static bool lastState = false; // for hysteresis
-            if(!root.containsKey("sensors")) return false;
-            const JsonObject sensors = root["sensors"].as<JsonObject>();
-            if(!sensors.containsKey("temp")) return false;
-            float t = sensors["temp"].as<float>();
-            // Hysteresis: once active keep it on until t > 0.5
-            if(lastState){ // currently active -> wait until we are clearly above release threshold
-                lastState = (t < 0.5f);
-            } else {       // currently inactive -> trigger when below entry threshold
-                lastState = (t < 0.0f);
-            }
-            return lastState;
-        },
-        [](){
-            sl->Printf("[ALARM] Temperature too low -> HEATER ON");
-            HeaterControl(true);
-        },
-        [](){
-            sl->Printf ("[ALARM] Temperature recovered -> HEATER OFF");
-            HeaterControl(false);
-        }
-    );
-    cfg.defineRuntimeBool("alarms", "temp_low", "too low temperature", true); // show as bool alarm when true in UI
+  cfg.defineRuntimeAlarm(
+    "dewpoint_risk",
+    [](const JsonObject &root){
+      if(!root.containsKey("sensors")) return false;
+      const JsonObject sensors = root["sensors"].as<JsonObject>();
+      if(!sensors.containsKey("temp") || !sensors.containsKey("dew")) return false;
+      float t = sensors["temp"].as<float>();
+      float d = sensors["dew"].as<float>();
+      return (t - d) <= 1.2f; // risk window
+    },
+    [](){
+      dewpointRiskActive = true;
+      heaterReason = "dewpoint-risk";
+      sl->Printf("[ALARM] Dewpoint risk ENTER").Debug();
+      EvaluateHeater(temperature);
+    },
+    [](){
+      dewpointRiskActive = false;
+      sl->Printf("[ALARM] Dewpoint risk EXIT").Debug();
+      EvaluateHeater(temperature);
+    }
+  );
+    cfg.defineRuntimeBool("alarms", "dewpoint_risk", "Dewpoint Risk", true);
 
 
 
@@ -770,9 +741,35 @@ void HeaterControl(bool heaterOn){
     Relays::setHeater(false);
     return;
   }
+  if(generalSettings.heaterBatterySaveMode.get()){
+    if(Relays::getHeater()){
+      sl->Debug("Battery-Save active -> force Heater OFF");
+    }
+    Relays::setHeater(false);
+    return;
+  }
   Relays::setHeater(heaterOn);
 #else
   (void)heaterOn; // heater not compiled in
+#endif
+}
+
+// New runtime provider for Limiter view
+// Shows whether limiter is enabled, current grid import, and inverter set value
+// Placed near end of file to ensure globals available
+__attribute__((constructor)) static void _registerLimiterProvider(){
+#ifdef ARDUINO
+    cfg.addRuntimeProvider({
+        .name = "Limiter",
+        .fill = [](JsonObject &o){
+            o["enabled"] = generalSettings.enableController.get();
+            o["gridIn"] = AktualImportFromGrid;
+            o["invSet"] = inverterSetValue;
+        }
+    });
+    cfg.defineRuntimeBool("Limiter", "enabled", "Limiter Enabled");
+    cfg.defineRuntimeField("Limiter", "gridIn", "Grid Import", "W", 0);
+    cfg.defineRuntimeField("Limiter", "invSet", "Inverter Set", "W", 0);
 #endif
 }
 
@@ -826,17 +823,65 @@ void PinSetup()
 #endif
 }
 
-void CheckVentilator(float aktualTemperature)
+void CheckVentilator(float currentTemperature)
 {
   if (!generalSettings.VentilatorEnable.get()) {
     Relays::setVentilator(false);
     return;
   }
-  if (aktualTemperature >= generalSettings.VentilatorOn.get()) {
+  if (currentTemperature >= generalSettings.VentilatorOn.get()) {
     Relays::setVentilator(true);
-  } else if (aktualTemperature <= generalSettings.VentilatorOFF.get()) {
+  } else if (currentTemperature <= generalSettings.VentilatorOFF.get()) {
     Relays::setVentilator(false);
   }
+}
+
+void EvaluateHeater(float currentTemperature){
+#ifdef RELAY_HEATER_PIN
+  // Priority 1: Battery save mode forces OFF
+  if(generalSettings.heaterBatterySaveMode.get()){
+    heaterLatchedState = false;
+    heaterReason = "battery-save";
+    Relays::setHeater(false);
+    return;
+  }
+  // Priority 2: Feature disabled
+  if(!generalSettings.enableHeater.get()){
+    heaterLatchedState = false;
+    heaterReason = "disabled";
+    Relays::setHeater(false);
+    return;
+  }
+  // Priority 3: Dewpoint risk -> force ON
+  if(dewpointRiskActive){
+    heaterLatchedState = true;
+    heaterReason = "dewpoint-risk";
+    Relays::setHeater(true);
+    return;
+  }
+  // Priority 4: Threshold hysteresis
+  float onTh = generalSettings.HeaterOnTemp.get();
+  float offTh = generalSettings.HeaterOffTemp.get();
+  if(offTh <= onTh) offTh = onTh + 0.3f; // enforce separation
+  if(!heaterLatchedState){
+    if(currentTemperature < onTh){
+      heaterLatchedState = true;
+      heaterReason = "below-on-th";
+    } else {
+      heaterReason = "above-on-th";
+    }
+  } else { // currently ON
+    if(currentTemperature > offTh){
+      heaterLatchedState = false;
+      heaterReason = "above-off-th";
+    } else {
+      heaterReason = "within-hyst";
+    }
+  }
+  Relays::setHeater(heaterLatchedState);
+#else
+  (void)currentTemperature;
+#endif
 }
 
 void CheckButtons()
