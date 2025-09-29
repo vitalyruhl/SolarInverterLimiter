@@ -31,7 +31,20 @@
 #define WDT_TIMEOUT 60                  // in seconds, if esp32 is not responding within this time, the ESP32 will reboot automatically
 
 #define RELAY_VENTILATOR_PIN 23 // GPIO pin for the ventilator (if used, otherwise not needed)
-#define RELAY_HEATER_PIN 34 // GPIO pin for the Heater (if used, otherwise not needed)
+#define RELAY_HEATER_PIN 25 // GPIO pin for the Heater (if used, otherwise not needed)
+
+// -------------------------------------------------------------
+// Relay logic levels
+// Set to 1 if the relay module is active LOW (typical on relay modules with optocoupler).
+// Set to 0 if the relay module is active HIGH (some modules without optocoupler).
+#ifndef VENTILATOR_RELAY_ACTIVE_LOW
+#define VENTILATOR_RELAY_ACTIVE_LOW 1
+#endif
+
+#ifndef HEATER_RELAY_ACTIVE_LOW
+#define HEATER_RELAY_ACTIVE_LOW 1
+#endif
+// -------------------------------------------------------------
 
 
 extern ConfigManagerClass cfg;// store it globaly before using it in the settings

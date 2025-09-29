@@ -15,32 +15,31 @@ AsyncWebServer server(80);
 #include "RS485Module/RS485Module.h"
 #include "helpers/helpers.h"
 #include "Smoother/Smoother.h"
+#include "helpers/relays.h"
 
-// predefine the functions
-void SetupStartDisplay(); //setup the display
-void reconnectMQTT(); //reconnect to the MQTT broker
-void cb_MQTT(char *topic, byte *message, unsigned int length); //callback function for incoming MQTT messages
-void publishToMQTT(); //publish the current values to the MQTT broker
-void cb_PublishToMQTT(); //ticker callback function to publish the current values to the MQTT broker
-void cb_MQTTListener(); //ticker callback function to listen for incoming MQTT messages
-void cb_RS485Listener(); //ticker callback function to read/write RS485
-void testRS232(); //test the RS232 communication (not used in normal operation)
-
-void readBme280(); //read the values from the BME280 (Temperature, Humidity) and calculate the dewpoint
-void WriteToDisplay();//write the values to the display
-
-void SetupCheckForResetButton();//check if button is pressed on boot for reset to defaults
-void SetupCheckForAPModeButton(); //check if button is pressed on boot for starting AP mode
-void SetupStartTemperatureMeasuring(); //setup the BME280 temperature and humidity sensor
-bool SetupStartWebServer(); //setup and start the web server
-void ProjectConfig(); //project specific configuration
-void PinSetup(); //setup the pins
-void CheckButtons(); //check if buttons are pressed after boot
-void ShowDisplay(); //start the display for a defined time
-void ShowDisplayOff(); //turn off the display
-void CheckVentilator(float aktualTemperature); //check if the ventilator should be turned on or off
-static float computeDewPoint(float temperatureC, float relHumidityPct); //compute the dewpoint from temperature and humidity
-void HeaterControl(bool heaterOn); //control the heater based on settings
+// predeclare the functions (prototypes)
+void SetupStartDisplay();
+void reconnectMQTT();
+void cb_MQTT(char *topic, byte *message, unsigned int length);
+void publishToMQTT();
+void cb_PublishToMQTT();
+void cb_MQTTListener();
+void cb_RS485Listener();
+void testRS232();
+void readBme280();
+void WriteToDisplay();
+void SetupCheckForResetButton();
+void SetupCheckForAPModeButton();
+void SetupStartTemperatureMeasuring();
+bool SetupStartWebServer();
+void ProjectConfig();
+void PinSetup();
+void CheckButtons();
+void CheckVentilator(float aktualTemperature);
+void ShowDisplay();
+void ShowDisplayOff();
+static float computeDewPoint(float temperatureC, float relHumidityPct);
+void HeaterControl(bool heaterOn);
 //--------------------------------------------------------------------------------------------------------------
 
 #pragma region configuratio variables
@@ -152,6 +151,7 @@ void setup()
   sl->Debug("System setup completed.");
   sll->Debug("Setup completed.");
 
+  
   // Register system runtime provider
     cfg.addRuntimeProvider({
         .name = "system",
@@ -162,6 +162,32 @@ void setup()
     });
     cfg.defineRuntimeField("system", "freeHeap", "Free Heap", "B", 0);
     cfg.defineRuntimeField("system", "rssi", "WiFi RSSI", "dBm", 0);
+
+
+  // Runtime live values provider for relay outputs
+  cfg.addRuntimeProvider({
+    .name = String("Outputs"),
+    .fill = [] (JsonObject &o){
+        o["ventilator"] = Relays::getVentilator();
+#ifdef RELAY_HEATER_PIN
+  o["heater"] = Relays::getHeater();
+  o["heaterEnabled"] = generalSettings.enableHeater.get();
+#else
+        o["heater"] = false;
+  o["heaterEnabled"] = false;
+#endif
+    }
+  });
+
+  // Optional: define meta (labels, etc.) - simple minimal example
+  cfg.defineRuntimeBool("Outputs", "ventilator", "Ventilator Active");
+#ifdef RELAY_HEATER_PIN
+  cfg.defineRuntimeBool("Outputs", "heater", "Heater Active");
+  cfg.defineRuntimeBool("system", "heaterEnabled", "Heater Feature Enabled");
+#endif
+
+
+    HeaterControl(false); // make sure heater is off at startup
 }
 
 void loop()
@@ -609,8 +635,8 @@ void SetupStartTemperatureMeasuring()
 
 
 
-    temperatureTicker.attach(generalSettings.ReadTemperatureTicker.get(), readBme280); // Attach the ticker to read BME280 every 5 seconds
-    readBme280();                                                // Read the BME280 sensor data once at startup
+  temperatureTicker.attach(generalSettings.ReadTemperatureTicker.get(), readBme280); // Attach the ticker to read BME280
+    readBme280(); // initial read
   }
 }
 
@@ -700,15 +726,19 @@ void readBme280()
 }
 
 void HeaterControl(bool heaterOn){
-  if (!generalSettings.enableHeater.get()) {
-    digitalWrite(RELAY_HEATER_PIN, HIGH); // turn heater off
-    return; // exit the function if the heater control is disabled
+#ifdef RELAY_HEATER_PIN
+  // honor configuration flag: if heater feature disabled -> force OFF
+  if(!generalSettings.enableHeater.get()){
+    if(Relays::getHeater()){
+      sl->Debug("Heater disabled in settings -> force OFF");
+    }
+    Relays::setHeater(false);
+    return;
   }
-  if (heaterOn){
-    digitalWrite(RELAY_HEATER_PIN, LOW); // turn heater on
-  } else {
-    digitalWrite(RELAY_HEATER_PIN, HIGH); // turn heater off
-  }
+  Relays::setHeater(heaterOn);
+#else
+  (void)heaterOn; // heater not compiled in
+#endif
 }
 
 void WriteToDisplay()
@@ -752,35 +782,25 @@ void WriteToDisplay()
 void PinSetup()
 {
   analogReadResolution(12);  // Use full 12-bit resolution
-
-  pinMode(BUTTON_PIN_RESET_TO_DEFAULTS, INPUT_PULLUP); // importand: BUTTON is LOW aktiv!
-  pinMode(BUTTON_PIN_AP_MODE, INPUT_PULLUP);           // importand: BUTTON is LOW aktiv!
-
-  pinMode(RELAY_VENTILATOR_PIN, OUTPUT);
-  digitalWrite(RELAY_VENTILATOR_PIN, HIGH); // set the ventilator relay to HIGH (off) at startup
+  pinMode(BUTTON_PIN_RESET_TO_DEFAULTS, INPUT_PULLUP);
+  pinMode(BUTTON_PIN_AP_MODE, INPUT_PULLUP);
+  Relays::initPins();
+  Relays::setVentilator(false);
+#ifdef RELAY_HEATER_PIN
+  Relays::setHeater(false); // ensure heater OFF at boot (no flicker)
+#endif
 }
 
 void CheckVentilator(float aktualTemperature)
 {
-  // sl->Printf("Check Ventilator...\nCurrent Temperature: %2.3f °C", aktualTemperature);
-  // Check if ventilator control is enabled
-  if (!generalSettings.VentilatorEnable.get())
-  {
-    // sl->Debug("Ventilator control is disabled.");
-    digitalWrite(RELAY_VENTILATOR_PIN, LOW); // Deactivate ventilator relay if control is disabled
-    return;                                   // Exit if ventilator control is disabled
+  if (!generalSettings.VentilatorEnable.get()) {
+    Relays::setVentilator(false);
+    return;
   }
-
-  // Check if the temperature exceeds the ON threshold
-  if (aktualTemperature >= generalSettings.VentilatorOn.get())
-  {
-    // sl->Debug("Ventilator ON - Temperature threshold exceeded.");
-    digitalWrite(RELAY_VENTILATOR_PIN, HIGH); // Activate ventilator relay
-  }
-  else if (aktualTemperature <= generalSettings.VentilatorOFF.get())
-  {
-    // sl->Debug("Ventilator OFF - Temperature below OFF threshold.");
-    digitalWrite(RELAY_VENTILATOR_PIN, LOW); // Deactivate ventilator relay
+  if (aktualTemperature >= generalSettings.VentilatorOn.get()) {
+    Relays::setVentilator(true);
+  } else if (aktualTemperature <= generalSettings.VentilatorOFF.get()) {
+    Relays::setVentilator(false);
   }
 }
 
