@@ -186,16 +186,18 @@ void setup()
         .fill = [](JsonObject &o){
             o["freeHeap"] = ESP.getFreeHeap();
             o["rssi"] = WiFi.RSSI();
-            o["---"] = "----------";
             o["heaterEnabled"] = heaterSettings.enabled.get();
             o["Fan"] = fanSettings.enabled.get();
         }
     });
-    cfg.defineRuntimeField("system", "freeHeap", "Free Heap", "B", 0);
-    cfg.defineRuntimeField("system", "rssi", "WiFi RSSI", "dBm", 0);
-    cfg.defineRuntimeField("system", "---", "----------", "", 0);
-    cfg.defineRuntimeBool("system", "heaterEnabled", "Heater Feature Enabled");
-    cfg.defineRuntimeBool("system", "Fan", "Fan Feature Enabled");
+    cfg.defineRuntimeField("system", "freeHeap", "Free Heap", "B", 0, /*order*/ 1);
+    cfg.defineRuntimeField("system", "rssi", "WiFi RSSI", "dBm", 0, /*order*/ 2);
+    cfg.defineRuntimeDivider("system", "Environment", /*order*/ 3);
+    cfg.defineRuntimeString("system", "i1", "Settings:", "", /*order*/ 4);
+    cfg.defineRuntimeBool("system", "heaterEnabled", "Heater Feature Enabled",false,/*order*/5);
+    cfg.defineRuntimeBool("system", "Fan", "Fan Feature Enabled",false,/*order*/6);
+
+
 
   // Runtime live values provider for relay outputs
   cfg.addRuntimeProvider({
