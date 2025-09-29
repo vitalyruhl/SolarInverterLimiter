@@ -36,7 +36,7 @@ void LoggerSetupSerial()
 
 void SetupStartDisplay()
 {
-    display.begin(SSD1306_SWITCHCAPVCC, I2C_DISPLAY_ADDRESS);
+    display.begin(SSD1306_SWITCHCAPVCC, i2cSettings.displayAddr.get());
     display.clearDisplay();
     display.drawRect(0, 0, 128, 25, WHITE);
     display.setTextSize(2);
