@@ -4,59 +4,70 @@
 
 namespace Relays {
 
-inline void initPins(){
-    // Drive lines to a known INACTIVE level BEFORE switching to OUTPUT to avoid relay pulse
-#if VENTILATOR_RELAY_ACTIVE_LOW
-    digitalWrite(RELAY_VENTILATOR_PIN, HIGH); // inactive
-#else
-    digitalWrite(RELAY_VENTILATOR_PIN, LOW);  // inactive
-#endif
-    pinMode(RELAY_VENTILATOR_PIN, OUTPUT);
+inline bool isValidPin(int pin){
+    return pin >= 0 && pin <= 39; // basic range check for ESP32 GPIO
+}
 
-#if defined(RELAY_HEATER_PIN)
-#if HEATER_RELAY_ACTIVE_LOW
-    digitalWrite(RELAY_HEATER_PIN, HIGH); // inactive
-#else
-    digitalWrite(RELAY_HEATER_PIN, LOW);  // inactive
-#endif
-    pinMode(RELAY_HEATER_PIN, OUTPUT);
-#endif
+inline void initPins(){
+    int fanPin = generalSettings.relayFanPin.get();
+    int heaterPin = generalSettings.relayHeaterPin.get();
+    bool fanLow = generalSettings.relayFanActiveLow.get();
+    bool heaterLow = generalSettings.relayHeaterActiveLow.get();
+
+    if(isValidPin(fanPin)){
+        digitalWrite(fanPin, fanLow ? HIGH : LOW); // inactive
+        pinMode(fanPin, OUTPUT);
+    }
+    if(generalSettings.enableHeater.get() && isValidPin(heaterPin)){
+        digitalWrite(heaterPin, heaterLow ? HIGH : LOW); // inactive
+        pinMode(heaterPin, OUTPUT);
+    }
 }
 
 inline void setVentilator(bool on){
-#if VENTILATOR_RELAY_ACTIVE_LOW
-    digitalWrite(RELAY_VENTILATOR_PIN, on ? LOW : HIGH);
-#else
-    digitalWrite(RELAY_VENTILATOR_PIN, on ? HIGH : LOW);
-#endif
+    int fanPin = generalSettings.relayFanPin.get();
+    if(!isValidPin(fanPin)) return;
+    bool fanLow = generalSettings.relayFanActiveLow.get();
+    if(fanLow){
+        digitalWrite(fanPin, on ? LOW : HIGH);
+    } else {
+        digitalWrite(fanPin, on ? HIGH : LOW);
+    }
 }
 
 inline bool getVentilator(){
-#if VENTILATOR_RELAY_ACTIVE_LOW
-    return digitalRead(RELAY_VENTILATOR_PIN) == LOW;
+    int fanPin = generalSettings.relayFanPin.get();
+    if(!isValidPin(fanPin)) return false;
+    bool fanLow = generalSettings.relayFanActiveLow.get();
+    int val = digitalRead(fanPin);
+    return fanLow ? (val == LOW) : (val == HIGH);
+}
+
+inline void setHeater(bool on){
+#ifdef RELAY_HEATER_PIN
+    int heaterPin = generalSettings.relayHeaterPin.get();
+    if(!generalSettings.enableHeater.get() || !isValidPin(heaterPin)) return;
+    bool heaterLow = generalSettings.relayHeaterActiveLow.get();
+    if(heaterLow){
+        digitalWrite(heaterPin, on ? LOW : HIGH);
+    } else {
+        digitalWrite(heaterPin, on ? HIGH : LOW);
+    }
 #else
-    return digitalRead(RELAY_VENTILATOR_PIN) == HIGH;
+    (void)on;
 #endif
 }
 
-#if defined(RELAY_HEATER_PIN)
-inline void setHeater(bool on){
-#if HEATER_RELAY_ACTIVE_LOW
-    digitalWrite(RELAY_HEATER_PIN, on ? LOW : HIGH);
-#else
-    digitalWrite(RELAY_HEATER_PIN, on ? HIGH : LOW);
-#endif
-}
 inline bool getHeater(){
-#if HEATER_RELAY_ACTIVE_LOW
-    return digitalRead(RELAY_HEATER_PIN) == LOW;
+#ifdef RELAY_HEATER_PIN
+    int heaterPin = generalSettings.relayHeaterPin.get();
+    if(!generalSettings.enableHeater.get() || !isValidPin(heaterPin)) return false;
+    bool heaterLow = generalSettings.relayHeaterActiveLow.get();
+    int val = digitalRead(heaterPin);
+    return heaterLow ? (val == LOW) : (val == HIGH);
 #else
-    return digitalRead(RELAY_HEATER_PIN) == HIGH;
+    return false;
 #endif
 }
-#else
-inline void setHeater(bool){ /* heater not compiled in */ }
-inline bool getHeater(){ return false; }
-#endif
 
 } // namespace Relays

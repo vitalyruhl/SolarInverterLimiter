@@ -247,6 +247,12 @@ struct General_Settings
     Config<float> HeaterOffTemp;     // turn heater off above this temperature
     Config<bool>  heaterBatterySaveMode; // battery save mode inhibits heater
 
+    // Relay configuration (pins & polarity)
+    Config<int>   relayFanPin;           // GPIO for fan relay
+    Config<int>   relayHeaterPin;        // GPIO for heater relay
+    Config<bool>  relayFanActiveLow;     // true if active LOW
+    Config<bool>  relayHeaterActiveLow;  // true if active LOW
+
     Config<bool>  unconfigured;
     Config<String> Version;
 
@@ -313,6 +319,22 @@ struct General_Settings
             .showIf = [this](){ return this->enableHeater.get(); }
         }),
 
+        // Relay config (System category)
+        relayFanPin(ConfigOptions<int>{
+            .keyName = "RlfPin", .category = "System", .defaultValue = RELAY_VENTILATOR_PIN, .prettyName = "Fan Relay GPIO", .prettyCat = "Relay Config"
+        }),
+        relayHeaterPin(ConfigOptions<int>{
+            .keyName = "RlhPin", .category = "System", .defaultValue = RELAY_HEATER_PIN, .prettyName = "Heater Relay GPIO", .prettyCat = "Relay Config",
+            .showIf = [this](){ return this->enableHeater.get(); }
+        }),
+        relayFanActiveLow(ConfigOptions<bool>{
+            .keyName = "RlfLow", .category = "System", .defaultValue = (bool)VENTILATOR_RELAY_ACTIVE_LOW, .prettyName = "Fan Active LOW", .prettyCat = "Relay Config"
+        }),
+        relayHeaterActiveLow(ConfigOptions<bool>{
+            .keyName = "RlhLow", .category = "System", .defaultValue = (bool)HEATER_RELAY_ACTIVE_LOW, .prettyName = "Heater Active LOW", .prettyCat = "Relay Config",
+            .showIf = [this](){ return this->enableHeater.get(); }
+        }),
+
         // Display settings
         saveDisplay(ConfigOptions<bool>{
             .keyName = "DispSave", .category = "Display", .defaultValue = true, .prettyName = "Turn Display Off", .prettyCat = "Display Settings"
@@ -364,6 +386,10 @@ struct General_Settings
         cfg.addSetting(&HeaterOnTemp);
         cfg.addSetting(&HeaterOffTemp);
         cfg.addSetting(&heaterBatterySaveMode);
+    cfg.addSetting(&relayFanPin);
+    cfg.addSetting(&relayHeaterPin);
+    cfg.addSetting(&relayFanActiveLow);
+    cfg.addSetting(&relayHeaterActiveLow);
 
         cfg.addSetting(&VentilatorOn);
         cfg.addSetting(&VentilatorOFF);

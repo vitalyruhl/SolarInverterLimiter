@@ -817,10 +817,17 @@ void PinSetup()
   pinMode(BUTTON_PIN_RESET_TO_DEFAULTS, INPUT_PULLUP);
   pinMode(BUTTON_PIN_AP_MODE, INPUT_PULLUP);
   Relays::initPins();
+  // Force known OFF state
   Relays::setVentilator(false);
 #ifdef RELAY_HEATER_PIN
-  Relays::setHeater(false); // ensure heater OFF at boot (no flicker)
+  Relays::setHeater(false);
 #endif
+  // Simple validation: warn if same pin used for both or invalid
+  int fanPin = generalSettings.relayFanPin.get();
+  int heaterPin = generalSettings.relayHeaterPin.get();
+  if(fanPin == heaterPin && generalSettings.enableHeater.get()){
+    sl->Error("Relay config: Fan and Heater share same GPIO! This may cause conflicts.");
+  }
 }
 
 void CheckVentilator(float currentTemperature)
