@@ -10,20 +10,8 @@
 
 #include "ConfigManager.h"
 
-// -------------------------------------------------------------------------------------------------------------
-// Migrated to ConfigManager V2.3.1 (breaking changes: legacy Config constructors replaced by ConfigOptions)
-// -------------------------------------------------------------------------------------------------------------
-// NOTES ABOUT NEW API:
-//  - Use designated initialization with ConfigOptions<T>{ .keyName = "...", .category = "...", .defaultValue = ... }
-//  - Optional UI fields: .prettyName, .prettyCat
-//  - Visibility / secrets: .showInWeb, .isPassword
-//  - Dynamic visibility: .showIf (std::function<bool()>)
-//  - Callback (primitive pointer) .cb OR after construction: instance.setCallback(std::function<>)
-//  - Key length limit (category + '_' + key) <= 15 chars (storage). Longer parts are truncated automatically.
-// -------------------------------------------------------------------------------------------------------------
-
-#define VERSION "2.3.1"           // version of the software (major.minor.patch)
-#define VERSION_DATE "13.09.2025" // date of the version
+#define VERSION "2.4.1"           // version of the software (major.minor.patch)
+#define VERSION_DATE "29.09.2025" // date of the version
 
 //--------------------------------------------------------------------------------------------------------------
 // set the I2C address for the BME280 sensor for temperature and humidity
@@ -32,9 +20,6 @@
 #define I2C_FREQUENCY 400000
 #define BME280_FREQUENCY 400000
 // #define BME280_ADDRESS 0x76 // I2C address for the BME280 sensor (default is 0x76) redefine, if needed
-
-#define ReadTemperatureTicker 30.0 // time in seconds to read the temperature and humidity
-//--------------------------------------------------------------------------------------------------------------
 
 //--------------------------------------------------------------------------------------------------------------
 // set the I2C address for the display (SSD1306)
@@ -46,7 +31,7 @@
 #define WDT_TIMEOUT 60                  // in seconds, if esp32 is not responding within this time, the ESP32 will reboot automatically
 
 #define RELAY_VENTILATOR_PIN 23 // GPIO pin for the ventilator (if used, otherwise not needed)
-// #define RELAY_HEATER_PIN 34 // GPIO pin for the Heater (if used, otherwise not needed)
+#define RELAY_HEATER_PIN 34 // GPIO pin for the Heater (if used, otherwise not needed)
 
 
 extern ConfigManagerClass cfg;// store it globaly before using it in the settings
@@ -131,6 +116,8 @@ struct MQTT_Settings {
     Config<String> mqtt_password;
     Config<String> mqtt_sensor_powerusage_topic;
     Config<String> Publish_Topic;
+    Config<float> MQTTPublischPeriod;
+    Config<float> MQTTListenPeriod;
 
     // dynamic topics (derived)
     String mqtt_publish_setvalue_topic;
@@ -140,6 +127,14 @@ struct MQTT_Settings {
     String mqtt_publish_Dewpoint_topic;
 
     MQTT_Settings() :
+
+        MQTTPublischPeriod(ConfigOptions<float>{
+            .keyName = "MQTTP", .category = "MQTT", .defaultValue = 5.0f, .prettyName = "MQTT Publishing Period", .prettyCat = "MQTT-Section"
+        }),
+        MQTTListenPeriod(ConfigOptions<float>{
+            .keyName = "MQTTL", .category = "MQTT", .defaultValue = 0.5f, .prettyName = "MQTT Listening Period", .prettyCat = "MQTT-Section"
+        }),
+
         mqtt_port(ConfigOptions<int>{
             .keyName = "Port",
             .category = "MQTT",
@@ -191,6 +186,8 @@ struct MQTT_Settings {
         cfg.addSetting(&mqtt_password);
         cfg.addSetting(&mqtt_sensor_powerusage_topic);
         cfg.addSetting(&Publish_Topic);
+        cfg.addSetting(&MQTTPublischPeriod);
+        cfg.addSetting(&MQTTListenPeriod);
 
         // capturing lambda requires std::function path -> use setCallback after construction
         Publish_Topic.setCallback([this](String){ this->updateTopics(); });
@@ -216,10 +213,11 @@ struct General_Settings
     Config<int>   maxOutput;
     Config<int>   minOutput;
     Config<int>   inputCorrectionOffset;
-    Config<float> MQTTPublischPeriod;
-    Config<float> MQTTListenPeriod;
+
     Config<float> TempCorrectionOffset;
     Config<float> HumidityCorrectionOffset;
+    Config<int> SeaLevelPressure;
+    Config<int> ReadTemperatureTicker;// time in seconds to read the temperature and humidity
     Config<float> VentilatorOn;
     Config<float> VentilatorOFF;
     Config<bool>  VentilatorEnable;
@@ -229,10 +227,15 @@ struct General_Settings
     Config<String> otaPassword;
     Config<float> RS232PublishPeriod;
     Config<int>   smoothingSize;
+
+    Config<bool>  enableHeater;
+
     Config<bool>  unconfigured;
     Config<String> Version;
 
     General_Settings() :
+
+        //limiter settings
         enableController(ConfigOptions<bool>{
             .keyName = "enCtrl", .category = "Limiter", .defaultValue = true, .prettyName = "Enable Limitation"
         }),
@@ -248,20 +251,22 @@ struct General_Settings
         inputCorrectionOffset(ConfigOptions<int>{
             .keyName = "ICO", .category = "Limiter", .defaultValue = 50, .prettyName = "Correction-Offset"
         }),
-        MQTTPublischPeriod(ConfigOptions<float>{
-            .keyName = "MQTTP", .category = "System", .defaultValue = 5.0f, .prettyName = "MQTT Publishing Period", .prettyCat = "MQTT-Section"
-        }),
-        MQTTListenPeriod(ConfigOptions<float>{
-            .keyName = "MQTTL", .category = "System", .defaultValue = 0.5f, .prettyName = "MQTT Listening Period", .prettyCat = "MQTT-Section"
-        }),
+
+        // BME280 / Temperature settings
         TempCorrectionOffset(ConfigOptions<float>{
             .keyName = "TCO", .category = "Temp", .defaultValue = 0.1f, .prettyName = "Temperature Correction", .prettyCat = "Temperature Settings"
-
         }),
         HumidityCorrectionOffset(ConfigOptions<float>{
             .keyName = "HYO", .category = "Temp", .defaultValue = 0.1f, .prettyName = "Humidity Correction", .prettyCat = "Temperature Settings"
         }),
+        SeaLevelPressure(ConfigOptions<int>{
+            .keyName = "SLP", .category = "Temp", .defaultValue = 1013, .prettyName = "Sea Level Pressure", .prettyCat = "Temperature Settings"
+        }),
+        ReadTemperatureTicker(ConfigOptions<int>{
+            .keyName = "ReadTemp", .category = "Temp", .defaultValue = 30, .prettyName = "Read Temp/Humidity every (s)", .prettyCat = "Temperature Settings"
+        }),
 
+        // Fan / Ventilator settings
         VentilatorOn(ConfigOptions<float>{
             .keyName = "VentOn", .category = "FAN", .defaultValue = 30.0f, .prettyName = "Fan On over", .prettyCat = "FAN Control",
             .showIf = [this](){ return this->VentilatorEnable.get();}
@@ -274,27 +279,38 @@ struct General_Settings
             .keyName = "VentEn", .category = "FAN", .defaultValue = true, .prettyName = "Enable Fan Control", .prettyCat = "FAN Control"
         }),
 
+        // Heater settings
+        enableHeater(ConfigOptions<bool>{
+            .keyName = "HeatEn", .category = "Heater", .defaultValue = false, .prettyName = "Enable Heater Control", .prettyCat = "Heater Control"
+        }),
 
+        // Display settings
         saveDisplay(ConfigOptions<bool>{
             .keyName = "DispSave", .category = "Display", .defaultValue = true, .prettyName = "Turn Display Off", .prettyCat = "Display Settings"
         }),
         displayShowTime(ConfigOptions<int>{
             .keyName = "DispTime", .category = "Display", .defaultValue = 60, .prettyName = "Display On-Time (s)", .prettyCat = "Display Settings"
         }),
+
+        // OTA settings
         allowOTA(ConfigOptions<bool>{
             .keyName = "OTAEn", .category = "System", .defaultValue = true, .prettyName = "Allow OTA Updates"
         }),
         otaPassword(ConfigOptions<String>{
             .keyName = "OTAPass", .category = "System", .defaultValue = String("ota1234"), .prettyName = "OTA Password", .showInWeb = true, .isPassword = true
         }),
+
+        // RS232 settings
         RS232PublishPeriod(ConfigOptions<float>{
             .keyName = "RS232P", .category = "RS232", .defaultValue = 2.0f, .prettyName = "RS232 Publish Period"
         }),
         smoothingSize(ConfigOptions<int>{
             .keyName = "Smooth", .category = "RS232", .defaultValue = 10, .prettyName = "Smoothing Level"
         }),
+
+        // System settings
         unconfigured(ConfigOptions<bool>{
-            .keyName = "Unconfigured", .category = "GS", .defaultValue = true, .prettyName = "ESP is unconfigured", .showInWeb = false, .isPassword = false
+            .keyName = "Unconfigured", .category = "System", .defaultValue = true, .prettyName = "ESP is unconfigured", .showInWeb = false, .isPassword = false
         }),
         Version(ConfigOptions<String>{
             .keyName = "Version", .category = "System", .defaultValue = String(VERSION), .prettyName = "Program Version"
@@ -305,10 +321,14 @@ struct General_Settings
         cfg.addSetting(&maxOutput);
         cfg.addSetting(&minOutput);
         cfg.addSetting(&inputCorrectionOffset);
-        cfg.addSetting(&MQTTPublischPeriod);
-        cfg.addSetting(&MQTTListenPeriod);
+
         cfg.addSetting(&TempCorrectionOffset);
         cfg.addSetting(&HumidityCorrectionOffset);
+        cfg.addSetting(&SeaLevelPressure);
+        cfg.addSetting(&ReadTemperatureTicker);
+
+        cfg.addSetting(&enableHeater);
+
         cfg.addSetting(&VentilatorOn);
         cfg.addSetting(&VentilatorOFF);
         cfg.addSetting(&VentilatorEnable);

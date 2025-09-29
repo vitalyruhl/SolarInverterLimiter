@@ -40,6 +40,7 @@ void ShowDisplay(); //start the display for a defined time
 void ShowDisplayOff(); //turn off the display
 void CheckVentilator(float aktualTemperature); //check if the ventilator should be turned on or off
 static float computeDewPoint(float temperatureC, float relHumidityPct); //compute the dewpoint from temperature and humidity
+void HeaterControl(bool heaterOn); //control the heater based on settings
 //--------------------------------------------------------------------------------------------------------------
 
 #pragma region configuratio variables
@@ -66,6 +67,8 @@ int inverterSetValue = 0;     // current power inverter should deliver (default 
 float temperature = 0.0;      // current temperature in Celsius
 float Dewpoint = 0.0;         // current dewpoint in Celsius
 float Humidity = 0.0;         // current humidity in percent
+float Pressure = 0.0;         // current pressure in hPa
+
 bool tickerActive = false;    // flag to indicate if the ticker is active
 bool displayActive = true;   // flag to indicate if the display is active
 
@@ -148,6 +151,17 @@ void setup()
 
   sl->Debug("System setup completed.");
   sll->Debug("Setup completed.");
+
+  // Register system runtime provider
+    cfg.addRuntimeProvider({
+        .name = "system",
+        .fill = [](JsonObject &o){
+            o["freeHeap"] = ESP.getFreeHeap();
+            o["rssi"] = WiFi.RSSI();
+        }
+    });
+    cfg.defineRuntimeField("system", "freeHeap", "Free Heap", "B", 0);
+    cfg.defineRuntimeField("system", "rssi", "WiFi RSSI", "dBm", 0);
 }
 
 void loop()
@@ -199,8 +213,8 @@ void loop()
       sl->Debug("WiFi connected! Reattach ticker.");
       sll->Debug("WiFi reconnected!");
       sll->Debug("Reattach ticker.");
-      PublischMQTTTicker.attach(generalSettings.MQTTPublischPeriod.get(), cb_PublishToMQTT); // Reattach the ticker if WiFi is connected
-      ListenMQTTTicker.attach(generalSettings.MQTTListenPeriod.get(), cb_MQTTListener);      // Reattach the ticker if WiFi is connected
+      PublischMQTTTicker.attach(mqttSettings.MQTTPublischPeriod.get(), cb_PublishToMQTT); // Reattach the ticker if WiFi is connected
+      ListenMQTTTicker.attach(mqttSettings.MQTTListenPeriod.get(), cb_MQTTListener);      // Reattach the ticker if WiFi is connected
       if(generalSettings.allowOTA.get()){
         sll->Debug("Start OTA-Modeule");
         cfg.setupOTA("Ota-esp32-device", generalSettings.otaPassword.get().c_str());
@@ -506,7 +520,96 @@ void SetupStartTemperatureMeasuring()
   {
     sl->Printf("ready to using BME280. Sart Ticker...").Debug();
     sll->Printf("BME280 detected!").Debug();
-    temperatureTicker.attach(ReadTemperatureTicker, readBme280); // Attach the ticker to read BME280 every 5 seconds
+
+ // Sensor data provider
+    cfg.addRuntimeProvider({
+        .name = "sensors",
+        .fill = [](JsonObject &o){
+            // Primary short keys expected by frontend
+            o["temp"] = temperature;
+            o["hum"] = Humidity;
+            o["dew"] = Dewpoint;
+            o["Pressure"] = Pressure;
+        }
+    });
+
+    // Runtime field metadata for dynamic UI
+    // With thresholds: warn (yellow) and alarm (red). Example ranges; adjust as needed.
+    cfg.defineRuntimeFieldThresholds("sensors", "temp", "Temperature", "°C", 1,
+        1.0f, 30.0f,   // warnMin / warnMax
+        0.0f, 32.0f,   // alarmMin / alarmMax
+         true,true,true,true
+    );
+
+    cfg.defineRuntimeFieldThresholds("sensors", "hum", "Humidity", "%", 1,
+        30.0f, 70.0f,
+        15.0f, 90.0f,
+        false,false,false,true
+    );
+
+    // only basic field, no thresholds
+    cfg.defineRuntimeField("sensors", "dew", "Dewpoint", "°C", 1);
+    cfg.defineRuntimeField("sensors", "Pressure", "Pressure", "hPa", 1);
+
+    // Cross-field alarm: temperature within 1.0°C above dewpoint (risk of condensation)
+    cfg.defineRuntimeAlarm(
+        "dewpoint_risk",
+        [](const JsonObject &root){
+            if(!root.containsKey("sensors")) return false;
+            const JsonObject sensors = root["sensors"].as<JsonObject>();
+            if(!sensors.containsKey("temp") || !sensors.containsKey("dew")) return false;
+            float t = sensors["temp"].as<float>();
+            float d = sensors["dew"].as<float>();
+            return (t - d) <= 1.2f; // risk window
+        },
+        [](){ 
+          sl->Printf("[ALARM] Dewpoint proximity risk ENTER, set heater ON").Debug();
+          sll->Printf("[ALARM] Dewpoint").Debug();
+          HeaterControl(true);
+        }, 
+        [](){ 
+          sl->Printf("[ALARM] Dewpoint proximity risk EXIT, set heater OFF").Debug(); 
+          sll->Printf("[Info] Alarm Dewpoint gone").Debug();
+          HeaterControl(false);
+        }
+    );
+
+    // Runtime boolean alarm
+    cfg.defineRuntimeBool("alarms", "dewpoint_risk", "Dewpoint Risk", true); // show as bool alarm when true
+
+
+    // Temperature MIN alarm -> Heater relay ON when temperature below alarmMin (0.0°C) and OFF when recovered.
+    // Uses a little hysteresis (enter < 0.0, exit > 0.5) to avoid fast toggling.
+    cfg.defineRuntimeAlarm(
+        "temp_low",
+        [](const JsonObject &root){
+            static bool lastState = false; // for hysteresis
+            if(!root.containsKey("sensors")) return false;
+            const JsonObject sensors = root["sensors"].as<JsonObject>();
+            if(!sensors.containsKey("temp")) return false;
+            float t = sensors["temp"].as<float>();
+            // Hysteresis: once active keep it on until t > 0.5
+            if(lastState){ // currently active -> wait until we are clearly above release threshold
+                lastState = (t < 0.5f);
+            } else {       // currently inactive -> trigger when below entry threshold
+                lastState = (t < 0.0f);
+            }
+            return lastState;
+        },
+        [](){
+            sl->Printf("[ALARM] Temperature too low -> HEATER ON");
+            HeaterControl(true);
+        },
+        [](){
+            sl->Printf ("[ALARM] Temperature recovered -> HEATER OFF");
+            HeaterControl(false);
+        }
+    );
+    cfg.defineRuntimeBool("alarms", "temp_low", "too low temperature", true); // show as bool alarm when true in UI
+
+
+
+    temperatureTicker.attach(generalSettings.ReadTemperatureTicker.get(), readBme280); // Attach the ticker to read BME280 every 5 seconds
     readBme280();                                                // Read the BME280 sensor data once at startup
   }
 }
@@ -583,6 +686,7 @@ void readBme280()
 
   temperature = bme280.data.temperature + generalSettings.TempCorrectionOffset.get(); // store the temperature value in the global variable
   Humidity = bme280.data.humidity + generalSettings.HumidityCorrectionOffset.get();   // store the temperature value in the global variable
+  Pressure = bme280.data.pressure;
   Dewpoint = computeDewPoint(temperature, Humidity);
 
   // output formatted values to serial console
@@ -590,9 +694,21 @@ void readBme280()
   sl->Printf("Temperature: %2.1lf °C", temperature).Debug();
   sl->Printf("Humidity   : %2.1lf %rH", Humidity).Debug();
   sl->Printf("Dewpoint   : %2.1lf °C", Dewpoint).Debug();
-  sl->Printf("Pressure   : %4.0lf hPa", bme280.data.pressure).Debug();
+  sl->Printf("Pressure   : %4.0lf hPa", Pressure).Debug();
   sl->Printf("Altitude   : %4.2lf m", bme280.data.altitude).Debug();
   sl->Printf("-----------------------").Debug();
+}
+
+void HeaterControl(bool heaterOn){
+  if (!generalSettings.enableHeater.get()) {
+    digitalWrite(RELAY_HEATER_PIN, HIGH); // turn heater off
+    return; // exit the function if the heater control is disabled
+  }
+  if (heaterOn){
+    digitalWrite(RELAY_HEATER_PIN, LOW); // turn heater on
+  } else {
+    digitalWrite(RELAY_HEATER_PIN, HIGH); // turn heater off
+  }
 }
 
 void WriteToDisplay()
