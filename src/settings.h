@@ -240,6 +240,7 @@ struct General_Settings
     Config<String> otaPassword;
     Config<float> RS232PublishPeriod;
     Config<int>   smoothingSize;
+    Config<int>   wifiRebootTimeoutMin; // minutes without WiFi before auto reboot (0=disabled)
 
     Config<bool>  enableHeater;
 
@@ -320,6 +321,10 @@ struct General_Settings
         smoothingSize(ConfigOptions<int>{
             .keyName = "Smooth", .category = "RS232", .defaultValue = 10, .prettyName = "Smoothing Level"
         }),
+        wifiRebootTimeoutMin(ConfigOptions<int>{
+            .keyName = "WiFiRb", .category = "System", .defaultValue = 15, .prettyName = "Reboot if WiFi lost (min)", .prettyCat = "System",
+            .showInWeb = true
+        }),
 
         // System settings
         unconfigured(ConfigOptions<bool>{
@@ -351,6 +356,7 @@ struct General_Settings
         cfg.addSetting(&otaPassword);
         cfg.addSetting(&RS232PublishPeriod);
         cfg.addSetting(&smoothingSize);
+        cfg.addSetting(&wifiRebootTimeoutMin);
         cfg.addSetting(&unconfigured);
         cfg.addSetting(&Version);
     }

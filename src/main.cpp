@@ -71,6 +71,10 @@ float Pressure = 0.0;         // current pressure in hPa
 bool tickerActive = false;    // flag to indicate if the ticker is active
 bool displayActive = true;   // flag to indicate if the display is active
 
+// WiFi downtime tracking for auto reboot
+static unsigned long wifiLastGoodMillis = 0;     // last time WiFi was connected (and not AP)
+static bool wifiAutoRebootArmed = false;         // becomes true after initial setup completion
+
 #pragma endregion configuration variables
 
 //----------------------------------------
@@ -151,6 +155,14 @@ void setup()
   sl->Debug("System setup completed.");
   sll->Debug("Setup completed.");
 
+  // initialize WiFi tracking
+  if(WiFi.status() == WL_CONNECTED && WiFi.getMode() != WIFI_AP){
+    wifiLastGoodMillis = millis();
+  } else {
+    wifiLastGoodMillis = millis(); // start timer now; will reboot later if never connects
+  }
+  wifiAutoRebootArmed = true; // after setup we start watching
+
   
   // Register system runtime provider
     cfg.addRuntimeProvider({
@@ -230,6 +242,21 @@ void loop()
       // WiFi.reconnect(); // try to reconnect to WiFi
       bool isStartedAsAP = SetupStartWebServer();
     }
+    // Auto reboot logic: only if not AP mode, feature enabled and timeout exceeded
+    if (wifiAutoRebootArmed && WiFi.getMode() != WIFI_AP){
+        int timeoutMin = generalSettings.wifiRebootTimeoutMin.get();
+        if(timeoutMin > 0){
+            unsigned long now = millis();
+            unsigned long elapsedMs = now - wifiLastGoodMillis;
+            unsigned long thresholdMs = (unsigned long)timeoutMin * 60000UL;
+            if(elapsedMs > thresholdMs){
+                sl->Printf("[WiFi] Lost for > %d min -> reboot", timeoutMin).Error();
+                sll->Printf("WiFi lost -> reboot").Error();
+                delay(200);
+                ESP.restart();
+            }
+        }
+    }
   }
   else
   {
@@ -248,6 +275,10 @@ void loop()
       ShowDisplay();               // Show the display
       tickerActive = true; // Set the flag to indicate that the ticker is active
     }
+    // Update last good WiFi timestamp when connected (station mode only)
+    if(WiFi.status() == WL_CONNECTED && WiFi.getMode() != WIFI_AP){
+        wifiLastGoodMillis = millis();
+    }
   }
 
   WriteToDisplay();
@@ -263,6 +294,10 @@ void loop()
       SetupStartWebServer();
       delay(1000);
       return;
+    }
+    else {
+      // refresh last good timestamp here as safeguard
+      wifiLastGoodMillis = millis();
     }
     // blinkBuidInLED(1, 100); // not used here, because blinker is used if we get a message from MQTT
   }
