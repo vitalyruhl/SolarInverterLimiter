@@ -15,36 +15,15 @@
 
 //--------------------------------------------------------------------------------------------------------------
 // set the I2C address for the BME280 sensor for temperature and humidity
-#define I2C_SDA 21
-#define I2C_SCL 22
-#define I2C_FREQUENCY 400000
-#define BME280_FREQUENCY 400000
-// #define BME280_ADDRESS 0x76 // I2C address for the BME280 sensor (default is 0x76) redefine, if needed
+// (defaults now moved into I2CSettings as Config defaults)
 
 //--------------------------------------------------------------------------------------------------------------
 // set the I2C address for the display (SSD1306)
-#define I2C_DISPLAY_ADDRESS 0x3C
+// Display address moved into settings (I2CSettings)
 //--------------------------------------------------------------------------------------------------------------
 
-#define BUTTON_PIN_AP_MODE 13           // GPIO pin for the button to start AP mode (check on boot)
-#define BUTTON_PIN_RESET_TO_DEFAULTS 15 // GPIO pin for the button (check on boot)
-#define WDT_TIMEOUT 60                  // in seconds, if esp32 is not responding within this time, the ESP32 will reboot automatically
-
-#define RELAY_VENTILATOR_PIN 23 // GPIO pin for the ventilator (if used, otherwise not needed)
-#define RELAY_HEATER_PIN 33 // GPIO pin for the Heater (if used, otherwise not needed)
-
-// -------------------------------------------------------------
-// Relay logic levels
-// Set to 1 if the relay module is active LOW (typical on relay modules with optocoupler).
-// Set to 0 if the relay module is active HIGH (some modules without optocoupler).
-#ifndef VENTILATOR_RELAY_ACTIVE_LOW
-#define VENTILATOR_RELAY_ACTIVE_LOW 1
-#endif
-
-#ifndef HEATER_RELAY_ACTIVE_LOW
-#define HEATER_RELAY_ACTIVE_LOW 1
-#endif
-// -------------------------------------------------------------
+// Watchdog timeout remains compile-time constant
+#define WDT_TIMEOUT 60
 
 
 extern ConfigManagerClass cfg;// store it globaly before using it in the settings
@@ -79,14 +58,14 @@ struct WiFi_Settings // wifiSettings (migrated to new ConfigOptions API)
         }),
         useDhcp(ConfigOptions<bool>{
             .keyName = "dhcp",
-            .category = "network",
+            .category = "wifi",
             .defaultValue = false,
             .prettyName = "Use DHCP",
             .prettyCat = "Network Settings"
         }),
         staticIp(ConfigOptions<String>{
             .keyName = "sIP",
-            .category = "network",
+            .category = "wifi",
             .defaultValue = String("192.168.2.126"),
             .prettyName = "Static IP",
             .prettyCat = "Network Settings",
@@ -94,7 +73,7 @@ struct WiFi_Settings // wifiSettings (migrated to new ConfigOptions API)
         }),
         gateway(ConfigOptions<String>{
             .keyName = "GW",
-            .category = "network",
+            .category = "wifi",
             .defaultValue = String("192.168.2.250"),
             .prettyName = "Gateway",
             .prettyCat = "Network Settings",
@@ -102,7 +81,7 @@ struct WiFi_Settings // wifiSettings (migrated to new ConfigOptions API)
         }),
         subnet(ConfigOptions<String>{
             .keyName = "subnet",
-            .category = "network",
+            .category = "wifi",
             .defaultValue = String("255.255.255.0"),
             .prettyName = "Subnet-Mask",
             .prettyCat = "Network Settings",
@@ -131,6 +110,7 @@ struct MQTT_Settings {
     Config<String> Publish_Topic;
     Config<float> MQTTPublischPeriod;
     Config<float> MQTTListenPeriod;
+    Config<bool>  enableMQTT; // moved from LimiterSettings
 
     // dynamic topics (derived)
     String mqtt_publish_setvalue_topic;
@@ -191,6 +171,13 @@ struct MQTT_Settings {
             .defaultValue = String("SolarLimiter"),
             .prettyName = "Publish-Topic",
             .prettyCat = "MQTT-Section"
+        }),
+        enableMQTT(ConfigOptions<bool>{
+            .keyName = "enMQTT",
+            .category = "MQTT",
+            .defaultValue = true,
+            .prettyName = "Enable MQTT Propagation",
+            .prettyCat = "MQTT-Section"
         })
     {
         cfg.addSetting(&mqtt_port);
@@ -201,6 +188,7 @@ struct MQTT_Settings {
         cfg.addSetting(&Publish_Topic);
         cfg.addSetting(&MQTTPublischPeriod);
         cfg.addSetting(&MQTTListenPeriod);
+        cfg.addSetting(&enableMQTT);
 
         // capturing lambda requires std::function path -> use setCallback after construction
         Publish_Topic.setCallback([this](String){ this->updateTopics(); });
@@ -219,190 +207,241 @@ struct MQTT_Settings {
 
 
 // General configuration (default Settings)
-struct General_Settings
-{
-    Config<bool>  enableController;
-    Config<bool>  enableMQTT;
-    Config<int>   maxOutput;
-    Config<int>   minOutput;
-    Config<int>   inputCorrectionOffset;
-
-    Config<float> TempCorrectionOffset;
-    Config<float> HumidityCorrectionOffset;
-    Config<int> SeaLevelPressure;
-    Config<int> ReadTemperatureTicker;// time in seconds to read the temperature and humidity
-    Config<float> VentilatorOn;
-    Config<float> VentilatorOFF;
-    Config<bool>  VentilatorEnable;
-    Config<bool>  saveDisplay;
-    Config<int>   displayShowTime;
-    Config<bool>  allowOTA;
-    Config<String> otaPassword;
-    Config<float> RS232PublishPeriod;
-    Config<int>   smoothingSize;
-    Config<int>   wifiRebootTimeoutMin; // minutes without WiFi before auto reboot (0=disabled)
-
-    Config<bool>  enableHeater;
-    Config<float> HeaterOnTemp;      // turn heater on below this temperature
-    Config<float> HeaterOffTemp;     // turn heater off above this temperature
-    Config<bool>  heaterBatterySaveMode; // battery save mode inhibits heater
-
-    // Relay configuration (pins & polarity)
-    Config<int>   relayFanPin;           // GPIO for fan relay
-    Config<int>   relayHeaterPin;        // GPIO for heater relay
-    Config<bool>  relayFanActiveLow;     // true if active LOW
-    Config<bool>  relayHeaterActiveLow;  // true if active LOW
-
-    Config<bool>  unconfigured;
-    Config<String> Version;
-
-    General_Settings() :
-
-        //limiter settings
-        enableController(ConfigOptions<bool>{
-            .keyName = "enCtrl", .category = "Limiter", .defaultValue = true, .prettyName = "Enable Limitation"
-        }),
-        enableMQTT(ConfigOptions<bool>{
-            .keyName = "enMQTT", .category = "Limiter", .defaultValue = true, .prettyName = "Enable MQTT Propagation", .prettyCat = "MQTT-Section"
-        }),
-        maxOutput(ConfigOptions<int>{
-            .keyName = "MaxO", .category = "Limiter", .defaultValue = 1100, .prettyName = "Max-Output"
-        }),
-        minOutput(ConfigOptions<int>{
-            .keyName = "MinO", .category = "Limiter", .defaultValue = 500, .prettyName = "Min-Output"
-        }),
-        inputCorrectionOffset(ConfigOptions<int>{
-            .keyName = "ICO", .category = "Limiter", .defaultValue = 50, .prettyName = "Correction-Offset"
-        }),
-
-        // BME280 / Temperature settings
-        TempCorrectionOffset(ConfigOptions<float>{
-            .keyName = "TCO", .category = "Temp", .defaultValue = 0.1f, .prettyName = "Temperature Correction", .prettyCat = "Temperature Settings"
-        }),
-        HumidityCorrectionOffset(ConfigOptions<float>{
-            .keyName = "HYO", .category = "Temp", .defaultValue = 0.1f, .prettyName = "Humidity Correction", .prettyCat = "Temperature Settings"
-        }),
-        SeaLevelPressure(ConfigOptions<int>{
-            .keyName = "SLP", .category = "Temp", .defaultValue = 1013, .prettyName = "Sea Level Pressure", .prettyCat = "Temperature Settings"
-        }),
-        ReadTemperatureTicker(ConfigOptions<int>{
-            .keyName = "ReadTemp", .category = "Temp", .defaultValue = 30, .prettyName = "Read Temp/Humidity every (s)", .prettyCat = "Temperature Settings"
-        }),
-
-        // Fan / Ventilator settings
-        VentilatorOn(ConfigOptions<float>{
-            .keyName = "VentOn", .category = "FAN", .defaultValue = 30.0f, .prettyName = "Fan On over", .prettyCat = "FAN Control",
-            .showIf = [this](){ return this->VentilatorEnable.get();}
-        }),
-        VentilatorOFF(ConfigOptions<float>{
-            .keyName = "VentOff", .category = "FAN", .defaultValue = 27.0f, .prettyName = "Fan Off under", .prettyCat = "FAN Control",
-            .showIf = [this](){ return this->VentilatorEnable.get();}
-        }),
-        VentilatorEnable(ConfigOptions<bool>{
-            .keyName = "VentEn", .category = "FAN", .defaultValue = true, .prettyName = "Enable Fan Control", .prettyCat = "FAN Control"
-        }),
-
-        // Heater settings
-        enableHeater(ConfigOptions<bool>{
-            .keyName = "HeatEn", .category = "Heater", .defaultValue = false, .prettyName = "Enable Heater Control", .prettyCat = "Heater Control"
-        }),
-        HeaterOnTemp(ConfigOptions<float>{
-            .keyName = "HOn", .category = "Heater", .defaultValue = 0.0f, .prettyName = "Heater ON below", .prettyCat = "Heater Control",
-            .showIf = [this](){ return this->enableHeater.get(); }
-        }),
-        HeaterOffTemp(ConfigOptions<float>{
-            .keyName = "HOff", .category = "Heater", .defaultValue = 0.5f, .prettyName = "Heater OFF above", .prettyCat = "Heater Control",
-            .showIf = [this](){ return this->enableHeater.get(); }
-        }),
-        heaterBatterySaveMode(ConfigOptions<bool>{
-            .keyName = "HBatSv", .category = "Heater", .defaultValue = false, .prettyName = "Battery-Save-Mode", .prettyCat = "Heater Control",
-            .showIf = [this](){ return this->enableHeater.get(); }
-        }),
-
-        // Relay config (System category)
-        relayFanPin(ConfigOptions<int>{
-            .keyName = "RlfPin", .category = "System", .defaultValue = RELAY_VENTILATOR_PIN, .prettyName = "Fan Relay GPIO", .prettyCat = "Relay Config"
-        }),
-        relayHeaterPin(ConfigOptions<int>{
-            .keyName = "RlhPin", .category = "System", .defaultValue = RELAY_HEATER_PIN, .prettyName = "Heater Relay GPIO", .prettyCat = "Relay Config",
-            .showIf = [this](){ return this->enableHeater.get(); }
-        }),
-        relayFanActiveLow(ConfigOptions<bool>{
-            .keyName = "RlfLow", .category = "System", .defaultValue = (bool)VENTILATOR_RELAY_ACTIVE_LOW, .prettyName = "Fan Active LOW", .prettyCat = "Relay Config"
-        }),
-        relayHeaterActiveLow(ConfigOptions<bool>{
-            .keyName = "RlhLow", .category = "System", .defaultValue = (bool)HEATER_RELAY_ACTIVE_LOW, .prettyName = "Heater Active LOW", .prettyCat = "Relay Config",
-            .showIf = [this](){ return this->enableHeater.get(); }
-        }),
-
-        // Display settings
-        saveDisplay(ConfigOptions<bool>{
-            .keyName = "DispSave", .category = "Display", .defaultValue = true, .prettyName = "Turn Display Off", .prettyCat = "Display Settings"
-        }),
-        displayShowTime(ConfigOptions<int>{
-            .keyName = "DispTime", .category = "Display", .defaultValue = 60, .prettyName = "Display On-Time (s)", .prettyCat = "Display Settings"
-        }),
-
-        // OTA settings
-        allowOTA(ConfigOptions<bool>{
-            .keyName = "OTAEn", .category = "System", .defaultValue = true, .prettyName = "Allow OTA Updates"
-        }),
-        otaPassword(ConfigOptions<String>{
-            .keyName = "OTAPass", .category = "System", .defaultValue = String("ota1234"), .prettyName = "OTA Password", .showInWeb = true, .isPassword = true
-        }),
-
-        // RS232 settings
-        RS232PublishPeriod(ConfigOptions<float>{
-            .keyName = "RS232P", .category = "RS232", .defaultValue = 2.0f, .prettyName = "RS232 Publish Period"
-        }),
-        smoothingSize(ConfigOptions<int>{
-            .keyName = "Smooth", .category = "RS232", .defaultValue = 10, .prettyName = "Smoothing Level"
-        }),
-        wifiRebootTimeoutMin(ConfigOptions<int>{
-            .keyName = "WiFiRb", .category = "System", .defaultValue = 15, .prettyName = "Reboot if WiFi lost (min)", .prettyCat = "System",
-            .showInWeb = true
-        }),
-
-        // System settings
-        unconfigured(ConfigOptions<bool>{
-            .keyName = "Unconfigured", .category = "System", .defaultValue = true, .prettyName = "ESP is unconfigured", .showInWeb = false, .isPassword = false
-        }),
-        Version(ConfigOptions<String>{
-            .keyName = "Version", .category = "System", .defaultValue = String(VERSION), .prettyName = "Program Version"
-        })
+struct LimiterSettings {
+    Config<bool> enableController;
+    Config<int>  maxOutput;
+    Config<int>  minOutput;
+    Config<int>  inputCorrectionOffset;
+    Config<int>  smoothingSize;
+    Config<float> RS232PublishPeriod; // keep here for now
+    LimiterSettings() :
+        enableController({"enCtrl","Limiter",true,"Enable Limitation"}),
+        maxOutput({"MaxO","Limiter",1100,"Max-Output"}),
+        minOutput({"MinO","Limiter",500,"Min-Output"}),
+        inputCorrectionOffset({"ICO","Limiter",50,"Correction-Offset"}),
+        smoothingSize({"Smooth","Limiter",10,"Smoothing Level"}),
+        RS232PublishPeriod({"RS232P","Limiter",2.0f,"RS232 Publish Period"})
     {
         cfg.addSetting(&enableController);
-        cfg.addSetting(&enableMQTT);
         cfg.addSetting(&maxOutput);
         cfg.addSetting(&minOutput);
         cfg.addSetting(&inputCorrectionOffset);
+        cfg.addSetting(&smoothingSize);
+        cfg.addSetting(&RS232PublishPeriod);
+    }
+};
 
-        cfg.addSetting(&TempCorrectionOffset);
-        cfg.addSetting(&HumidityCorrectionOffset);
-        cfg.addSetting(&SeaLevelPressure);
-        cfg.addSetting(&ReadTemperatureTicker);
+struct TempSettings {
+    Config<float> tempCorrection;
+    Config<float> humidityCorrection;
+    Config<int>   seaLevelPressure;
+    Config<int>   readIntervalSec;
+    TempSettings():
+        tempCorrection({"TCO","Temp",0.1f,"Temperature Correction","Temperature Settings"}),
+        humidityCorrection({"HYO","Temp",0.1f,"Humidity Correction","Temperature Settings"}),
+        seaLevelPressure({"SLP","Temp",1013,"Sea Level Pressure","Temperature Settings"}),
+        readIntervalSec({"ReadTemp","Temp",30,"Read Temp/Humidity every (s)","Temperature Settings"})
+    {
+        cfg.addSetting(&tempCorrection);
+        cfg.addSetting(&humidityCorrection);
+        cfg.addSetting(&seaLevelPressure);
+        cfg.addSetting(&readIntervalSec);
+    }
+};
 
-        cfg.addSetting(&enableHeater);
-        cfg.addSetting(&HeaterOnTemp);
-        cfg.addSetting(&HeaterOffTemp);
-        cfg.addSetting(&heaterBatterySaveMode);
-    cfg.addSetting(&relayFanPin);
-    cfg.addSetting(&relayHeaterPin);
-    cfg.addSetting(&relayFanActiveLow);
-    cfg.addSetting(&relayHeaterActiveLow);
+struct I2CSettings {
+    Config<int> sdaPin;
+    Config<int> sclPin;
+    Config<int> busFreq;
+    Config<int> bmeFreq;
+    Config<int> displayAddr;
+    I2CSettings():
+        sdaPin({"I2CSDA","I2C",21,"I2C SDA Pin","I2C"}),
+        sclPin({"I2CSCL","I2C",22,"I2C SCL Pin","I2C"}),
+        busFreq({"I2CFreq","I2C",400000,"I2C Bus Freq","I2C"}),
+        bmeFreq({"BMEFreq","I2C",400000,"BME280 Bus Freq","I2C"}),
+        displayAddr({"DispAddr","I2C",0x3C,"Display I2C Address","I2C"})
+    {
+        cfg.addSetting(&sdaPin);
+        cfg.addSetting(&sclPin);
+        cfg.addSetting(&busFreq);
+        cfg.addSetting(&bmeFreq);
+        cfg.addSetting(&displayAddr);
+    }
+};
 
-        cfg.addSetting(&VentilatorOn);
-        cfg.addSetting(&VentilatorOFF);
-        cfg.addSetting(&VentilatorEnable);
-        cfg.addSetting(&saveDisplay);
-        cfg.addSetting(&displayShowTime);
+struct FanSettings {
+    Config<bool>  enabled;
+    Config<float> onThreshold;
+    Config<float> offThreshold;
+    Config<int>   relayPin;
+    Config<bool>  activeLow;
+    FanSettings():
+        enabled(ConfigOptions<bool>{
+            .keyName = "VentEn",
+            .category = "FAN",
+            .defaultValue = true,
+            .prettyName = "Enable Fan Control",
+            .prettyCat = "FAN Control"
+        }),
+        onThreshold(ConfigOptions<float>{
+            .keyName = "VentOn",
+            .category = "FAN",
+            .defaultValue = 30.0f,
+            .prettyName = "Fan On over",
+            .prettyCat = "FAN Control",
+            .showInWeb = true,
+            .showIf = [this](){return this->enabled.get();}
+        }),
+        offThreshold(ConfigOptions<float>{
+            .keyName = "VentOff",
+            .category = "FAN",
+            .defaultValue = 27.0f,
+            .prettyName = "Fan Off under",
+            .prettyCat = "FAN Control",
+            .showInWeb = true,
+            .showIf = [this](){return this->enabled.get();}
+        }),
+        relayPin(ConfigOptions<int>{
+            .keyName = "RlfPin",
+            .category = "FAN",
+            .defaultValue = 23,
+            .prettyName = "Fan Relay GPIO",
+            .prettyCat = "FAN Control"
+        }),
+        activeLow(ConfigOptions<bool>{
+            .keyName = "RlfLow",
+            .category = "FAN",
+            .defaultValue = true,
+            .prettyName = "Fan Active LOW",
+            .prettyCat = "FAN Control"
+        })
+    {
+        cfg.addSetting(&enabled);
+        cfg.addSetting(&onThreshold);
+        cfg.addSetting(&offThreshold);
+        cfg.addSetting(&relayPin);
+        cfg.addSetting(&activeLow);
+    }
+};
+
+struct HeaterSettings {
+    Config<bool>  enabled;
+    Config<float> onTemp;
+    Config<float> offTemp;
+    Config<bool>  batterySave;
+    Config<int>   relayPin;
+    Config<bool>  activeLow;
+    HeaterSettings():
+        enabled(ConfigOptions<bool>{
+            .keyName = "HeatEn",
+            .category = "Heater",
+            .defaultValue = false,
+            .prettyName = "Enable Heater Control",
+            .prettyCat = "Heater Control"
+        }),
+        onTemp(ConfigOptions<float>{
+            .keyName = "HOn",
+            .category = "Heater",
+            .defaultValue = 0.0f,
+            .prettyName = "Heater ON below",
+            .prettyCat = "Heater Control",
+            .showIf = [this](){return this->enabled.get();}
+        }),
+        offTemp(ConfigOptions<float>{
+            .keyName = "HOff",
+            .category = "Heater",
+            .defaultValue = 0.5f,
+            .prettyName = "Heater OFF above",
+            .prettyCat = "Heater Control",
+            .showIf = [this](){return this->enabled.get();}
+        }),
+        batterySave(ConfigOptions<bool>{
+            .keyName = "HBatSv",
+            .category = "Heater",
+            .defaultValue = false,
+            .prettyName = "Battery-Save-Mode",
+            .prettyCat = "Heater Control",
+            .showIf = [this](){return this->enabled.get();}
+        }),
+        relayPin(ConfigOptions<int>{
+            .keyName = "RlhPin",
+            .category = "Heater",
+            .defaultValue = 33,
+            .prettyName = "Heater Relay GPIO",
+            .prettyCat = "Heater Control",
+            .showIf = [this](){return this->enabled.get();}
+        }),
+        activeLow(ConfigOptions<bool>{
+            .keyName = "RlhLow",
+            .category = "Heater",
+            .defaultValue = true,
+            .prettyName = "Heater Relay Active LOW",
+            .prettyCat = "Heater Control",
+            .showInWeb = true,
+            .isPassword = false,
+            .cb = nullptr,
+            .showIf = [this](){return this->enabled.get();}
+        })
+    {
+        cfg.addSetting(&enabled);
+        cfg.addSetting(&onTemp);
+        cfg.addSetting(&offTemp);
+        cfg.addSetting(&batterySave);
+        cfg.addSetting(&relayPin);
+        cfg.addSetting(&activeLow);
+    }
+};
+
+struct DisplaySettings {
+    Config<bool> turnDisplayOff;
+    Config<int>  onTimeSec;
+    DisplaySettings():
+        turnDisplayOff({"DispSave","Display",true,"Turn Display Off","Display Settings"}),
+        onTimeSec({"DispTime","Display",60,"Display On-Time (s)","Display Settings"})
+    {
+        cfg.addSetting(&turnDisplayOff);
+        cfg.addSetting(&onTimeSec);
+    }
+};
+
+struct SystemSettings {
+    Config<bool> allowOTA;
+    Config<String> otaPassword;
+    Config<int> wifiRebootTimeoutMin;
+    Config<bool> unconfigured;
+    Config<String> version;
+    SystemSettings():
+        allowOTA({"OTAEn","System",true,"Allow OTA Updates"}),
+        otaPassword({"OTAPass","System",String("ota1234"),"OTA Password","System",true,true}),
+        wifiRebootTimeoutMin(ConfigOptions<int>{
+            .keyName = "WiFiRb",
+            .category = "System",
+            .defaultValue = 15,
+            .prettyName = "Reboot if WiFi lost (min)",
+            .prettyCat = "System",
+            .showInWeb = true
+        }),
+        unconfigured({"Unconfigured","System",true,"ESP is unconfigured","System", false,false}),
+        version({"Version","System",String(VERSION),"Program Version"})
+    {
         cfg.addSetting(&allowOTA);
         cfg.addSetting(&otaPassword);
-        cfg.addSetting(&RS232PublishPeriod);
-        cfg.addSetting(&smoothingSize);
         cfg.addSetting(&wifiRebootTimeoutMin);
         cfg.addSetting(&unconfigured);
-        cfg.addSetting(&Version);
+        cfg.addSetting(&version);
+    }
+};
+
+struct ButtonSettings {
+    Config<int> apModePin;
+    Config<int> resetDefaultsPin;
+    ButtonSettings():
+        apModePin({"BtnAP","Buttons",13,"AP Mode Button GPIO","Buttons"}),
+        resetDefaultsPin({"BtnRst","Buttons",15,"Reset Defaults Button GPIO","Buttons"})
+    {
+        cfg.addSetting(&apModePin);
+        cfg.addSetting(&resetDefaultsPin);
     }
 };
 
@@ -419,7 +458,14 @@ struct RS485_Settings
 };
 
 extern MQTT_Settings mqttSettings;
-extern General_Settings generalSettings;
+extern LimiterSettings limiterSettings;
+extern TempSettings tempSettings;
+extern I2CSettings i2cSettings;
+extern FanSettings fanSettings;
+extern HeaterSettings heaterSettings;
+extern DisplaySettings displaySettings;
+extern SystemSettings systemSettings;
+extern ButtonSettings buttonSettings;
 extern RS485_Settings rs485settings;
 extern SigmaLogLevel logLevel;
 extern WiFi_Settings wifiSettings;

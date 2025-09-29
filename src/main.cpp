@@ -102,6 +102,8 @@ void setup()
 
   sl->Printf("Load configuration...").Debug();
   cfg.loadAll();
+  // Re-apply relay pin modes with loaded settings (pins/polarity may differ from defaults)
+  Relays::initPins();
 
   //04.09.2025 new function to check all settings with errors
   cfg.checkSettingsForErrors();
@@ -118,14 +120,13 @@ void setup()
   helpers.blinkBuidInLED(3, 100);     // Blink the built-in LED 3 times with a 100ms delay
 
   sl->Printf("Init buffer...!").Debug();
-  // powerSmoother.fillBufferOnStart(generalSettings.minOutput.get());
   powerSmoother = new Smoother(
-        generalSettings.smoothingSize.get(),
-        generalSettings.inputCorrectionOffset.get(),
-        generalSettings.minOutput.get(),
-        generalSettings.maxOutput.get()
+        limiterSettings.smoothingSize.get(),
+        limiterSettings.inputCorrectionOffset.get(),
+        limiterSettings.minOutput.get(),
+        limiterSettings.maxOutput.get()
       );
-  powerSmoother->fillBufferOnStart(generalSettings.minOutput.get());
+  powerSmoother->fillBufferOnStart(limiterSettings.minOutput.get());
 
   sl->Printf("Configuration printout:").Debug();
   Serial.println(cfg.toJSON(false)); // Print the configuration to the serial monitor
@@ -154,7 +155,7 @@ void setup()
   //set rs232 ticker, its always active
   sl->Debug("Setup RS485 ticker...");
   sll->Debug("Setup RS485 ticker...");
-  RS485Ticker.attach(generalSettings.RS232PublishPeriod.get(), cb_RS485Listener);
+  RS485Ticker.attach(limiterSettings.RS232PublishPeriod.get(), cb_RS485Listener);
 
   sl->Debug("System setup completed.");
   sll->Debug("Setup completed.");
@@ -174,9 +175,9 @@ void setup()
         .fill = [](JsonObject &o){
             o["freeHeap"] = ESP.getFreeHeap();
             o["rssi"] = WiFi.RSSI();
-      o["heaterEnabled"] = generalSettings.enableHeater.get();
-      o["batterySave"] = generalSettings.heaterBatterySaveMode.get();
-      o["Fan"] = generalSettings.VentilatorEnable.get();
+  o["heaterEnabled"] = heaterSettings.enabled.get();
+  o["batterySave"] = heaterSettings.batterySave.get();
+  o["Fan"] = fanSettings.enabled.get();
         }
     });
     cfg.defineRuntimeField("system", "freeHeap", "Free Heap", "B", 0);
@@ -192,12 +193,42 @@ void setup()
         o["ventilator"] = Relays::getVentilator();
         o["heater"] = Relays::getHeater();
         o["heaterReason"] = heaterReason;
+        // Diagnostics
+        o["heaterOnTh"] = heaterSettings.onTemp.get();
+        o["heaterOffTh"] = heaterSettings.offTemp.get();
+        o["temperature"] = temperature;
+        o["heaterLatched"] = (bool)heaterLatchedState;
+        int hp = heaterSettings.relayPin.get();
+        o["heaterPin"] = hp;
+        o["heaterPolarityLow"] = heaterSettings.activeLow.get();
+        if(hp >=0 && hp <=39){
+          o["heaterRawGPIO"] = (int)digitalRead(hp);
+        }
+        // Fan diagnostics for comparison
+        o["fanOnTh"] = fanSettings.onThreshold.get();
+        o["fanOffTh"] = fanSettings.offThreshold.get();
+        // Heater config flags
+        o["heaterEnabled"] = heaterSettings.enabled.get();
+        o["batterySave"] = heaterSettings.batterySave.get();
+        o["dewpointRisk"] = (bool)dewpointRiskActive;
     }
   });
 
   // Optional: define meta (labels, etc.) - simple minimal example
   cfg.defineRuntimeBool("Outputs", "ventilator", "Ventilator Active");
   cfg.defineRuntimeBool("Outputs", "heater", "Heater Active");
+  cfg.defineRuntimeField("Outputs", "heaterOnTh", "Heater ON below", "C", 1);
+  cfg.defineRuntimeField("Outputs", "heaterOffTh", "Heater OFF above", "C", 1);
+  cfg.defineRuntimeField("Outputs", "temperature", "Temperature", "C", 1);
+  cfg.defineRuntimeBool("Outputs", "heaterLatched", "Heater Latched State");
+  cfg.defineRuntimeField("Outputs", "heaterPin", "Heater Pin", "GPIO", 0);
+  cfg.defineRuntimeBool("Outputs", "heaterPolarityLow", "Heater Active LOW");
+  cfg.defineRuntimeField("Outputs", "heaterRawGPIO", "Heater Raw GPIO", "LVL", 0);
+  cfg.defineRuntimeField("Outputs", "fanOnTh", "Fan ON over", "C", 1);
+  cfg.defineRuntimeField("Outputs", "fanOffTh", "Fan OFF under", "C", 1);
+  cfg.defineRuntimeBool("Outputs", "heaterEnabled", "Heater Enabled Flag");
+  cfg.defineRuntimeBool("Outputs", "batterySave", "Battery Save Mode");
+  cfg.defineRuntimeBool("Outputs", "dewpointRisk", "Dewpoint Risk Active");
 
 
     HeaterControl(false); // make sure heater is off at startup
@@ -229,7 +260,7 @@ void loop()
       tickerActive = false;        // Set the flag to indicate that the ticker is not active
 
       // check if ota is active and settings is off, reboot device, to stop ota
-      if (generalSettings.allowOTA.get() == false && cfg.isOTAInitialized())
+  if (systemSettings.allowOTA.get() == false && cfg.isOTAInitialized())
       {
         sll->Debug("Stop OTA-Modeule");
         cfg.stopOTA();//TODO: implemented, but not tested yet
@@ -245,7 +276,7 @@ void loop()
     }
     // Auto reboot logic: only if not AP mode, feature enabled and timeout exceeded
     if (wifiAutoRebootArmed && WiFi.getMode() != WIFI_AP){
-        int timeoutMin = generalSettings.wifiRebootTimeoutMin.get();
+  int timeoutMin = systemSettings.wifiRebootTimeoutMin.get();
         if(timeoutMin > 0){
             unsigned long now = millis();
             unsigned long elapsedMs = now - wifiLastGoodMillis;
@@ -269,9 +300,9 @@ void loop()
       sll->Debug("Reattach ticker.");
       PublischMQTTTicker.attach(mqttSettings.MQTTPublischPeriod.get(), cb_PublishToMQTT); // Reattach the ticker if WiFi is connected
       ListenMQTTTicker.attach(mqttSettings.MQTTListenPeriod.get(), cb_MQTTListener);      // Reattach the ticker if WiFi is connected
-      if(generalSettings.allowOTA.get()){
+  if(systemSettings.allowOTA.get()){
         sll->Debug("Start OTA-Modeule");
-        cfg.setupOTA("Ota-esp32-device", generalSettings.otaPassword.get().c_str());
+  cfg.setupOTA("Ota-esp32-device", systemSettings.otaPassword.get().c_str());
       }
       ShowDisplay();               // Show the display
       tickerActive = true; // Set the flag to indicate that the ticker is active
@@ -481,12 +512,12 @@ void cb_RS485Listener()
 {
   // inverterSetValue = powerSmoother.smooth(AktualImportFromGrid);
   inverterSetValue = powerSmoother->smooth(AktualImportFromGrid);
-  // if (generalSettings.enableController.get())
-  if (generalSettings.enableController.get())
+  // (legacy) previously: if (generalSettings.enableController.get())
+  if (limiterSettings.enableController.get())
   {
     // rs485.sendToRS485(static_cast<uint16_t>(inverterSetValue));
-    // powerSmoother.setCorrectionOffset(generalSettings.inputCorrectionOffset.get()); // apply the correction offset to the smoother, if needed
-    powerSmoother->setCorrectionOffset(generalSettings.inputCorrectionOffset.get()); // apply the correction offset to the smoother, if needed
+  // legacy comment: powerSmoother.setCorrectionOffset(generalSettings.inputCorrectionOffset.get());
+  powerSmoother->setCorrectionOffset(limiterSettings.inputCorrectionOffset.get()); // apply the correction offset to the smoother, if needed
     sendToRS485(static_cast<uint16_t>(inverterSetValue));
     sl->Printf("controller is enabled! Set inverter to %d W", inverterSetValue).Debug();
   }
@@ -496,7 +527,7 @@ void cb_RS485Listener()
     sl->Debug("MAX-POWER!");
     sll->Debug("Limiter is didabled!");
     sll->Debug("MAX-POWER!");
-    sendToRS485(generalSettings.maxOutput.get()); // send the maxOutput to the RS485 module");
+  sendToRS485(limiterSettings.maxOutput.get()); // send the maxOutput to the RS485 module
   }
 }
 
@@ -523,14 +554,14 @@ void SetupCheckForResetButton()
 
   // check for pressed reset button
 
-  if (digitalRead(BUTTON_PIN_RESET_TO_DEFAULTS) == LOW)
+  if (digitalRead(buttonSettings.resetDefaultsPin.get()) == LOW)
   {
   sl->Internal("Reset button pressed -> Reset all settings...");
   sll->Internal("Reset button pressed!");
   sll->Internal("Reset all settings!");
     cfg.clearAllFromPrefs(); // Clear all settings from EEPROM
     delay(10000);            // Wait for 10 seconds to avoid multiple resets
-    generalSettings.unconfigured.set(true); // Set the unconfigured flag to true
+  systemSettings.unconfigured.set(true); // Set the unconfigured flag to true
     cfg.saveAll();           // Save the default settings to EEPROM
     delay(10000);            // Wait for 10 seconds to avoid multiple resets
     ESP.restart();           // Restart the ESP32
@@ -542,18 +573,18 @@ void SetupCheckForAPModeButton()
   String APName = "ESP32_Config";
   String pwd = "config1234"; // Default AP password
 
-  // if (wifiSettings.wifiSsid.get().length() == 0 || generalSettings.unconfigured.get())
+  // if (wifiSettings.wifiSsid.get().length() == 0 || systemSettings.unconfigured.get())
   if (wifiSettings.wifiSsid.get().length() == 0 )
   {
   sl->Printf("⚠️ SETUP: WiFi SSID is empty [%s] (fresh/unconfigured)", wifiSettings.wifiSsid.get().c_str()).Error();
     cfg.startAccessPoint("192.168.4.1", "255.255.255.0", APName, "");
-    generalSettings.unconfigured.set(false); // Set the unconfigured flag to false after starting the access point
+  systemSettings.unconfigured.set(false); // Set the unconfigured flag to false after starting the access point
     cfg.saveAll(); // Save the settings to EEPROM
   }
 
   // check for pressed AP mode button
 
-  if (digitalRead(BUTTON_PIN_AP_MODE) == LOW)
+  if (digitalRead(buttonSettings.apModePin.get()) == LOW)
   {
   sl->Internal("AP mode button pressed -> starting AP mode...");
   sll->Internal("AP mode button!");
@@ -565,7 +596,7 @@ void SetupCheckForAPModeButton()
 void SetupStartTemperatureMeasuring()
 {
   // init BME280 for temperature and humidity sensor
-  bme280.setAddress(BME280_ADDRESS, I2C_SDA, I2C_SCL);
+  bme280.setAddress(BME280_ADDRESS, i2cSettings.sdaPin.get(), i2cSettings.sclPin.get());
   bool isStatus = bme280.begin(
       bme280.BME280_STANDBY_0_5,
       bme280.BME280_FILTER_16,
@@ -641,7 +672,7 @@ void SetupStartTemperatureMeasuring()
 
 
 
-  temperatureTicker.attach(generalSettings.ReadTemperatureTicker.get(), readBme280); // Attach the ticker to read BME280
+  temperatureTicker.attach(tempSettings.readIntervalSec.get(), readBme280); // Attach the ticker to read BME280
     readBme280(); // initial read
   }
 }
@@ -716,8 +747,8 @@ void readBme280()
 
   bme280.read();
 
-  temperature = bme280.data.temperature + generalSettings.TempCorrectionOffset.get(); // store the temperature value in the global variable
-  Humidity = bme280.data.humidity + generalSettings.HumidityCorrectionOffset.get();   // store the temperature value in the global variable
+  temperature = bme280.data.temperature + tempSettings.tempCorrection.get(); // apply correction
+  Humidity = bme280.data.humidity + tempSettings.humidityCorrection.get();   // apply correction
   Pressure = bme280.data.pressure;
   Dewpoint = computeDewPoint(temperature, Humidity);
 
@@ -732,26 +763,15 @@ void readBme280()
 }
 
 void HeaterControl(bool heaterOn){
-#ifdef RELAY_HEATER_PIN
-  // honor configuration flag: if heater feature disabled -> force OFF
-  if(!generalSettings.enableHeater.get()){
+  // Feature & battery-save guards
+  if(!heaterSettings.enabled.get() || heaterSettings.batterySave.get()){
     if(Relays::getHeater()){
-      sl->Debug("Heater disabled in settings -> force OFF");
-    }
-    Relays::setHeater(false);
-    return;
-  }
-  if(generalSettings.heaterBatterySaveMode.get()){
-    if(Relays::getHeater()){
-      sl->Debug("Battery-Save active -> force Heater OFF");
+      sl->Debug("HeaterControl: disabled or battery-save active -> force OFF");
     }
     Relays::setHeater(false);
     return;
   }
   Relays::setHeater(heaterOn);
-#else
-  (void)heaterOn; // heater not compiled in
-#endif
 }
 
 // New runtime provider for Limiter view
@@ -762,7 +782,7 @@ __attribute__((constructor)) static void _registerLimiterProvider(){
     cfg.addRuntimeProvider({
         .name = "Limiter",
         .fill = [](JsonObject &o){
-            o["enabled"] = generalSettings.enableController.get();
+            o["enabled"] = limiterSettings.enableController.get();
             o["gridIn"] = AktualImportFromGrid;
             o["invSet"] = inverterSetValue;
         }
@@ -814,61 +834,59 @@ void WriteToDisplay()
 void PinSetup()
 {
   analogReadResolution(12);  // Use full 12-bit resolution
-  pinMode(BUTTON_PIN_RESET_TO_DEFAULTS, INPUT_PULLUP);
-  pinMode(BUTTON_PIN_AP_MODE, INPUT_PULLUP);
+  pinMode(buttonSettings.resetDefaultsPin.get(), INPUT_PULLUP);
+  pinMode(buttonSettings.apModePin.get(), INPUT_PULLUP);
   Relays::initPins();
   // Force known OFF state
   Relays::setVentilator(false);
-#ifdef RELAY_HEATER_PIN
   Relays::setHeater(false);
-#endif
   // Simple validation: warn if same pin used for both or invalid
-  int fanPin = generalSettings.relayFanPin.get();
-  int heaterPin = generalSettings.relayHeaterPin.get();
-  if(fanPin == heaterPin && generalSettings.enableHeater.get()){
+  int fanPin = fanSettings.relayPin.get();
+  int heaterPin = heaterSettings.relayPin.get();
+  if(fanPin == heaterPin && heaterSettings.enabled.get()){
     sl->Error("Relay config: Fan and Heater share same GPIO! This may cause conflicts.");
   }
 }
 
 void CheckVentilator(float currentTemperature)
 {
-  if (!generalSettings.VentilatorEnable.get()) {
+  if (!fanSettings.enabled.get()) {
     Relays::setVentilator(false);
     return;
   }
-  if (currentTemperature >= generalSettings.VentilatorOn.get()) {
+  if (currentTemperature >= fanSettings.onThreshold.get()) {
     Relays::setVentilator(true);
-  } else if (currentTemperature <= generalSettings.VentilatorOFF.get()) {
+  } else if (currentTemperature <= fanSettings.offThreshold.get()) {
     Relays::setVentilator(false);
   }
 }
 
 void EvaluateHeater(float currentTemperature){
-#ifdef RELAY_HEATER_PIN
-  // Priority 1: Battery save mode forces OFF
-  if(generalSettings.heaterBatterySaveMode.get()){
-    heaterLatchedState = false;
-    heaterReason = "battery-save";
-    Relays::setHeater(false);
-    return;
-  }
-  // Priority 2: Feature disabled
-  if(!generalSettings.enableHeater.get()){
+  bool batSave = heaterSettings.batterySave.get();
+  // Priority 1: Feature disabled -> always OFF
+  if(!heaterSettings.enabled.get()){
     heaterLatchedState = false;
     heaterReason = "disabled";
     Relays::setHeater(false);
     return;
   }
-  // Priority 3: Dewpoint risk -> force ON
+  // Priority 2: Dewpoint risk -> force ON (even in battery-save mode)
   if(dewpointRiskActive){
     heaterLatchedState = true;
     heaterReason = "dewpoint-risk";
     Relays::setHeater(true);
     return;
   }
-  // Priority 4: Threshold hysteresis
-  float onTh = generalSettings.HeaterOnTemp.get();
-  float offTh = generalSettings.HeaterOffTemp.get();
+  // Priority 3: Battery save active: skip normal threshold heating (stay OFF unless alarm)
+  if(batSave){
+    heaterLatchedState = false;
+    heaterReason = "battery-save-suppress";
+    Relays::setHeater(false);
+    // return;
+  }
+  // Priority 4: Threshold hysteresis (normal mode)
+  float onTh = heaterSettings.onTemp.get();
+  float offTh = heaterSettings.offTemp.get();
   if(offTh <= onTh) offTh = onTh + 0.3f; // enforce separation
   if(!heaterLatchedState){
     if(currentTemperature < onTh){
@@ -886,21 +904,18 @@ void EvaluateHeater(float currentTemperature){
     }
   }
   Relays::setHeater(heaterLatchedState);
-#else
-  (void)currentTemperature;
-#endif
 }
 
 void CheckButtons()
 {
   // sl->Debug("Check Buttons...");
-  if (digitalRead(BUTTON_PIN_RESET_TO_DEFAULTS) == LOW)
+  if (digitalRead(buttonSettings.resetDefaultsPin.get()) == LOW)
   {
     sl->Internal("Reset-Button pressed after reboot... -> Start Display Ticker...");
     ShowDisplay();
   }
 
-  if (digitalRead(BUTTON_PIN_AP_MODE) == LOW)
+  if (digitalRead(buttonSettings.apModePin.get()) == LOW)
   {
     sl->Internal("AP-Mode-Button pressed after reboot... -> Start Display Ticker...");
     ShowDisplay();
@@ -911,7 +926,7 @@ void ShowDisplay()
 {
   displayTicker.detach(); // Stop the ticker to prevent multiple calls
   display.ssd1306_command(SSD1306_DISPLAYON); // Turn on the display
-  displayTicker.attach(generalSettings.displayShowTime.get(), ShowDisplayOff); // Reattach the ticker to turn off the display after the specified time
+  displayTicker.attach(displaySettings.onTimeSec.get(), ShowDisplayOff); // Reattach the ticker to turn off the display after the specified time
   displayActive = true;
 }
 
@@ -921,7 +936,7 @@ void ShowDisplayOff()
   display.ssd1306_command(SSD1306_DISPLAYOFF); // Turn off the display
   // display.fillRect(0, 0, 128, 24, BLACK); // Clear the previous message area
 
-  if (generalSettings.saveDisplay.get()){
+  if (displaySettings.turnDisplayOff.get()){
     displayActive = false;
   }
 }
