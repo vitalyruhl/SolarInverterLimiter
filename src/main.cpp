@@ -5,7 +5,10 @@
 #include <Ticker.h>
 #include "Wire.h"
 #include <BME280_I2C.h>
-#include <WebServer.h>
+
+#include <AsyncTCP.h>
+#include <ESPAsyncWebServer.h>
+AsyncWebServer server(80);
 
 #include "settings.h"
 #include "logging/logging.h"

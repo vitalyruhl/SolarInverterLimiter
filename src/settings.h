@@ -335,7 +335,6 @@ struct RS485_Settings
     // todo: add settings for Inverter eg, headder, checksum, etc.
 };
 
-extern WebServer server;
 extern MQTT_Settings mqttSettings;
 extern General_Settings generalSettings;
 extern RS485_Settings rs485settings;

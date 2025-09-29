@@ -1,7 +1,6 @@
 
 #include "settings.h"
 
-WebServer server(80);
 ConfigManagerClass cfg;
 WiFi_Settings wifiSettings;
 MQTT_Settings mqttSettings;
