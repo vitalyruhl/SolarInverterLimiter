@@ -10,7 +10,7 @@
 
 #include "ConfigManager.h"
 
-#define VERSION "2.4.1"           // version of the software (major.minor.patch)
+#define VERSION "2.4.2"           // version of the software (major.minor.patch)
 #define VERSION_DATE "29.09.2025" // date of the version
 
 //--------------------------------------------------------------------------------------------------------------
