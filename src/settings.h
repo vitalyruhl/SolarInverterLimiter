@@ -329,7 +329,6 @@ struct HeaterSettings {
     Config<bool>  enabled;
     Config<float> onTemp;
     Config<float> offTemp;
-    Config<bool>  batterySave;
     Config<int>   relayPin;
     Config<bool>  activeLow;
     HeaterSettings():
@@ -356,14 +355,7 @@ struct HeaterSettings {
             .prettyCat = "Heater Control",
             .showIf = [this](){return this->enabled.get();}
         }),
-        batterySave(ConfigOptions<bool>{
-            .keyName = "HBatSv",
-            .category = "Heater",
-            .defaultValue = false,
-            .prettyName = "Battery-Save-Mode",
-            .prettyCat = "Heater Control",
-            .showIf = [this](){return this->enabled.get();}
-        }),
+        
         relayPin(ConfigOptions<int>{
             .keyName = "RlhPin",
             .category = "Heater",
@@ -387,7 +379,6 @@ struct HeaterSettings {
         cfg.addSetting(&enabled);
         cfg.addSetting(&onTemp);
         cfg.addSetting(&offTemp);
-        cfg.addSetting(&batterySave);
         cfg.addSetting(&relayPin);
         cfg.addSetting(&activeLow);
     }
