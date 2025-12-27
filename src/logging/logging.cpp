@@ -91,7 +91,7 @@ void LCDUpdate()
 {
     if (lcdCurrentLine >= lcdCurrentMessage.size())
     {
-        // aktuelle Nachricht fertig, nächste holen
+        // Current message finished, fetch next
         if (!lcdMessageQueue.empty())
         {
             lcdCurrentMessage = lcdMessageQueue.front();
@@ -100,11 +100,11 @@ void LCDUpdate()
         }
         else
         {
-            return; // nichts zu tun
+            return; // Nothing to do
         }
     }
 
-    // aktuelle Zeile anzeigen
+    // Render current line
     display.fillRect(0, 25, 128, 8, BLACK);
     display.setCursor(0, 25);
     display.setTextSize(1);
