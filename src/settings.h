@@ -106,9 +106,9 @@ struct MQTT_Settings {
     Config<String> mqtt_username;
     Config<String> mqtt_password;
     Config<String> mqtt_sensor_powerusage_topic;
-    Config<String> Publish_Topic;
-    Config<float> MQTTPublischPeriod;
-    Config<float> MQTTListenPeriod;
+    Config<String> publishTopicBase;
+    Config<float> mqttPublishPeriodSec;
+    Config<float> mqttListenPeriodSec;
     Config<bool>  enableMQTT; // moved from LimiterSettings
 
     // dynamic topics (derived)
@@ -119,14 +119,14 @@ struct MQTT_Settings {
     String mqtt_publish_Dewpoint_topic;
 
     MQTT_Settings() :
-        MQTTPublischPeriod(ConfigOptions<float>{
+        mqttPublishPeriodSec(ConfigOptions<float>{
             .key = "pubPer",
             .name = "Publish Period (s)",
             .category = "MQTT",
             .defaultValue = 5.0f,
             .categoryPretty = "MQTT"
         }),
-        MQTTListenPeriod(ConfigOptions<float>{
+        mqttListenPeriodSec(ConfigOptions<float>{
             .key = "subPer",
             .name = "Listen Period (s)",
             .category = "MQTT",
@@ -169,7 +169,7 @@ struct MQTT_Settings {
             .defaultValue = String("emon/emonpi/power1"),
             .categoryPretty = "MQTT"
         }),
-        Publish_Topic(ConfigOptions<String>{
+        publishTopicBase(ConfigOptions<String>{
             .key = "base",
             .name = "Base Topic",
             .category = "MQTT",
@@ -189,18 +189,18 @@ struct MQTT_Settings {
         cfg.addSetting(&mqtt_username);
         cfg.addSetting(&mqtt_password);
         cfg.addSetting(&mqtt_sensor_powerusage_topic);
-        cfg.addSetting(&Publish_Topic);
-        cfg.addSetting(&MQTTPublischPeriod);
-        cfg.addSetting(&MQTTListenPeriod);
+        cfg.addSetting(&publishTopicBase);
+        cfg.addSetting(&mqttPublishPeriodSec);
+        cfg.addSetting(&mqttListenPeriodSec);
         cfg.addSetting(&enableMQTT);
 
         // capturing lambda requires std::function path -> use setCallback after construction
-        Publish_Topic.setCallback([this](String){ this->updateTopics(); });
+        publishTopicBase.setCallback([this](String){ this->updateTopics(); });
         updateTopics();
     }
 
     void updateTopics() {
-        String hostname = Publish_Topic.get();
+        String hostname = publishTopicBase.get();
         mqtt_publish_setvalue_topic      = hostname + "/SetValue";
         mqtt_publish_getvalue_topic      = hostname + "/GetValue";
         mqtt_publish_Temperature_topic   = hostname + "/Temperature";

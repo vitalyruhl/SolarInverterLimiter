@@ -49,8 +49,8 @@ BME280_I2C bme280;
 
 Helpers helpers;
 
-Ticker PublischMQTTTicker;
-Ticker PublischMQTTTSettingsTicker;
+Ticker publishMqttTicker;
+Ticker publishMqttSettingsTicker;
 Ticker ListenMQTTTicker;
 Ticker RS485Ticker;
 Ticker temperatureTicker;
@@ -108,7 +108,7 @@ void setup()
   cfg.checkSettingsForErrors();
 
   //05.09.2025 add new updateTopics function to the mqttSettings
-  mqttSettings.updateTopics(); // better restart the device after changing the Publish_Topic to prevent fragmentation of the memory and overflow of the heap
+  mqttSettings.updateTopics(); // Consider restarting after changing MQTT base topic to avoid heap fragmentation
 
   // init modules...
   sl->Printf("init modules...").Debug();
@@ -255,7 +255,7 @@ void loop()
       sll->Debug("WiFi lost connection!");
       sll->Debug("Running in AP mode.");
       sll->Debug("Deactivating MQTT tickers.");
-      PublischMQTTTicker.detach(); // Stop the ticker if WiFi is not connected or in AP mode
+      publishMqttTicker.detach(); // Stop the ticker if WiFi is not connected or in AP mode
       ListenMQTTTicker.detach();   // Stop the ticker if WiFi is not connected or in AP mode
       tickerActive = false;        // Set the flag to indicate that the ticker is not active
 
@@ -298,8 +298,8 @@ void loop()
       sl->Debug("WiFi connected! Reattach ticker.");
       sll->Debug("WiFi reconnected!");
       sll->Debug("Reattach ticker.");
-      PublischMQTTTicker.attach(mqttSettings.MQTTPublischPeriod.get(), cb_PublishToMQTT); // Reattach the ticker if WiFi is connected
-      ListenMQTTTicker.attach(mqttSettings.MQTTListenPeriod.get(), cb_MQTTListener);      // Reattach the ticker if WiFi is connected
+      publishMqttTicker.attach(mqttSettings.mqttPublishPeriodSec.get(), cb_PublishToMQTT); // Reattach the ticker if WiFi is connected
+      ListenMQTTTicker.attach(mqttSettings.mqttListenPeriodSec.get(), cb_MQTTListener);    // Reattach the ticker if WiFi is connected
       if(systemSettings.allowOTA.get()){
         sll->Debug("Starting OTA module...");
         cfg.setupOTA("Ota-esp32-device", systemSettings.otaPassword.get().c_str());
@@ -388,7 +388,7 @@ void reconnectMQTT()
 
     // print the mqtt settings
     sl->Printf("Connecting to MQTT broker...").Debug();
-    sl->Printf("MQTT Hostname: %s", mqttSettings.Publish_Topic.get().c_str()).Debug();
+    sl->Printf("MQTT Hostname: %s", mqttSettings.publishTopicBase.get().c_str()).Debug();
     sl->Printf("MQTT Server: %s", mqttSettings.mqtt_server.get().c_str()).Debug();
     sl->Printf("MQTT Port: %d", mqttSettings.mqtt_port.get()).Debug();
     sl->Printf("MQTT User: %s", mqttSettings.mqtt_username.get().c_str()).Debug();
@@ -396,7 +396,7 @@ void reconnectMQTT()
     sl->Printf("MQTT Password: ***").Debug();
     sl->Printf("MQTT Sensor Power Usage Topic: %s", mqttSettings.mqtt_sensor_powerusage_topic.get().c_str()).Debug();
 
-    client.connect(mqttSettings.Publish_Topic.get().c_str(), mqttSettings.mqtt_username.get().c_str(), mqttSettings.mqtt_password.get().c_str()); // Connect to the MQTT broker
+    client.connect(mqttSettings.publishTopicBase.get().c_str(), mqttSettings.mqtt_username.get().c_str(), mqttSettings.mqtt_password.get().c_str()); // Connect to the MQTT broker
     delay(2000);
 
     if (client.connected())
