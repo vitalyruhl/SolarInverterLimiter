@@ -1,15 +1,16 @@
-# ESP32 - RS485 Solarinverter Limiter
+# ESP32 RS485 Solar Inverter Limiter
 
-This project is a simple ESP32-based solar inverter limiter that can be used to limit the power output of a solar inverter to a specific value. The project uses an ESP32 microcontroller, a current sensor, and a relay module to control the power output of the inverter. The project is designed to be easy to use and can be configured to work with a variety of solar inverters with RS485 communication.
+This project is an ESP32-based solar inverter limiter that can be used to limit the power output of a solar inverter to a specific value. The project uses an ESP32 microcontroller and an RS485 module to communicate with the inverter.
 
-This is an Project, that not ready yet. Wait to Version 1.0.0 for the first stable release.
+This project is still under development and not considered stable yet.
 
 ## Features
 
 - ESP32-based solar inverter limiter
 - RS485 communication with solar inverter
-- sends power output data to a MQTT-server
-- configurable power output limit
+- Publishes power and sensor values via MQTT
+- Configurable power output limit
+- Web-based settings UI (ConfigManager)
 
 ## Hardware Requirements
 
@@ -18,9 +19,14 @@ This is an Project, that not ready yet. Wait to Version 1.0.0 for the first stab
 
 ## How to use
 
-1. copy the config_example.h to config.h and edit the values to your needs
-2. upload the code to your ESP32 microcontroller
-3. connect the RS485 module to the ESP32 microcontroller (see wiring diagram below)
+1. Build and upload with PlatformIO:
+  - Build: `pio run -e usb`
+  - Upload: `pio run -e usb -t upload`
+2. On first boot (or when WiFi SSID is empty) the device starts an access point:
+  - SSID: `ESP32_Config`
+  - Password: `config1234`
+3. Connect to the AP and open the web UI (usually `http://192.168.4.1/`) to configure WiFi/MQTT and other settings.
+4. After WiFi is configured the web UI will be available on the device IP in your LAN.
 
 ## Wiring Diagram
 
@@ -38,7 +44,8 @@ ESP32 Pin  | RS485 Pin
 
 ## Home Assistant Integration
 
-- Add the following to your configuration.yaml file:
+- See the examples in `docs/HomeAssistant.yaml` and `docs/HomeAssistant_Dashboard.yaml`.
+- Minimal MQTT sensor example (topics depend on the configured MQTT base topic):
 
 ```yaml
 mqtt:

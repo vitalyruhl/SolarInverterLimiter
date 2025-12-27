@@ -11,14 +11,15 @@ Legend:
 
 ## P0 (critical) – Anglicize the project (repo-wide)
 
-- [NEXT] Ensure English-only repository artifacts
+
+- [CURRENT] Ensure English-only repository artifacts
 	- Review /docs/* and translate remaining German text to English
 	- Review /dev-info/* and translate remaining German text to English (keep technical meaning)
 	- Review /src/* and translate remaining German comments/strings to English
 	- Replace emojis in repository artifacts with plain text tags like [INFO]/[WARNING]/[ERROR]
 	- Ensure new documentation is written in English (chat explanations remain German)
 
-- [NEXT] Rename German identifiers (incremental)
+- [NEXT] Rename non-English/typo identifiers (incremental)
 	- Replace German variable/function names with English equivalents (update all references)
 	- Keep external interfaces stable (MQTT topics/JSON keys) unless explicitly intended
 
@@ -28,41 +29,11 @@ Legend:
 
 ## P0 (critical) – ConfigManager refactor (functional, buildable)
 
-- [NEXT] Inventory of settings/keys
-	- Derive a list of current setting categories/keys from `src/settings.h`/`src/settings.cpp`
-	- Check where Preferences/NVS is accessed directly and whether it conflicts with ConfigManager
-	- Apply security functions (new in ConfigManager) where applicable (use `src/secret/salt.h`)
-
-- [NEXT] Compare with reference `/dev-info/Example_V2.4.7_settings.*`
-	- Mapping: old keys/structure → new ConfigOptions API
-	- Define missing defaults (defensive defaults)
-
-- [NEXT] Define migration/compatibility strategy
-	- Goal: OTA/updates must not break existing devices
-	- Document approach (e.g. key aliases, fallbacks, version checks, defaults)
-
-- [NEXT] Refactor step 1: WiFi/network settings
-	- Standardize categories/pretty names
-	- Ensure WebUI visibility and password flags are correct
-
-- [NEXT] Refactor step 2: MQTT settings
-	- Keep topics/derived topics correct (callback/update mechanism)
-	- Ensure the enable flag lives in the right place (consistent)
-
-- [NEXT] Refactor step 3: limiter/RS485/hardware settings
-	- Put RS485Module parameters and inverter-specific parameters into clear categories
-	- Verify I2C/display/BME280 defaults
-
-- [NEXT] Refactor step 4: logging/runtime flags via ConfigManager
-	- Cleanly separate compile-time flags vs. runtime settings
-
-- [NEXT] Build validation
-	- `pio run -e usb`
-	- Optional: if tests exist/are enabled `pio test -e <env>`
-
-- [NEXT] Documentation update after refactor
-	- Update README (remove “copy config_example.h” if no longer applicable)
-	- Briefly describe how to set settings via ConfigManager/WebUI
+- [COMPLETED] ConfigManager refactor aligned to ConfigManager 2.7.6
+	- Settings migrated to ConfigOptions API
+	- Runtime/WiFi APIs aligned
+	- `pio run -e usb` builds successfully
+	- Note: No backward compatibility / migration by explicit decision
 
 ## P1 (high) – Update HomeAssistant YAML to the new structure
 

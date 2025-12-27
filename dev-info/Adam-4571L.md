@@ -36,18 +36,18 @@ Pin 9: RI
                                   | .--------------------. |
                                   | .   ~~~~~~~~~~~~~~   . |
                                   | .   ~~~~~~~~~~~~~~   . |
-VP   ✅ ADC1 (RO)                | [ ]                 [x] | D23 <— Used for Fan-Relay
-VN   ✅ ADC1 (RO)                | [ ]                 [x] | D22 <— I2C_SCL
-D34  ✅ ADC1 (RO)                | [ ]                 [ ] | GPIO1 (TXD) <— UART TX (⚠️ avoid if possible)
-D35  ✅ ADC1 (RO)                | [ ]                 [ ] | GPIO3 (RXD) <— UART RX (⚠️ avoid if possible)
-D32  ✅ ADC1                     | [ ]                 [x] | D21 <— I2C_SDA
-D33  ✅ ADC1                     | [ ]                 [x] | D19 ❌ no ADC (Tx Pin for Serial2 = RS232-to-RS485)
-D25  ⚠️ ADC2                     | [ ]                 [x] | D18 ❌ no ADC (Rx Pin for Serial2 = RS232-to-RS485)
-D26  ⚠️ ADC2                     | [ ]                 [ ] | D5  ❌ no ADC
-D27  ⚠️ ADC2                     | [ ]                 [ ] | D17 ❌ no ADC
-D14  ⚠️ ADC2                     | [ ]                 [ ] | D16 ❌ no ADC
-D12  ⚠️ ADC2 (boot pin)          | [ ]                 [ ] | D4  ⚠️ ADC2 (boot pin)
-D13  ❌ no ADC (Btn-AP-Mode)     | [x]                 [x] | D15 ⚠️ ADC2 (boot pin - must be LOW on boot) (Used for Reset Button)
+VP   [OK] ADC1 (RO)              | [ ]                 [x] | D23 <— Used for Fan-Relay
+VN   [OK] ADC1 (RO)              | [ ]                 [x] | D22 <— I2C_SCL
+D34  [OK] ADC1 (RO)              | [ ]                 [ ] | GPIO1 (TXD) <— UART TX ([WARNING] avoid if possible)
+D35  [OK] ADC1 (RO)              | [ ]                 [ ] | GPIO3 (RXD) <— UART RX ([WARNING] avoid if possible)
+D32  [OK] ADC1                   | [ ]                 [x] | D21 <— I2C_SDA
+D33  [OK] ADC1                   | [ ]                 [x] | D19 [INFO] no ADC (Tx Pin for Serial2 = RS232-to-RS485)
+D25  [WARNING] ADC2              | [ ]                 [x] | D18 [INFO] no ADC (Rx Pin for Serial2 = RS232-to-RS485)
+D26  [WARNING] ADC2              | [ ]                 [ ] | D5  [INFO] no ADC
+D27  [WARNING] ADC2              | [ ]                 [ ] | D17 [INFO] no ADC
+D14  [WARNING] ADC2              | [ ]                 [ ] | D16 [INFO] no ADC
+D12  [WARNING] ADC2 (boot pin)   | [ ]                 [ ] | D4  [WARNING] ADC2 (boot pin)
+D13  [INFO] no ADC (Btn-AP-Mode) | [x]                 [x] | D15 [WARNING] ADC2 (boot pin - must be LOW on boot) (Used for Reset Button)
 EN                                | [ ]                 [ ] | GND
 VIN (5V!)                         | [ ]                 [ ] | 3V3
                                   |                         |
