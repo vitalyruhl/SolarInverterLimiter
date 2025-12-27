@@ -6,3 +6,8 @@
 /.pio/build
 /ideas
 src/SolarInverterLimiter.code-workspace
+
+# Local secrets (DO NOT COMMIT)
+src/secret/wifiSecret.h
+src/salt.h
+

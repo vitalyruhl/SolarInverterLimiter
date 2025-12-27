@@ -28,6 +28,8 @@
 
 extern ConfigManagerClass cfg;// store it globaly before using it in the settings
 
+void migrateConfigManagerPrefsKeys();
+
 //--------------------------------------------------------------------------------------------------------------
 
 struct WiFi_Settings // wifiSettings (migrated to new ConfigOptions API)
@@ -41,14 +43,14 @@ struct WiFi_Settings // wifiSettings (migrated to new ConfigOptions API)
 
     WiFi_Settings() :
         wifiSsid(ConfigOptions<String>{
-            .key = "ssid",
+            .key = "WiFiSSID",
             .name = "WiFi SSID",
             .category = "wifi",
             .defaultValue = String(""),
             .categoryPretty = "Network"
         }),
         wifiPassword(ConfigOptions<String>{
-            .key = "pwd",
+            .key = "WiFiPassword",
             .name = "WiFi Password",
             .category = "wifi",
             .defaultValue = String(""),
@@ -56,14 +58,14 @@ struct WiFi_Settings // wifiSettings (migrated to new ConfigOptions API)
             .categoryPretty = "Network"
         }),
         useDhcp(ConfigOptions<bool>{
-            .key = "dhcp",
+            .key = "WiFiUseDHCP",
             .name = "Use DHCP",
             .category = "wifi",
             .defaultValue = true,
             .categoryPretty = "Network"
         }),
         staticIp(ConfigOptions<String>{
-            .key = "ip",
+            .key = "WiFiStaticIP",
             .name = "Static IP",
             .category = "wifi",
             .defaultValue = String("192.168.2.126"),
@@ -71,7 +73,7 @@ struct WiFi_Settings // wifiSettings (migrated to new ConfigOptions API)
             .categoryPretty = "Network"
         }),
         gateway(ConfigOptions<String>{
-            .key = "gw",
+            .key = "WiFiGateway",
             .name = "Gateway",
             .category = "wifi",
             .defaultValue = String("192.168.2.250"),
@@ -79,7 +81,7 @@ struct WiFi_Settings // wifiSettings (migrated to new ConfigOptions API)
             .categoryPretty = "Network"
         }),
         subnet(ConfigOptions<String>{
-            .key = "mask",
+            .key = "WiFiSubnet",
             .name = "Subnet Mask",
             .category = "wifi",
             .defaultValue = String("255.255.255.0"),
@@ -93,6 +95,13 @@ struct WiFi_Settings // wifiSettings (migrated to new ConfigOptions API)
         cfg.addSetting(&staticIp);
         cfg.addSetting(&gateway);
         cfg.addSetting(&subnet);
+
+        wifiSsid.setCallback([](const String& v) {
+            Serial.printf("[SETTINGS] WiFi SSID updated (len=%u)\n", (unsigned)v.length());
+        });
+        wifiPassword.setCallback([](const String& v) {
+            Serial.printf("[SETTINGS] WiFi Password updated (len=%u)\n", (unsigned)v.length());
+        });
     }
 };
 
@@ -120,42 +129,42 @@ struct MQTT_Settings {
 
     MQTT_Settings() :
         mqttPublishPeriodSec(ConfigOptions<float>{
-            .key = "pubPer",
+            .key = "MQTTPubPer",
             .name = "Publish Period (s)",
             .category = "MQTT",
             .defaultValue = 5.0f,
             .categoryPretty = "MQTT"
         }),
         mqttListenPeriodSec(ConfigOptions<float>{
-            .key = "subPer",
+            .key = "MQTTSubPer",
             .name = "Listen Period (s)",
             .category = "MQTT",
             .defaultValue = 0.5f,
             .categoryPretty = "MQTT"
         }),
         mqtt_port(ConfigOptions<int>{
-            .key = "port",
+            .key = "MQTTPort",
             .name = "Port",
             .category = "MQTT",
             .defaultValue = 1883,
             .categoryPretty = "MQTT"
         }),
         mqtt_server(ConfigOptions<String>{
-            .key = "host",
+            .key = "MQTTHost",
             .name = "Server",
             .category = "MQTT",
             .defaultValue = String("192.168.2.3"),
             .categoryPretty = "MQTT"
         }),
         mqtt_username(ConfigOptions<String>{
-            .key = "user",
+            .key = "MQTTUser",
             .name = "Username",
             .category = "MQTT",
             .defaultValue = String(""),
             .categoryPretty = "MQTT"
         }),
         mqtt_password(ConfigOptions<String>{
-            .key = "pass",
+            .key = "MQTTPass",
             .name = "Password",
             .category = "MQTT",
             .defaultValue = String(""),
@@ -163,21 +172,21 @@ struct MQTT_Settings {
             .categoryPretty = "MQTT"
         }),
         mqtt_sensor_powerusage_topic(ConfigOptions<String>{
-            .key = "pwrTop",
+            .key = "MQTTPwrTopic",
             .name = "Power Usage Topic",
             .category = "MQTT",
             .defaultValue = String("emon/emonpi/power1"),
             .categoryPretty = "MQTT"
         }),
         publishTopicBase(ConfigOptions<String>{
-            .key = "base",
+            .key = "MQTTBaseTopic",
             .name = "Base Topic",
             .category = "MQTT",
-            .defaultValue = String("SolarLimiter"),
+            .defaultValue = String("SolarLimiter2"),
             .categoryPretty = "MQTT"
         }),
         enableMQTT(ConfigOptions<bool>{
-            .key = "enable",
+            .key = "MQTTEnable",
             .name = "Enable MQTT",
             .category = "MQTT",
             .defaultValue = true,
@@ -220,42 +229,42 @@ struct LimiterSettings {
     Config<float> RS232PublishPeriod; // keep here for now
     LimiterSettings() :
         enableController(ConfigOptions<bool>{
-            .key = "enable",
+            .key = "LimiterEnable",
             .name = "Limiter Enabled",
             .category = "Limiter",
             .defaultValue = true,
             .categoryPretty = "Limiter"
         }),
         maxOutput(ConfigOptions<int>{
-            .key = "maxW",
+            .key = "LimiterMaxW",
             .name = "Max Output (W)",
             .category = "Limiter",
             .defaultValue = 1100,
             .categoryPretty = "Limiter"
         }),
         minOutput(ConfigOptions<int>{
-            .key = "minW",
+            .key = "LimiterMinW",
             .name = "Min Output (W)",
             .category = "Limiter",
             .defaultValue = 500,
             .categoryPretty = "Limiter"
         }),
         inputCorrectionOffset(ConfigOptions<int>{
-            .key = "corr",
+            .key = "LimiterCorrW",
             .name = "Input Correction Offset (W)",
             .category = "Limiter",
             .defaultValue = 50,
             .categoryPretty = "Limiter"
         }),
         smoothingSize(ConfigOptions<int>{
-            .key = "smooth",
+            .key = "LimiterSmooth",
             .name = "Smoothing Level",
             .category = "Limiter",
             .defaultValue = 10,
             .categoryPretty = "Limiter"
         }),
         RS232PublishPeriod(ConfigOptions<float>{
-            .key = "rs485Per",
+            .key = "LimiterRS485P",
             .name = "RS485 Publish Period (s)",
             .category = "Limiter",
             .defaultValue = 2.0f,
@@ -278,28 +287,28 @@ struct TempSettings {
     Config<int>   readIntervalSec;
     TempSettings():
         tempCorrection(ConfigOptions<float>{
-            .key = "tCorr",
+            .key = "TempTCorr",
             .name = "Temperature Correction",
             .category = "Temp",
             .defaultValue = 0.1f,
             .categoryPretty = "Temperature"
         }),
         humidityCorrection(ConfigOptions<float>{
-            .key = "hCorr",
+            .key = "TempHCorr",
             .name = "Humidity Correction",
             .category = "Temp",
             .defaultValue = 0.1f,
             .categoryPretty = "Temperature"
         }),
         seaLevelPressure(ConfigOptions<int>{
-            .key = "slp",
+            .key = "TempSLP",
             .name = "Sea Level Pressure (hPa)",
             .category = "Temp",
             .defaultValue = 1013,
             .categoryPretty = "Temperature"
         }),
         readIntervalSec(ConfigOptions<int>{
-            .key = "readS",
+            .key = "TempReadS",
             .name = "Read Interval (s)",
             .category = "Temp",
             .defaultValue = 30,
@@ -321,35 +330,35 @@ struct I2CSettings {
     Config<int> displayAddr;
     I2CSettings():
         sdaPin(ConfigOptions<int>{
-            .key = "sda",
+            .key = "I2CSDA",
             .name = "SDA Pin",
             .category = "I2C",
             .defaultValue = 21,
             .categoryPretty = "I2C"
         }),
         sclPin(ConfigOptions<int>{
-            .key = "scl",
+            .key = "I2CSCL",
             .name = "SCL Pin",
             .category = "I2C",
             .defaultValue = 22,
             .categoryPretty = "I2C"
         }),
         busFreq(ConfigOptions<int>{
-            .key = "freq",
+            .key = "I2CFreq",
             .name = "Bus Frequency (Hz)",
             .category = "I2C",
             .defaultValue = 400000,
             .categoryPretty = "I2C"
         }),
         bmeFreq(ConfigOptions<int>{
-            .key = "bmeHz",
+            .key = "I2CBmeHz",
             .name = "BME280 Frequency (Hz)",
             .category = "I2C",
             .defaultValue = 400000,
             .categoryPretty = "I2C"
         }),
         displayAddr(ConfigOptions<int>{
-            .key = "disp",
+            .key = "I2CDisp",
             .name = "Display Address",
             .category = "I2C",
             .defaultValue = 0x3C,
@@ -372,14 +381,14 @@ struct FanSettings {
     Config<bool>  activeLow;
     FanSettings():
         enabled(ConfigOptions<bool>{
-            .key = "en",
+            .key = "FanEnable",
             .name = "Enable Fan Control",
             .category = "Fan",
             .defaultValue = true,
             .categoryPretty = "Fan"
         }),
         onThreshold(ConfigOptions<float>{
-            .key = "on",
+            .key = "FanOn",
             .name = "Fan ON above (°C)",
             .category = "Fan",
             .defaultValue = 30.0f,
@@ -387,7 +396,7 @@ struct FanSettings {
             .categoryPretty = "Fan"
         }),
         offThreshold(ConfigOptions<float>{
-            .key = "off",
+            .key = "FanOff",
             .name = "Fan OFF below (°C)",
             .category = "Fan",
             .defaultValue = 27.0f,
@@ -395,14 +404,14 @@ struct FanSettings {
             .categoryPretty = "Fan"
         }),
         relayPin(ConfigOptions<int>{
-            .key = "pin",
+            .key = "FanPin",
             .name = "Relay GPIO",
             .category = "Fan",
             .defaultValue = 23,
             .categoryPretty = "Fan"
         }),
         activeLow(ConfigOptions<bool>{
-            .key = "low",
+            .key = "FanLow",
             .name = "Active LOW",
             .category = "Fan",
             .defaultValue = true,
@@ -425,14 +434,14 @@ struct HeaterSettings {
     Config<bool>  activeLow;
     HeaterSettings():
         enabled(ConfigOptions<bool>{
-            .key = "en",
+            .key = "HeatEnable",
             .name = "Enable Heater Control",
             .category = "Heater",
             .defaultValue = false,
             .categoryPretty = "Heater"
         }),
         onTemp(ConfigOptions<float>{
-            .key = "on",
+            .key = "HeatOn",
             .name = "Heater ON below (°C)",
             .category = "Heater",
             .defaultValue = 0.0f,
@@ -440,7 +449,7 @@ struct HeaterSettings {
             .categoryPretty = "Heater"
         }),
         offTemp(ConfigOptions<float>{
-            .key = "off",
+            .key = "HeatOff",
             .name = "Heater OFF above (°C)",
             .category = "Heater",
             .defaultValue = 0.5f,
@@ -448,7 +457,7 @@ struct HeaterSettings {
             .categoryPretty = "Heater"
         }),
         relayPin(ConfigOptions<int>{
-            .key = "pin",
+            .key = "HeatPin",
             .name = "Relay GPIO",
             .category = "Heater",
             .defaultValue = 33,
@@ -456,7 +465,7 @@ struct HeaterSettings {
             .categoryPretty = "Heater"
         }),
         activeLow(ConfigOptions<bool>{
-            .key = "low",
+            .key = "HeatLow",
             .name = "Active LOW",
             .category = "Heater",
             .defaultValue = true,
@@ -477,14 +486,14 @@ struct DisplaySettings {
     Config<int>  onTimeSec;
     DisplaySettings():
         turnDisplayOff(ConfigOptions<bool>{
-            .key = "sleep",
+            .key = "DispSleep",
             .name = "Turn Display Off",
             .category = "Display",
             .defaultValue = true,
             .categoryPretty = "Display"
         }),
         onTimeSec(ConfigOptions<int>{
-            .key = "onS",
+            .key = "DispOnS",
             .name = "On Time (s)",
             .category = "Display",
             .defaultValue = 60,
@@ -504,14 +513,14 @@ struct SystemSettings {
     Config<String> version;
     SystemSettings():
         allowOTA(ConfigOptions<bool>{
-            .key = "ota",
+            .key = "SysOTA",
             .name = "Allow OTA Updates",
             .category = "System",
             .defaultValue = true,
             .categoryPretty = "System"
         }),
         otaPassword(ConfigOptions<String>{
-            .key = "otaPwd",
+            .key = "SysOtaPwd",
             .name = "OTA Password",
             .category = "System",
             .defaultValue = String(""),
@@ -519,14 +528,14 @@ struct SystemSettings {
             .categoryPretty = "System"
         }),
         wifiRebootTimeoutMin(ConfigOptions<int>{
-            .key = "rbMin",
+            .key = "SysRbMin",
             .name = "Reboot if WiFi lost (min)",
             .category = "System",
             .defaultValue = 15,
             .categoryPretty = "System"
         }),
         unconfigured(ConfigOptions<bool>{
-            .key = "unconf",
+            .key = "SysUnconf",
             .name = "Unconfigured",
             .category = "System",
             .defaultValue = true,
@@ -534,7 +543,7 @@ struct SystemSettings {
             .categoryPretty = "System"
         }),
         version(ConfigOptions<String>{
-            .key = "ver",
+            .key = "SysVer",
             .name = "Program Version",
             .category = "System",
             .defaultValue = String(VERSION),
@@ -555,14 +564,14 @@ struct ButtonSettings {
     Config<int> resetDefaultsPin;
     ButtonSettings():
         apModePin(ConfigOptions<int>{
-            .key = "ap",
+            .key = "BtnAP",
             .name = "AP Mode Button GPIO",
             .category = "Buttons",
             .defaultValue = 13,
             .categoryPretty = "Buttons"
         }),
         resetDefaultsPin(ConfigOptions<int>{
-            .key = "rst",
+            .key = "BtnRst",
             .name = "Reset Defaults Button GPIO",
             .category = "Buttons",
             .defaultValue = 15,

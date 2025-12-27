@@ -19,6 +19,9 @@ size_t lcdCurrentLine = 0;
 
 void cbMyConfigLogger(const char *msg)
 {
+    // Always print ConfigManager logs to Serial as well.
+    // SigmaLog may filter Debug-level logs depending on configuration.
+    Serial.println(msg);
     sl->Debug(msg);
 }
 

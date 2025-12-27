@@ -17,6 +17,18 @@
 #include "Smoother/Smoother.h"
 #include "helpers/relays.h"
 
+#if __has_include("secret/wifiSecret.h")
+#include "secret/wifiSecret.h"
+#endif
+
+#ifndef APMODE_SSID
+#define APMODE_SSID "ESP32_Config"
+#endif
+
+#ifndef APMODE_PASSWORD
+#define APMODE_PASSWORD "config1234"
+#endif
+
 // predeclare the functions (prototypes)
 void SetupStartDisplay();
 void reconnectMQTT();
@@ -41,6 +53,7 @@ void ShowDisplay();
 void ShowDisplayOff();
 static float computeDewPoint(float temperatureC, float relHumidityPct);
 void HeaterControl(bool heaterOn);
+static void logNetworkIpInfo(const char *context);
 //--------------------------------------------------------------------------------------------------------------
 
 #pragma region configuratio variables
@@ -84,6 +97,28 @@ static bool wifiAutoRebootArmed = false;         // becomes true after initial s
 // MAIN FUNCTIONS
 //----------------------------------------
 
+static void logNetworkIpInfo(const char *context)
+{
+  const WiFiMode_t mode = WiFi.getMode();
+  const bool apActive = (mode == WIFI_AP) || (mode == WIFI_AP_STA);
+  const bool staConnected = (WiFi.status() == WL_CONNECTED);
+
+  if (apActive)
+  {
+    const IPAddress apIp = WiFi.softAPIP();
+    sl->Printf("%s: AP IP: %s", context, apIp.toString().c_str()).Debug();
+    sl->Printf("%s: AP SSID: %s", context, WiFi.softAPSSID().c_str()).Debug();
+    sll->Printf("AP: %s", apIp.toString().c_str()).Debug();
+  }
+
+  if (staConnected)
+  {
+    const IPAddress staIp = WiFi.localIP();
+    sl->Printf("%s: STA IP: %s", context, staIp.toString().c_str()).Debug();
+    sll->Printf("IP: %s", staIp.toString().c_str()).Debug();
+  }
+}
+
 void setup()
 {
 
@@ -98,6 +133,9 @@ void setup()
 
   // sl->Printf("Clear Settings...").Debug();
   // cfg.clearAllFromPrefs();
+
+  // Migrate old short/ambiguous Preferences keys to new unique keys before loading
+  migrateConfigManagerPrefsKeys();
 
   sl->Printf("Load configuration...").Debug();
   cfg.loadAll();
@@ -316,8 +354,15 @@ void loop()
   WriteToDisplay();
 
   if (WiFi.getMode() == WIFI_AP) {
-    helpers.blinkBuidInLED(5, 50); // show we are in AP mode
-    sll->Debug("Running in AP mode.");
+    // Non-blocking AP heartbeat to avoid starving networking/web server.
+    static unsigned long apBlinkLastMs = 0;
+    static bool apBlinkOn = false;
+    const unsigned long now = millis();
+    if (now - apBlinkLastMs >= 250) {
+      apBlinkLastMs = now;
+      apBlinkOn = !apBlinkOn;
+      digitalWrite(LED_BUILTIN, apBlinkOn ? HIGH : LOW);
+    }
   } else {
     if (WiFi.status() != WL_CONNECTED) {
       sl->Debug("[ERROR] WiFi not connected!");
@@ -570,14 +615,17 @@ void SetupCheckForResetButton()
 
 void SetupCheckForAPModeButton()
 {
-  String APName = "ESP32_Config";
-  String pwd = "config1234"; // Default AP password
+  String APName = APMODE_SSID;
+  String pwd = APMODE_PASSWORD; // Default AP password
 
   // if (wifiSettings.wifiSsid.get().length() == 0 || systemSettings.unconfigured.get())
   if (wifiSettings.wifiSsid.get().length() == 0 )
   {
   sl->Printf("[WARNING] SETUP: WiFi SSID is empty [%s] (fresh/unconfigured)", wifiSettings.wifiSsid.get().c_str()).Error();
+    cfg.initializeEncryption();
     cfg.startAccessPoint(APName, pwd);
+    delay(250);
+    logNetworkIpInfo("AP started (no SSID)");
   systemSettings.unconfigured.set(false); // Set the unconfigured flag to false after starting the access point
     cfg.saveAll(); // Save the settings to EEPROM
   }
@@ -589,7 +637,10 @@ void SetupCheckForAPModeButton()
   sl->Internal("AP mode button pressed -> starting AP mode...");
   sll->Internal("AP mode button!");
   sll->Internal("-> starting AP mode...");
+    cfg.initializeEncryption();
     cfg.startAccessPoint(APName, pwd);
+    delay(250);
+    logNetworkIpInfo("AP started (button)");
   }
 }
 
@@ -646,14 +697,17 @@ bool SetupStartWebServer()
     sl->Printf("No SSID! --> Start AP!").Debug();
     sll->Printf("No SSID!").Debug();
     sll->Printf("Start AP!").Debug();
-    cfg.startAccessPoint("ESP32_Config", "config1234");
+    cfg.initializeEncryption();
+    cfg.startAccessPoint(APMODE_SSID, APMODE_PASSWORD);
     delay(1000);
+    logNetworkIpInfo("SetupStartWebServer");
     return true; // Skip webserver setup if no SSID is set
   }
 
   if (WiFi.getMode() == WIFI_AP) {
     sl->Printf("[INFO] Running in AP mode.");
     sll->Printf("Running in AP mode.");
+    logNetworkIpInfo("SetupStartWebServer");
     return false; // Skip webserver setup in AP mode
   }
 
@@ -688,11 +742,15 @@ bool SetupStartWebServer()
     WiFi.setSleep(false);
     delay(1000);
   }
-  sl->Printf("\n\nWebserver running at: %s\n", WiFi.localIP().toString().c_str());
-  sll->Printf("Web: %s\n\n", WiFi.localIP().toString().c_str());
-  sl->Printf("WiFi RSSI: %d dBm\n", WiFi.RSSI());
-  sl->Printf("WiFi RSSI quality: %s\n\n", WiFi.RSSI() > -70 ? "good" : (WiFi.RSSI() > -80 ? "ok" : "weak"));
-  sll->Printf("WiFi: %s\n", WiFi.RSSI() > -70 ? "good" : (WiFi.RSSI() > -80 ? "ok" : "weak"));
+  logNetworkIpInfo("Web server started");
+  if (WiFi.status() == WL_CONNECTED)
+  {
+    sl->Printf("\n\nWebserver running at: %s\n", WiFi.localIP().toString().c_str());
+    sll->Printf("Web: %s\n\n", WiFi.localIP().toString().c_str());
+    sl->Printf("WiFi RSSI: %d dBm\n", WiFi.RSSI());
+    sl->Printf("WiFi RSSI quality: %s\n\n", WiFi.RSSI() > -70 ? "good" : (WiFi.RSSI() > -80 ? "ok" : "weak"));
+    sll->Printf("WiFi: %s\n", WiFi.RSSI() > -70 ? "good" : (WiFi.RSSI() > -80 ? "ok" : "weak"));
+  }
 
 
 
@@ -763,6 +821,20 @@ void WriteToDisplay()
 
   display.setTextSize(1);
   display.setTextColor(WHITE);
+
+  // When running in AP mode, show connection info prominently.
+  if (WiFi.getMode() == WIFI_AP && WiFi.status() != WL_CONNECTED)
+  {
+    const IPAddress apIp = WiFi.softAPIP();
+    const String apSsid = WiFi.softAPSSID();
+
+    display.setCursor(3, 3);
+    display.printf("AP: %s", apIp.toString().c_str());
+    display.setCursor(3, 13);
+    display.printf("SSID: %s", apSsid.c_str());
+    display.display();
+    return;
+  }
 
   display.setCursor(3, 3);
   if (temperature > 0)
