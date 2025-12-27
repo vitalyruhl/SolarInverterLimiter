@@ -102,6 +102,7 @@ you are my coding assistant. Follow the instructions in this file carefully when
   - Mark tasks as [COMPLETED] when done, [CURRENT] when working on them
   - Add new priorities and features as they emerge during development
   - Reference todo.md to understand current priorities and completed work
+  - If you discover missing but important TODO items while implementing, add them immediately to /docs/todo.md (keep it prioritized).
   - Mock/Demo Data Policy: All simulated data MUST be clearly labeled with [MOCKED DATA] prefix [MOCKED DATA] labels must be placed at the BEGINNING of log messages, not at the end
   - Never present fake data as real without explicit warning to user
   - Rule: Always prefix simulated/demo content with "[MOCKED DATA]" at the start of the message

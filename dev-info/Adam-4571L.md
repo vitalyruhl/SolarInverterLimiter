@@ -58,26 +58,27 @@ VIN (5V!)                         | [ ]                 [ ] | 3V3
 
 Legend:
 [x] in use    - Pin is already used in your project
-✅ ADC1        - 12-bit ADC, usable even with WiFi
-✅ ADC1 (RO)   - Input-only pins with ADC1 (GPIO36–39)
-⚠️ ADC2        - 12-bit ADC, unusable when WiFi is active
-❌ no ADC     - No analog capability
-⚠️ Boot pin   - Must be LOW or unconnected at boot to avoid boot failure
+[OK] ADC1      - 12-bit ADC, usable even with WiFi
+[OK] ADC1 (RO) - Input-only pins with ADC1 (GPIO36–39)
+[WARNING] ADC2 - 12-bit ADC, unusable when WiFi is active
+[INFO] no ADC  - No analog capability
+[WARNING] Boot pin - Must be LOW or unconnected at boot to avoid boot failure
 
 Notes:
 - GPIO0, GPIO2, GPIO12, GPIO15 are boot strapping pins — avoid pulling HIGH at boot.
 - GPIO6–11 are used for internal flash – **never use**.
 - GPIO1 (TX) and GPIO3 (RX) are used for serial output – use only if UART0 not needed.
 
-- EN Turn to Low to reset the ESP32. On goint High, the ESP32 boots.
+- EN: Pull LOW to reset the ESP32. When released HIGH, the ESP32 boots.
 - VIN (5V!) is the power input pin, connect to 5V.
 - VP (GPIO36) ADC1 (RO) No Pull-up/down possible.
 - VN (GPIO39) ADC1 (RO) No Pull-up/down possible.
 
-UART	TX	RX
-UART0	GPIO1	GPIO3
-UART1	GPIO10	GPIO9
-UART2	GPIO17	GPIO16
+| UART  | TX    | RX    |
+| ----- | ----- | ----- |
+| UART0 | GPIO1 | GPIO3 |
+| UART1 | GPIO10 | GPIO9 |
+| UART2 | GPIO17 | GPIO16 |
 
 ```
 
@@ -85,32 +86,34 @@ UART2	GPIO17	GPIO16
 
 ## Pinout
 
-TTL-Seite MAX3232 → ESP32
+TTL side MAX3232 → ESP32
 
-R1OUT (vom ADAM-TX) → ESP32-RX0 GPIO3
+R1OUT (from ADAM-TX) → ESP32-RX0 GPIO3
 
-T1IN (zum ADAM-RX) ← ESP32-TX0 GPIO1
+T1IN (to ADAM-RX) ← ESP32-TX0 GPIO1
 
-R2OUT (vom ADAM-RTS) → RTS_TTL
+R2OUT (from ADAM-RTS) → RTS_TTL
 
-R3OUT (vom ADAM-DTR) → DTR_TTL
+R3OUT (from ADAM-DTR) → DTR_TTL
 
-GND ↔ GND, VCC = 3,3 V vom ESP32
+GND ↔ GND, VCC = 3.3 V from the ESP32
 
-Tipp: Einige MAX3232-Breakouts haben nur 1×TX/1×RX. Du brauchst mind. 2 Empfangskanäle (für TX+RTS+DTR insgesamt 3), also ein Board mit mehreren Kanälen oder zwei Module.
+Tip: Some MAX3232 breakouts only provide 1×TX/1×RX. You need at least 2 receive channels (TX+RTS+DTR are 3 signals in total), so use a board with multiple channels or two modules.
 
-## anders
+## Alternative
 
-Raspberry Pi Zero 2 W	z. B. BerryBase oder Amazon	18 – 22 €	Klein, stromsparend, hat WLAN für Remote
-MicroSD-Karte 16 GB	SanDisk Ultra	4 – 5 €	Für das Pi-OS
-USB-Netzteil 5 V/2 A	Handy-Ladegerät	5 €	Stabile Stromversorgung
-USB-UART-Adapter mit Auto-Program	CP2102 oder CH340G mit DTR/RTS (z. B. AZDelivery CP2102)	5 – 8 €	Muss DTR & RTS herausführen
-Micro-USB OTG Kabel	OTG-Adapter für Pi Zero	3 €	Damit der USB-UART am Pi hängt
+| Item | Example | Price | Notes |
+| ---- | ------- | ----- | ----- |
+| Raspberry Pi Zero 2 W | e.g. BerryBase or Amazon | 18–22 € | Small, low-power, has WiFi for remote access |
+| MicroSD card 16 GB | SanDisk Ultra | 4–5 € | For the Pi OS |
+| USB power supply 5 V / 2 A | phone charger | 5 € | Stable power supply |
+| USB-UART adapter with auto-program | CP2102 or CH340G with DTR/RTS (e.g. AZDelivery CP2102) | 5–8 € | Must expose DTR & RTS |
+| Micro-USB OTG cable | OTG adapter for Pi Zero | 3 € | So the USB-UART is connected to the Pi |
 
 
-Anschlussplan
+Wiring plan
 
-USB-UART-Adapter → ESP32
+USB-UART adapter → ESP32
 
 TX → RX0 (GPIO3)
 
@@ -122,37 +125,49 @@ RTS → EN (Reset)
 
 GND → GND
 
-USB-UART-Adapter → Raspberry Pi
+USB-UART adapter → Raspberry Pi
 
-Per OTG-Kabel in den USB-Port des Pi Zero
+Connect via an OTG cable to the USB port of the Pi Zero.
 
-### Software-Setup (Kurzfassung)
+### Software setup (short)
 
-Pi OS Lite auf MicroSD schreiben.
+Write Pi OS Lite to the MicroSD card.
 
-Per SSH einloggen.
+Log in via SSH.
 
-usbip installieren:
+Install usbip:
+
+```sh
 sudo apt update
 sudo apt install linux-tools-$(uname -r) linux-modules-extra-$(uname -r) usbip
+```
 
 
-USBIP-Daemon starten:
+Start the USBIP daemon:
 
+```sh
 sudo modprobe usbip_host
 sudo usbipd -D
+```
 
 
-Gerät listen:
+List devices:
 
+```sh
 usbip list -l
+```
 
-Gerät freigeben:
-sudo usbip bind -b <BUSID>
+Bind device:
 
-Auf deinem PC usbip-Client installieren und verbinden:
+```sh
+sudo usbip bind -b BUSID
+```
 
-usbip attach -r <IP_DES_PI> -b <BUSID>
+On your PC, install the usbip client and attach:
+
+```sh
+usbip attach -r PI_IP -b BUSID
+```
 
 
 

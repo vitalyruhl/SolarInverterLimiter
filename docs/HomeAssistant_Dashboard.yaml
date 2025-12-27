@@ -282,13 +282,13 @@ views:
       - type: custom:apexcharts-card
         header:
           show: true
-          title: Nächste 4 Stunden
+          title: Next 4 hours
         graph_span: 6h
         span:
           start: hour
         now:
           show: true
-          label: Jetzt
+          label: Now
         color_list:
           - var(--primary-color)
         series:
@@ -299,9 +299,9 @@ views:
             curve: smooth
             extend_to: false
             data_generator: >
-              const now = Date.now(); const vor4h = now - 8 * 60 * 60 * 1000;
+              const now = Date.now(); const windowStart = now - 8 * 60 * 60 * 1000;
               const future = entity.attributes.data.filter(
-                entry => new Date(entry.start_time).getTime() >= vor4h
+                entry => new Date(entry.start_time).getTime() >= windowStart
               ); return future.slice(0,14).map(entry => [
                 new Date(entry.start_time).getTime(),
                 entry.price_per_kwh
@@ -492,18 +492,18 @@ views:
           - entity: sensor.apc_status
           - entity: sensor.apc_status_data
   - title: Power
-    path: preise
+    path: prices
     cards:
       - type: custom:apexcharts-card
         header:
           show: true
-          title: Nächste 4 Stunden
+          title: Next 4 hours
         graph_span: 6h
         span:
           start: hour
         now:
           show: true
-          label: Jetzt
+          label: Now
         color_list:
           - var(--primary-color)
         series:
@@ -514,9 +514,9 @@ views:
             curve: smooth
             extend_to: false
             data_generator: >
-              const now = Date.now(); const vor4h = now - 8 * 60 * 60 * 1000;
+              const now = Date.now(); const windowStart = now - 8 * 60 * 60 * 1000;
               const future = entity.attributes.data.filter(
-                entry => new Date(entry.start_time).getTime() >= vor4h
+                entry => new Date(entry.start_time).getTime() >= windowStart
               ); return future.slice(0,14).map(entry => [
                 new Date(entry.start_time).getTime(),
                 entry.price_per_kwh

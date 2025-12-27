@@ -14,7 +14,13 @@ Legend:
 - [NEXT] Ensure English-only repository artifacts
 	- Review /docs/* and translate remaining German text to English
 	- Review /dev-info/* and translate remaining German text to English (keep technical meaning)
+	- Review /src/* and translate remaining German comments/strings to English
+	- Replace emojis in repository artifacts with plain text tags like [INFO]/[WARNING]/[ERROR]
 	- Ensure new documentation is written in English (chat explanations remain German)
+
+- [NEXT] Rename German identifiers (incremental)
+	- Replace German variable/function names with English equivalents (update all references)
+	- Keep external interfaces stable (MQTT topics/JSON keys) unless explicitly intended
 
 - [NEXT] Align project guidance
 	- Keep language policy consistent across README, docs, and .github instructions
@@ -25,7 +31,7 @@ Legend:
 - [NEXT] Inventory of settings/keys
 	- Derive a list of current setting categories/keys from `src/settings.h`/`src/settings.cpp`
 	- Check where Preferences/NVS is accessed directly and whether it conflicts with ConfigManager
-    - apply security functions (new in ConfigManager) where applicable. use salt.h
+	- Apply security functions (new in ConfigManager) where applicable (use `src/secret/salt.h`)
 
 - [NEXT] Compare with reference `/dev-info/Example_V2.4.7_settings.*`
 	- Mapping: old keys/structure → new ConfigOptions API
