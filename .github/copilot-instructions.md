@@ -12,12 +12,12 @@ you are my coding assistant. Follow the instructions in this file carefully when
   - Autonomy levels:
     - Level A (safe): Read-only actions (search, read, analyze) can be done immediately.
     - Level B (normal): Small, clearly scoped changes (1-2 files, obvious fix) can be implemented immediately.
-    - Level C (risky): Changes involving settings structure/storage/NVS, OTA, security, build pipelines, or large refactors require explicit confirmation before implementation.
+    - Level C (risky): Changes involving settings structure/storage/NVS (Preferences/ConfigManager), OTA, security/credentials, build pipelines (PlatformIO env/lib_deps), or large refactors require explicit confirmation before implementation.
   - Safety gates: Before rename/delete, always search for references and update them. Before running terminal commands that modify the workspace, ensure the goal/scope is clear.
 
 - Git Workflow Guidelines:
   - Default: Never change main/master directly. If the active branch is main/master, emit a [WARNING] and propose 2-3 suitable branch names before making any edits.
-  - Exception: Documentation-only changes to project instructions (e.g. this file) may be applied directly to main/master when explicitly requested by the repository owner.
+  - Exception: Documentation-only changes (README/docs/.github instructions) may be applied directly to main when explicitly requested by the repository owner.
   - Large changes require a clean baseline: Before starting larger changes (multi-file refactor, settings/storage/OTA/security, or anything that could take >30 minutes), ensure the current work is saved in git (commit or stash) so changes stay reviewable and reversible.
   - Branch naming check: Verify the active branch name matches the change topic. If it does not, emit a [WARNING] and propose 2-3 suitable branch names.
   - GitHub CLI preferred: If GitHub-related actions are needed (create/view PRs, check CI status, view issues), prefer using GitHub CLI (gh) when available.
@@ -48,13 +48,14 @@ you are my coding assistant. Follow the instructions in this file carefully when
   - Mock implementations for testing
 
 - ESP32 / PlatformIO Project Guidelines:
-  - Build validation: Always run the relevant PlatformIO build for at least one ESP32 environment from platformio.ini (e.g. "pio run -e usb" or "pio run -e ota"). If tests are affected, also run "pio test -e <env>".
+  - Build validation: Always run the relevant PlatformIO build for at least one ESP32 environment from platformio.ini. In this repo the primary env is currently `usb` (use `pio run -e usb`). Only run OTA envs if they are enabled in platformio.ini.
+  - Local library dependency note: This repo can use a local ConfigurationsManager via an absolute `lib_deps` path. Do not change that path or replace it with a registry dependency unless explicitly requested.
   - Memory/flash safety: After changes to WebUI/HTML content or large strings, verify binary size and memory behavior (heap/PSRAM) to avoid runtime instability on ESP32.
   - Settings migration: Any change to the settings structure must be backwards-compatible (defensive defaults) and should include a migration/versioning strategy to prevent OTA updates from breaking existing devices.
 
 - Versioning Guidelines:
-  - Single source of truth: The project version is defined in "#define APP_VERSION \"x.y.z\"" in /src/settings.h. Do not introduce additional independent version numbers.
-  - Keep dates consistent: When APP_VERSION changes, update VERSION_DATE in /src/settings.h accordingly.
+  - Single source of truth: The project version is defined in `#define VERSION "x.y.z"` in /src/settings.h. Do not introduce additional independent version numbers.
+  - Keep dates consistent: When VERSION changes, update `#define VERSION_DATE` in /src/settings.h accordingly.
   - SemVer bump rules (MAJOR.MINOR.PATCH):
     - PATCH: Bugfix only, no breaking changes, no new settings required.
     - MINOR: New backwards-compatible features, new settings with safe defaults, additive API.
@@ -86,12 +87,12 @@ you are my coding assistant. Follow the instructions in this file carefully when
   - This prevents unnecessary re-fetching and preserves valuable research
 
 - TODO Management & Project Tracking:
-  - If /docs/TODO.md exists, keep it updated with current project status
-  - If /docs/TODO.md does not exist, create it when starting a larger change that spans multiple commits or work sessions
-  - Update TODO.md immediately after completing any major feature or milestone
+  - If /docs/todo.md exists, keep it updated with current project status
+  - If /docs/todo.md does not exist, create it when starting a larger change that spans multiple commits or work sessions
+  - Update todo.md immediately after completing any major feature or milestone
   - Mark tasks as [COMPLETED] when done, [CURRENT] when working on them
   - Add new priorities and features as they emerge during development
-  - Reference TODO.md to understand current priorities and completed work
+  - Reference todo.md to understand current priorities and completed work
   - Mock/Demo Data Policy: All simulated data MUST be clearly labeled with [MOCKED DATA] prefix [MOCKED DATA] labels must be placed at the BEGINNING of log messages, not at the end
   - Never present fake data as real without explicit warning to user
   - Rule: Always prefix simulated/demo content with "[MOCKED DATA]" at the start of the message
@@ -110,10 +111,8 @@ you are my coding assistant. Follow the instructions in this file carefully when
   - If tests fail or user reports continued issues, acknowledge the problem persists
   - Only declare success when: (1) All tests pass in Docker CI, OR (2) User explicitly confirms the fix works
 
-- FINAL CI/CD POLICY - MASTER MERGE REQUIREMENTS:
-  - MANDATORY: ALL configured CI checks must pass before any merge to master/main
-  - ZERO TOLERANCE: No exceptions for failed CI checks - automatic PR rejection
-  - VALIDATION (PlatformIO): Run the PlatformIO build/tests relevant to the change (e.g. pio run, pio test) before merging
-  - VALIDATION (Docker): If Docker CI is configured (e.g. Dockerfile.ci exists), validate using the documented Docker command before merging
-  - ARCHITECTURE SUPPORT: Both Windows development and Linux production must work (where applicable)
-  - DOCUMENTATION: README.md and /docs/TODO.md must be current when changes impact usage/behavior
+- CI/CD POLICY (conditional):
+  - If CI/workflows are configured in this repo, ALL configured checks must pass before any merge to main.
+  - VALIDATION (PlatformIO): Run the PlatformIO build/tests relevant to the change (e.g. `pio run -e usb`, and `pio test -e <env>` when tests/envs exist) before merging.
+  - ARCHITECTURE SUPPORT: Both Windows development and Linux builds should work when applicable.
+  - DOCUMENTATION: README.md and /docs/todo.md must be current when changes impact usage/behavior.
