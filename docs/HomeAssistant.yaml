@@ -1,4 +1,5 @@
-# 2025.04.28 viru get mqtt data from limiter
+# Example Home Assistant MQTT sensors for SolarInverterLimiter.
+# Base topic is configurable in the device settings (default: SolarLimiter).
 mqtt:
   sensor:
     - name: "SolarLimiter_SetValue"
