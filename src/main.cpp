@@ -1,14 +1,14 @@
 #include <Arduino.h>
 #include <PubSubClient.h> // for MQTT
 #include <esp_task_wdt.h> // for watchdog timer
-#include <stdarg.h>       // for variadische Funktionen (printf-Stil)
+#include <stdarg.h>       // for variadic functions (printf-style)
 #include <Ticker.h>
 #include "Wire.h"
 #include <BME280_I2C.h>
 
 #include <AsyncTCP.h>
 #include <ESPAsyncWebServer.h>
-AsyncWebServer server(80);
+// AsyncWebServer instance is provided by ConfigManager library (extern AsyncWebServer server)
 
 #include "settings.h"
 #include "logging/logging.h"
@@ -61,8 +61,8 @@ PubSubClient client(espClient);
 
 Smoother* powerSmoother = nullptr; //there is a memory allocation in setup, better use a pointer here
 
-// globale helpers variables
-int AktualImportFromGrid = 0; // amount of electricity being imported from grid
+// global helper variables
+int currentGridImportW = 0; // amount of electricity being imported from grid
 int inverterSetValue = 0;     // current power inverter should deliver (default to zero)
 float temperature = 0.0;      // current temperature in Celsius
 float Dewpoint = 0.0;         // current dewpoint in Celsius
@@ -132,7 +132,7 @@ void setup()
   // testRS232();
 
   //------------------
-  sl->Printf("⚠️ SETUP: Starting RS485...!").Debug();
+  sl->Printf("[WARNING] SETUP: Starting RS485...").Debug();
   sll->Printf("Starting RS485...").Debug();
   RS485begin();
 
@@ -146,7 +146,7 @@ void setup()
 
   //----------------------------------------
   // -- Setup MQTT connection --
-  sl->Printf("⚠️ SETUP: Starting MQTT! [%s]", mqttSettings.mqtt_server.get().c_str()).Debug();
+  sl->Printf("[WARNING] SETUP: Starting MQTT! [%s]", mqttSettings.mqtt_server.get().c_str()).Debug();
   sll->Printf("Starting MQTT! [%s]", mqttSettings.mqtt_server.get().c_str()).Debug();
   client.setServer(mqttSettings.mqtt_server.get().c_str(), static_cast<uint16_t>(mqttSettings.mqtt_port.get())); // Set the MQTT server and port
   client.setCallback(cb_MQTT);
@@ -172,13 +172,13 @@ void setup()
     .name = "Limiter",
     .fill = [](JsonObject &o){
       o["enabled"] = limiterSettings.enableController.get();
-      o["gridIn"] = AktualImportFromGrid;
+      o["gridIn"] = currentGridImportW;
       o["invSet"] = inverterSetValue;
     }
   });
-  cfg.defineRuntimeField("Limiter", "gridIn", "Grid Import", "W", 0);
-  cfg.defineRuntimeField("Limiter", "invSet", "Inverter Set", "W", 0);
-  cfg.defineRuntimeBool("Limiter", "enabled", "Limiter Enabled");
+  cfg.defineRuntimeField("Limiter", "gridIn", "Grid Import", "W", 0.0f, 5000.0f);
+  cfg.defineRuntimeField("Limiter", "invSet", "Inverter Set", "W", 0.0f, 5000.0f);
+  cfg.defineRuntimeBool("Limiter", "enabled", "Limiter Enabled", limiterSettings.enableController.get(), 0);
 
   // Register system runtime provider
     cfg.addRuntimeProvider({
@@ -190,12 +190,10 @@ void setup()
             o["Fan"] = fanSettings.enabled.get();
         }
     });
-    cfg.defineRuntimeField("system", "freeHeap", "Free Heap", "B", 0, /*order*/ 1);
-    cfg.defineRuntimeField("system", "rssi", "WiFi RSSI", "dBm", 0, /*order*/ 2);
-    cfg.defineRuntimeDivider("system", "Environment", /*order*/ 3);
-    cfg.defineRuntimeString("system", "i1", "Settings:", "", /*order*/ 4);
-    cfg.defineRuntimeBool("system", "heaterEnabled", "Heater Feature Enabled",false,/*order*/5);
-    cfg.defineRuntimeBool("system", "Fan", "Fan Feature Enabled",false,/*order*/6);
+    cfg.defineRuntimeField("system", "freeHeap", "Free Heap", "B", 0.0f, 400000.0f);
+    cfg.defineRuntimeField("system", "rssi", "WiFi RSSI", "dBm", -100.0f, 0.0f);
+    cfg.defineRuntimeBool("system", "heaterEnabled", "Heater Feature Enabled", heaterSettings.enabled.get(), 5);
+    cfg.defineRuntimeBool("system", "Fan", "Fan Feature Enabled", fanSettings.enabled.get(), 6);
 
 
 
@@ -209,16 +207,13 @@ void setup()
     }
   });
 
-      // Cross-field alarm: temperature within 1.0°C above dewpoint (risk of condensation)
+  // Alarm: temperature is close to dewpoint (risk of condensation)
   cfg.defineRuntimeAlarm(
+    "Outputs",
     "dewpoint_risk",
-    [](const JsonObject &root){
-      if(!root.containsKey("sensors")) return false;
-      const JsonObject sensors = root["sensors"].as<JsonObject>();
-      if(!sensors.containsKey("temp") || !sensors.containsKey("dew")) return false;
-      float t = sensors["temp"].as<float>();
-      float d = sensors["dew"].as<float>();
-      return (t - d) <= 1.2f; // risk window
+    "Dewpoint Risk",
+    [](){
+      return (temperature - Dewpoint) <= 1.2f;
     },
     [](){
       dewpointRiskActive = true;
@@ -232,9 +227,9 @@ void setup()
     }
   );
     
-  cfg.defineRuntimeBool("Outputs", "ventilator", "Ventilator Relay Active");
-  cfg.defineRuntimeBool("Outputs", "heater", "Heater Relay Active");
-  cfg.defineRuntimeBool("Outputs", "dewpoint_risk", "Dewpoint Risk", true);
+  cfg.defineRuntimeBool("Outputs", "ventilator", "Ventilator Relay Active", false, 0);
+  cfg.defineRuntimeBool("Outputs", "heater", "Heater Relay Active", false, 0);
+  cfg.defineRuntimeBool("Outputs", "dewpoint_risk", "Dewpoint Risk", false, 0);
 
   HeaterControl(false); // make sure heater is off at startup
 }
@@ -256,19 +251,19 @@ void loop()
     if (tickerActive) // Check if the ticker is already active
     {
       ShowDisplay(); // Show the display to indicate WiFi is lost
-      sl->Debug("WiFi not connected or in AP mode! deactivate ticker.");
+      sl->Debug("WiFi not connected or in AP mode. Deactivating tickers.");
       sll->Debug("WiFi lost connection!");
-      sll->Debug("or run in AP mode!");
-      sll->Debug("deactivate mqtt ticker.");
+      sll->Debug("Running in AP mode.");
+      sll->Debug("Deactivating MQTT tickers.");
       PublischMQTTTicker.detach(); // Stop the ticker if WiFi is not connected or in AP mode
       ListenMQTTTicker.detach();   // Stop the ticker if WiFi is not connected or in AP mode
       tickerActive = false;        // Set the flag to indicate that the ticker is not active
 
-      // check if ota is active and settings is off, reboot device, to stop ota
-  if (systemSettings.allowOTA.get() == false && cfg.isOTAInitialized())
+      // If OTA is active but the setting is disabled, stop OTA
+      if (!systemSettings.allowOTA.get() && cfg.isOTAInitialized())
       {
-        sll->Debug("Stop OTA-Modeule");
-        cfg.stopOTA();//TODO: implemented, but not tested yet
+        sll->Debug("Stopping OTA module...");
+        cfg.enableOTA(false);
         // cfg.reboot();
       }
     }
@@ -305,9 +300,9 @@ void loop()
       sll->Debug("Reattach ticker.");
       PublischMQTTTicker.attach(mqttSettings.MQTTPublischPeriod.get(), cb_PublishToMQTT); // Reattach the ticker if WiFi is connected
       ListenMQTTTicker.attach(mqttSettings.MQTTListenPeriod.get(), cb_MQTTListener);      // Reattach the ticker if WiFi is connected
-  if(systemSettings.allowOTA.get()){
-        sll->Debug("Start OTA-Modeule");
-  cfg.setupOTA("Ota-esp32-device", systemSettings.otaPassword.get().c_str());
+      if(systemSettings.allowOTA.get()){
+        sll->Debug("Starting OTA module...");
+        cfg.setupOTA("Ota-esp32-device", systemSettings.otaPassword.get().c_str());
       }
       ShowDisplay();               // Show the display
       tickerActive = true; // Set the flag to indicate that the ticker is active
@@ -322,10 +317,10 @@ void loop()
 
   if (WiFi.getMode() == WIFI_AP) {
     helpers.blinkBuidInLED(5, 50); // show we are in AP mode
-    sll->Debug("or run in AP mode!");
+    sll->Debug("Running in AP mode.");
   } else {
     if (WiFi.status() != WL_CONNECTED) {
-      sl->Debug("❌ WiFi not connected!");
+      sl->Debug("[ERROR] WiFi not connected!");
       sll->Debug("reconnect to WiFi...");
       // cfg.reconnectWifi();
       SetupStartWebServer();
@@ -427,13 +422,13 @@ void reconnectMQTT()
     sl->Printf("MQTT reconnect failed after %d attempts. go to next loop...", maxRetry);
 
     // if we dont get a actual value from the grid, reduce the acktual value step by 1 up to 0
-    if (AktualImportFromGrid > 0)
+    if (currentGridImportW > 0)
     {
-      AktualImportFromGrid = AktualImportFromGrid - 10;
-      // inverterSetValue = powerSmoother.smooth(AktualImportFromGrid);
-      inverterSetValue = powerSmoother->smooth(AktualImportFromGrid);
+      currentGridImportW = currentGridImportW - 10;
+      // inverterSetValue = powerSmoother.smooth(currentGridImportW);
+      inverterSetValue = powerSmoother->smooth(currentGridImportW);
     }
-    // AktualImportFromGrid
+    // currentGridImportW
     // delay(1000);   // Wait for 1 second before restarting
     // todo: add logic to restart the ESP32 if no connection is available after 10 minutes
     // ESP.restart(); // Restart the ESP32
@@ -449,11 +444,11 @@ void reconnectMQTT()
 
     if (client.subscribe(mqttSettings.mqtt_sensor_powerusage_topic.get().c_str()))
     {
-      sl->Printf("✅ Subscribed to topic: [%s]\n", mqttSettings.mqtt_sensor_powerusage_topic.get().c_str());
+      sl->Printf("[SUCCESS] Subscribed to topic: [%s]\n", mqttSettings.mqtt_sensor_powerusage_topic.get().c_str());
     }
     else
     {
-      sl->Printf("❌ Subscription to Topic[%s] failed!", mqttSettings.mqtt_sensor_powerusage_topic.get().c_str());
+      sl->Printf("[ERROR] Subscription to topic [%s] failed!", mqttSettings.mqtt_sensor_powerusage_topic.get().c_str());
     }
   }
 }
@@ -464,7 +459,7 @@ void publishToMQTT()
   {
     sl->Printf("--> MQTT: Topic[%s] -> [%d]", mqttSettings.mqtt_publish_setvalue_topic.c_str(), inverterSetValue).Debug();
     client.publish(mqttSettings.mqtt_publish_setvalue_topic.c_str(), String(inverterSetValue).c_str());
-    client.publish(mqttSettings.mqtt_publish_getvalue_topic.c_str(), String(AktualImportFromGrid).c_str());
+    client.publish(mqttSettings.mqtt_publish_getvalue_topic.c_str(), String(currentGridImportW).c_str());
     client.publish(mqttSettings.mqtt_publish_Temperature_topic.c_str(), String(temperature).c_str());
     client.publish(mqttSettings.mqtt_publish_Humidity_topic.c_str(), String(Humidity).c_str());
     client.publish(mqttSettings.mqtt_publish_Dewpoint_topic.c_str(), String(Dewpoint).c_str());
@@ -495,7 +490,7 @@ void cb_MQTT(char *topic, byte *message, unsigned int length)
       messageTemp = "0";
     }
 
-    AktualImportFromGrid = messageTemp.toInt();
+    currentGridImportW = messageTemp.toInt();
   }
 }
 
@@ -515,8 +510,8 @@ void cb_MQTTListener()
 
 void cb_RS485Listener()
 {
-  // inverterSetValue = powerSmoother.smooth(AktualImportFromGrid);
-  inverterSetValue = powerSmoother->smooth(AktualImportFromGrid);
+  // inverterSetValue = powerSmoother.smooth(currentGridImportW);
+  inverterSetValue = powerSmoother->smooth(currentGridImportW);
   // (legacy) previously: if (generalSettings.enableController.get())
   if (limiterSettings.enableController.get())
   {
@@ -528,11 +523,11 @@ void cb_RS485Listener()
   }
   else
   {
-    sl->Debug("controller is didabled!");
-    sl->Debug("MAX-POWER!");
-    sll->Debug("Limiter is didabled!");
-    sll->Debug("MAX-POWER!");
-  sendToRS485(limiterSettings.maxOutput.get()); // send the maxOutput to the RS485 module
+    sl->Debug("Controller is disabled.");
+    sl->Debug("Using MAX output.");
+    sll->Debug("Limiter is disabled.");
+    sll->Debug("Using MAX output.");
+    sendToRS485(limiterSettings.maxOutput.get()); // send the maxOutput to the RS485 module
   }
 }
 
@@ -581,8 +576,8 @@ void SetupCheckForAPModeButton()
   // if (wifiSettings.wifiSsid.get().length() == 0 || systemSettings.unconfigured.get())
   if (wifiSettings.wifiSsid.get().length() == 0 )
   {
-  sl->Printf("⚠️ SETUP: WiFi SSID is empty [%s] (fresh/unconfigured)", wifiSettings.wifiSsid.get().c_str()).Error();
-    cfg.startAccessPoint("192.168.4.1", "255.255.255.0", APName, "");
+  sl->Printf("[WARNING] SETUP: WiFi SSID is empty [%s] (fresh/unconfigured)", wifiSettings.wifiSsid.get().c_str()).Error();
+    cfg.startAccessPoint(APName, pwd);
   systemSettings.unconfigured.set(false); // Set the unconfigured flag to false after starting the access point
     cfg.saveAll(); // Save the settings to EEPROM
   }
@@ -594,7 +589,7 @@ void SetupCheckForAPModeButton()
   sl->Internal("AP mode button pressed -> starting AP mode...");
   sll->Internal("AP mode button!");
   sll->Internal("-> starting AP mode...");
-    cfg.startAccessPoint("192.168.4.1", "255.255.255.0", APName, "");
+    cfg.startAccessPoint(APName, pwd);
   }
 }
 
@@ -631,22 +626,10 @@ void SetupStartTemperatureMeasuring()
     });
 
     // Runtime field metadata for dynamic UI
-    // With thresholds: warn (yellow) and alarm (red). Example ranges; adjust as needed.
-    cfg.defineRuntimeFieldThresholds("sensors", "temp", "Temperature", "°C", 1,
-        1.0f, 30.0f,   // warnMin / warnMax
-        0.0f, 32.0f,   // alarmMin / alarmMax
-         true,true,true,true
-    );
-
-    cfg.defineRuntimeFieldThresholds("sensors", "hum", "Humidity", "%", 1,
-        30.0f, 70.0f,
-        15.0f, 90.0f,
-        false,false,false,true
-    );
-
-    // only basic field, no thresholds
-    cfg.defineRuntimeField("sensors", "dew", "Dewpoint", "°C", 1);
-    cfg.defineRuntimeField("sensors", "Pressure", "Pressure", "hPa", 1);
+    cfg.defineRuntimeField("sensors", "temp", "Temperature", "°C", -20.0f, 60.0f);
+    cfg.defineRuntimeField("sensors", "hum", "Humidity", "%", 0.0f, 100.0f);
+    cfg.defineRuntimeField("sensors", "dew", "Dewpoint", "°C", -20.0f, 60.0f);
+    cfg.defineRuntimeField("sensors", "Pressure", "Pressure", "hPa", 800.0f, 1200.0f);
 
     temperatureTicker.attach(tempSettings.readIntervalSec.get(), readBme280); // Attach the ticker to read BME280
     readBme280(); // initial read
@@ -655,7 +638,7 @@ void SetupStartTemperatureMeasuring()
 
 bool SetupStartWebServer()
 {
-  sl->Printf("⚠️ SETUP: Starting Webserver...!").Debug();
+  sl->Printf("[WARNING] SETUP: Starting web server...").Debug();
   sll->Printf("Starting Webserver...!").Debug();
 
   if (wifiSettings.wifiSsid.get().length() == 0)
@@ -663,14 +646,14 @@ bool SetupStartWebServer()
     sl->Printf("No SSID! --> Start AP!").Debug();
     sll->Printf("No SSID!").Debug();
     sll->Printf("Start AP!").Debug();
-    cfg.startAccessPoint();
+    cfg.startAccessPoint("ESP32_Config", "config1234");
     delay(1000);
     return true; // Skip webserver setup if no SSID is set
   }
 
   if (WiFi.getMode() == WIFI_AP) {
-    sl->Printf("🖥️ Run in AP Mode! ");
-    sll->Printf("Run in AP Mode! ");
+    sl->Printf("[INFO] Running in AP mode.");
+    sll->Printf("Running in AP mode.");
     return false; // Skip webserver setup in AP mode
   }
 
@@ -683,9 +666,23 @@ bool SetupStartWebServer()
     else
     {
       sl->Printf("startWebServer: DHCP disabled\n");
-      // cfg.startWebServer("192.168.2.127", "192.168.2.250", "255.255.255.0", wifiSettings.wifiSsid.get(), wifiSettings.wifiPassword.get());
-      cfg.startWebServer(wifiSettings.staticIp.get(), wifiSettings.gateway.get(), wifiSettings.subnet.get(),
-                  wifiSettings.wifiSsid.get(), wifiSettings.wifiPassword.get());
+      IPAddress staticIP;
+      IPAddress gateway;
+      IPAddress subnet;
+
+      bool ipOk = staticIP.fromString(wifiSettings.staticIp.get());
+      bool gwOk = gateway.fromString(wifiSettings.gateway.get());
+      bool snOk = subnet.fromString(wifiSettings.subnet.get());
+
+      if (!ipOk || !gwOk || !snOk)
+      {
+        sl->Printf("[ERROR] Invalid static IP configuration. Falling back to DHCP.\n");
+        cfg.startWebServer(wifiSettings.wifiSsid.get(), wifiSettings.wifiPassword.get());
+      }
+      else
+      {
+        cfg.startWebServer(staticIP, gateway, subnet, wifiSettings.wifiSsid.get(), wifiSettings.wifiPassword.get());
+      }
     }
     // cfg.reconnectWifi();
     WiFi.setSleep(false);
@@ -693,9 +690,9 @@ bool SetupStartWebServer()
   }
   sl->Printf("\n\nWebserver running at: %s\n", WiFi.localIP().toString().c_str());
   sll->Printf("Web: %s\n\n", WiFi.localIP().toString().c_str());
-  sl->Printf("WLAN-Strength: %d dBm\n", WiFi.RSSI());
-  sl->Printf("WLAN-Strength is: %s\n\n", WiFi.RSSI() > -70 ? "good" : (WiFi.RSSI() > -80 ? "ok" : "weak"));
-  sll->Printf("WLAN: %s\n", WiFi.RSSI() > -70 ? "good" : (WiFi.RSSI() > -80 ? "ok" : "weak"));
+  sl->Printf("WiFi RSSI: %d dBm\n", WiFi.RSSI());
+  sl->Printf("WiFi RSSI quality: %s\n\n", WiFi.RSSI() > -70 ? "good" : (WiFi.RSSI() > -80 ? "ok" : "weak"));
+  sll->Printf("WiFi: %s\n", WiFi.RSSI() > -70 ? "good" : (WiFi.RSSI() > -80 ? "ok" : "weak"));
 
 
 
@@ -705,8 +702,8 @@ bool SetupStartWebServer()
 
 static float computeDewPoint(float temperatureC, float relHumidityPct) {
     if (isnan(temperatureC) || isnan(relHumidityPct)) return NAN;
-    if (relHumidityPct <= 0.0f) relHumidityPct = 0.1f;       // Unterlauf abfangen
-    if (relHumidityPct > 100.0f) relHumidityPct = 100.0f;    // Clamp
+  if (relHumidityPct <= 0.0f) relHumidityPct = 0.1f;       // Avoid divide-by-zero
+  if (relHumidityPct > 100.0f) relHumidityPct = 100.0f;    // Clamp
     const float a = 17.62f;
     const float b = 243.12f;
     float rh = relHumidityPct / 100.0f;
@@ -770,11 +767,11 @@ void WriteToDisplay()
   display.setCursor(3, 3);
   if (temperature > 0)
   {
-    display.printf("<- %d W|Temp: %2.1f", AktualImportFromGrid, temperature);
+    display.printf("<- %d W|Temp: %2.1f", currentGridImportW, temperature);
   }
   else
   {
-    display.printf("<- %d W", AktualImportFromGrid);
+    display.printf("<- %d W", currentGridImportW);
   }
 
   display.setCursor(3, 13);
