@@ -3,9 +3,18 @@ you are my coding assistant. Follow the instructions in this file carefully when
 
 - Communication Style:
   - Use informal tone with "you" (not "Sie" or formal language)
-  - Answer in German
+  - Answer in German (chat explanations only)
   - Give only brief overview after completing tasks
   - Provide detailed explanations only when explicitly asked
+
+- Language Policy (project content):
+  - English-only for ALL repository artifacts:
+    - Source code, identifiers, and symbols (variable/function/class names)
+    - Comments and docstrings
+    - Log messages and error messages
+    - Documentation and notes (README, /docs/*, /dev-info/*)
+    - Task tracking files (e.g. /docs/todo.md)
+  - German is allowed ONLY for interactive chat explanations to you.
 
 - Semi-automatic Workflow Guidelines:
   - Confirm-before-write: If requirements are ambiguous or the change impacts multiple subsystems/files, ask 1-3 precise clarifying questions (or propose 2-3 options) before editing files.
