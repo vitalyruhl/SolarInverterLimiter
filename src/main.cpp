@@ -201,7 +201,7 @@ LoggerSetupSerial(); // Initialize the serial logger
   //----------------------------------------------------------------------------------------------------------------------------------
   // Configure WiFi AP MAC filtering/priority (example - customize as needed)
   // cfg.setWifiAPMacFilter("60:B5:8D:4C:E1:D5");     // Only connect to this specific AP
-  cfg.setWifiAPMacPriority("60:B5:8D:4C:E1:D5");   // Prefer this AP, fallback to others
+  cfg.setWifiAPMacPriority("3C:A6:2F:B8:54:B1");   // Prefer this AP, fallback to others
 
   bool isStartedAsAP = SetupStartWebServer();
 
