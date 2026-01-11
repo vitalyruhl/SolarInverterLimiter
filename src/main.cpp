@@ -55,6 +55,9 @@ static float computeDewPoint(float temperatureC, float relHumidityPct);
 void HeaterControl(bool heaterOn);
 static void logNetworkIpInfo(const char *context);
 void setupGUI();
+void onWiFiConnected();
+void onWiFiDisconnected();
+void onWiFiAPMode();
 //--------------------------------------------------------------------------------------------------------------
 
 #pragma region configuratio variables
@@ -69,6 +72,7 @@ Ticker ListenMQTTTicker;
 Ticker RS485Ticker;
 Ticker temperatureTicker;
 Ticker displayTicker;
+Ticker NtpSyncTicker;
 
 WiFiClient espClient;
 PubSubClient client(espClient);
@@ -87,10 +91,6 @@ bool tickerActive = false;    // flag to indicate if the ticker is active
 bool displayActive = true;   // flag to indicate if the display is active
 static bool dewpointRiskActive = false; // tracks dewpoint alarm state
 static bool heaterLatchedState = false; // hysteresis latch for heater
-
-// WiFi downtime tracking for auto reboot
-static unsigned long wifiLastGoodMillis = 0;     // last time WiFi was connected (and not AP)
-static bool wifiAutoRebootArmed = false;         // becomes true after initial setup completion
 
 static inline ConfigManagerRuntime &CRM() { return ConfigManager.getRuntime(); } // Shorthand helper for RuntimeManager access
 
@@ -229,152 +229,60 @@ LoggerSetupSerial(); // Initialize the serial logger
   sl->Printf("[SETUP] System setup completed.").Debug();
   sll->Printf("Setup completed.").Debug();
 
-  // initialize WiFi tracking
-  if(WiFi.status() == WL_CONNECTED && WiFi.getMode() != WIFI_AP){
-    wifiLastGoodMillis = millis();
-  } else {
-    wifiLastGoodMillis = millis(); // start timer now; will reboot later if never connects
-  }
-  wifiAutoRebootArmed = true; // after setup we start watching
-
   HeaterControl(false); // make sure heater is off at startup
 }
 
 void loop()
 {
   CheckButtons();
-  if (WiFi.status() == WL_CONNECTED && client.connected())
-  {
-    digitalWrite(LED_BUILTIN, LOW); // show that we are connected
-  }
-  else
-  {
-    digitalWrite(LED_BUILTIN, HIGH); // disconnected
-  }
 
-  if (WiFi.status() != WL_CONNECTED || WiFi.getMode() == WIFI_AP)
-  {
-    if (tickerActive) // Check if the ticker is already active
-    {
-      ShowDisplay(); // Show the display to indicate WiFi is lost
-      sl->Debug("WiFi not connected or in AP mode. Deactivating tickers.");
-      sll->Debug("WiFi lost connection!");
-      sll->Debug("Running in AP mode.");
-      sll->Debug("Deactivating MQTT tickers.");
-      publishMqttTicker.detach(); // Stop the ticker if WiFi is not connected or in AP mode
-      ListenMQTTTicker.detach();   // Stop the ticker if WiFi is not connected or in AP mode
-      tickerActive = false;        // Set the flag to indicate that the ticker is not active
+  // Let ConfigManager handle WiFi state machine and callbacks.
+  cfg.updateLoopTiming();
+  cfg.getWiFiManager().update();
 
-      // If OTA is active but the setting is disabled, stop OTA
-      if (!systemSettings.allowOTA.get() && cfg.isOTAInitialized())
-      {
-        sll->Debug("Stopping OTA module...");
-        cfg.enableOTA(false);
-        // cfg.reboot();
-      }
-    }
-    //reconnect, if not in ap mode
-    if (WiFi.getMode() != WIFI_AP){
-      sl->Debug("reconnect to WiFi...");
-      sll->Debug("reconnect to WiFi...");
-      // WiFi.reconnect(); // try to reconnect to WiFi
-      bool isStartedAsAP = SetupStartWebServer();
-    }
-    // Auto reboot logic: only if not AP mode, feature enabled and timeout exceeded
-    if (wifiAutoRebootArmed && WiFi.getMode() != WIFI_AP){
-  int timeoutMin = systemSettings.wifiRebootTimeoutMin.get();
-        if(timeoutMin > 0){
-            unsigned long now = millis();
-            unsigned long elapsedMs = now - wifiLastGoodMillis;
-            unsigned long thresholdMs = (unsigned long)timeoutMin * 60000UL;
-            if(elapsedMs > thresholdMs){
-                sl->Printf("[WiFi] Lost for > %d min -> reboot", timeoutMin).Error();
-                sll->Printf("WiFi lost -> reboot").Error();
-                delay(200);
-                ESP.restart();
-            }
-        }
-    }
-  }
-  else
-  {
-    if (!tickerActive) // Check if the ticker is not already active
-    {
-      ShowDisplay(); // Show the display
-      sl->Debug("WiFi connected! Reattach ticker.");
-      sll->Debug("WiFi reconnected!");
-      sll->Debug("Reattach ticker.");
-      publishMqttTicker.attach(mqttSettings.mqttPublishPeriodSec.get(), cb_PublishToMQTT); // Reattach the ticker if WiFi is connected
-      ListenMQTTTicker.attach(mqttSettings.mqttListenPeriodSec.get(), cb_MQTTListener);    // Reattach the ticker if WiFi is connected
-      if(systemSettings.allowOTA.get()){
-        sll->Debug("Starting OTA module...");
-        cfg.setupOTA("Ota-esp32-device", systemSettings.otaPassword.get().c_str());
-      }
-      ShowDisplay();               // Show the display
-      tickerActive = true; // Set the flag to indicate that the ticker is active
-    }
-    // Update last good WiFi timestamp when connected (station mode only)
-    if(WiFi.status() == WL_CONNECTED && WiFi.getMode() != WIFI_AP){
-        wifiLastGoodMillis = millis();
-    }
+  // Services managed by ConfigManager.
+  cfg.handleClient();
+  cfg.handleWebsocketPush();
+  cfg.handleOTA();
+  cfg.handleRuntimeAlarms();
+
+  // Status LED: simple feedback
+  if (cfg.getWiFiManager().isInAPMode()) {
+    digitalWrite(LED_BUILTIN, HIGH);
+  } else if (cfg.getWiFiManager().isConnected() && client.connected()) {
+    digitalWrite(LED_BUILTIN, LOW);
+  } else {
+    digitalWrite(LED_BUILTIN, HIGH);
   }
 
   WriteToDisplay();
 
-  if (WiFi.getMode() == WIFI_AP) {
-    // Non-blocking AP heartbeat to avoid starving networking/web server.
-    static unsigned long apBlinkLastMs = 0;
-    static bool apBlinkOn = false;
-    const unsigned long now = millis();
-    if (now - apBlinkLastMs >= 250) {
-      apBlinkLastMs = now;
-      apBlinkOn = !apBlinkOn;
-      digitalWrite(LED_BUILTIN, apBlinkOn ? HIGH : LOW);
-    }
-  } else {
-    if (WiFi.status() != WL_CONNECTED) {
-      sl->Debug("[ERROR] WiFi not connected!");
-      sll->Debug("reconnect to WiFi...");
-      // cfg.reconnectWifi();
-      SetupStartWebServer();
-      delay(1000);
-      return;
-    }
-    else {
-      // refresh last good timestamp here as safeguard
-      wifiLastGoodMillis = millis();
-    }
-    // blinkBuidInLED(1, 100); // not used here, because blinker is used if we get a message from MQTT
-  }
-
-
-
-  if (!client.connected())
+  if (cfg.getWiFiManager().isConnected() && !cfg.getWiFiManager().isInAPMode())
   {
-    sll->Debug("MQTT Not Connected! -> reconnecting...");
-    reconnectMQTT();
+    if (!client.connected() && mqttSettings.enableMQTT.get())
+    {
+      sll->Debug("MQTT Not Connected! -> reconnecting...");
+      reconnectMQTT();
+    }
   }
-
 
   CheckVentilator(temperature);
   EvaluateHeater(temperature);
-  cfg.handleClient();
-  cfg.handleOTA();
-  delay(100);
+  delay(10);
 }
 
 void setupGUI()
 {
 
   // region sensor fields BME280
-      CRM().addRuntimeProvider("sensors", [](JsonObject &data)
+    CRM().addRuntimeProvider("sensors", [](JsonObject &data)
       {
           // Apply precision to sensor values to reduce JSON size
           data["temp"] = roundf(temperature * 10.0f) / 10.0f;     // 1 decimal place
           data["hum"] = roundf(Humidity * 10.0f) / 10.0f;        // 1 decimal place
           data["dew"] = roundf(Dewpoint * 10.0f) / 10.0f;        // 1 decimal place
           data["pressure"] = roundf(Pressure * 10.0f) / 10.0f;   // 1 decimal place
-      });
+    }, 1);
 
       
       // Define sensor display fields using addRuntimeMeta
@@ -433,7 +341,7 @@ void setupGUI()
           data["gridIn"] = currentGridImportW;
           data["invSet"] = inverterSetValue;
           data["enabled"] = limiterSettings.enableController.get();
-      });
+      }, 2);
 
       // Define sensor display fields using addRuntimeMeta
       RuntimeFieldMeta gridInMeta;
@@ -470,7 +378,7 @@ void setupGUI()
           data["ventilator"] = Relays::getVentilator();
           data["heater"] = Relays::getHeater();
           data["dewpoint_risk"] = dewpointRiskActive;
-      });
+      }, 3);
 
       RuntimeFieldMeta ventilatorMeta;
       ventilatorMeta.group = "Outputs";
@@ -493,6 +401,9 @@ void setupGUI()
       dewpointRiskMeta.key = "dewpoint_risk";
       dewpointRiskMeta.label = "Dewpoint Risk";
       dewpointRiskMeta.isBool = true;
+      dewpointRiskMeta.hasAlarm = true;
+      dewpointRiskMeta.alarmWhenTrue = true;
+      dewpointRiskMeta.boolAlarmValue = true;
       dewpointRiskMeta.order = 3;
       CRM().addRuntimeMeta(dewpointRiskMeta);
 
@@ -805,24 +716,6 @@ void SetupStartTemperatureMeasuring()
     sl->Printf("BME280 ready. Start measurement ticker...").Debug();
     sll->Printf("BME280 detected!").Debug();
 
-    // Sensor data provider
-    cfg.addRuntimeProvider({
-        .name = "sensors",
-        .fill = [](JsonObject &o){
-            // Primary short keys expected by frontend
-            o["temp"] = temperature;
-            o["hum"] = Humidity;
-            o["dew"] = Dewpoint;
-            o["Pressure"] = Pressure;
-        }
-    });
-
-    // Runtime field metadata for dynamic UI
-    cfg.defineRuntimeField("sensors", "temp", "Temperature", "°C", -20.0f, 60.0f);
-    cfg.defineRuntimeField("sensors", "hum", "Humidity", "%", 0.0f, 100.0f);
-    cfg.defineRuntimeField("sensors", "dew", "Dewpoint", "°C", -20.0f, 60.0f);
-    cfg.defineRuntimeField("sensors", "Pressure", "Pressure", "hPa", 800.0f, 1200.0f);
-
     temperatureTicker.attach(tempSettings.readIntervalSec.get(), readBme280); // Attach the ticker to read BME280
     readBme280(); // initial read
   }
@@ -833,69 +726,108 @@ bool SetupStartWebServer()
   sl->Printf("[WARNING] SETUP: Starting web server...").Debug();
   sll->Printf("Starting Webserver...!").Debug();
 
-  if (wifiSettings.wifiSsid.get().length() == 0)
+  if (WiFi.getMode() == WIFI_AP)
   {
-    sl->Printf("No SSID! --> Start AP!").Debug();
-    sll->Printf("No SSID!").Debug();
-    sll->Printf("Start AP!").Debug();
-    cfg.startAccessPoint(APMODE_SSID, APMODE_PASSWORD);
-    delay(1000);
-    logNetworkIpInfo("SetupStartWebServer");
-    return true; // Skip webserver setup if no SSID is set
-  }
-
-  if (WiFi.getMode() == WIFI_AP) {
-    sl->Printf("[INFO] Running in AP mode.");
-    sll->Printf("Running in AP mode.");
-    logNetworkIpInfo("SetupStartWebServer");
     return false; // Skip webserver setup in AP mode
   }
 
-  if (WiFi.status() != WL_CONNECTED) {
+  if (WiFi.status() != WL_CONNECTED)
+  {
     if (wifiSettings.useDhcp.get())
     {
-      sl->Printf("startWebServer: DHCP enabled\n");
+      sl->Printf("[WiFi] startWebServer: DHCP enabled").Debug();
       cfg.startWebServer(wifiSettings.wifiSsid.get(), wifiSettings.wifiPassword.get());
+      cfg.getWiFiManager().setAutoRebootTimeout((unsigned long)systemSettings.wifiRebootTimeoutMin.get());
     }
     else
     {
-      sl->Printf("startWebServer: DHCP disabled\n");
-      IPAddress staticIP;
-      IPAddress gateway;
-      IPAddress subnet;
+      sl->Printf("[WiFi] startWebServer: DHCP disabled - using static IP").Debug();
+      IPAddress staticIP, gateway, subnet, dns1, dns2;
+      staticIP.fromString(wifiSettings.staticIp.get());
+      gateway.fromString(wifiSettings.gateway.get());
+      subnet.fromString(wifiSettings.subnet.get());
 
-      bool ipOk = staticIP.fromString(wifiSettings.staticIp.get());
-      bool gwOk = gateway.fromString(wifiSettings.gateway.get());
-      bool snOk = subnet.fromString(wifiSettings.subnet.get());
+      const String dnsPrimaryStr = wifiSettings.dnsPrimary.get();
+      const String dnsSecondaryStr = wifiSettings.dnsSecondary.get();
+      if (!dnsPrimaryStr.isEmpty())
+      {
+        dns1.fromString(dnsPrimaryStr);
+      }
+      if (!dnsSecondaryStr.isEmpty())
+      {
+        dns2.fromString(dnsSecondaryStr);
+      }
 
-      if (!ipOk || !gwOk || !snOk)
-      {
-        sl->Printf("[ERROR] Invalid static IP configuration. Falling back to DHCP.\n");
-        cfg.startWebServer(wifiSettings.wifiSsid.get(), wifiSettings.wifiPassword.get());
-      }
-      else
-      {
-        cfg.startWebServer(staticIP, gateway, subnet, wifiSettings.wifiSsid.get(), wifiSettings.wifiPassword.get());
-      }
+      cfg.startWebServer(staticIP, gateway, subnet, wifiSettings.wifiSsid.get(), wifiSettings.wifiPassword.get(), dns1, dns2);
+      cfg.getWiFiManager().setAutoRebootTimeout((unsigned long)systemSettings.wifiRebootTimeoutMin.get());
     }
-    // cfg.reconnectWifi();
-    WiFi.setSleep(false);
-    delay(1000);
   }
-  logNetworkIpInfo("Web server started");
-  if (WiFi.status() == WL_CONNECTED)
-  {
-    sl->Printf("\n\nWebserver running at: %s\n", WiFi.localIP().toString().c_str());
-    sll->Printf("Web: %s\n\n", WiFi.localIP().toString().c_str());
-    sl->Printf("WiFi RSSI: %d dBm\n", WiFi.RSSI());
-    sl->Printf("WiFi RSSI quality: %s\n\n", WiFi.RSSI() > -70 ? "good" : (WiFi.RSSI() > -80 ? "ok" : "weak"));
-    sll->Printf("WiFi: %s\n", WiFi.RSSI() > -70 ? "good" : (WiFi.RSSI() > -80 ? "ok" : "weak"));
-  }
-
-
-
 
   return true; // Webserver setup completed
+}
+
+void onWiFiConnected()
+{
+  sl->Printf("[WiFi] Connected! Activating services...").Debug();
+  sll->Printf("WiFi connected!").Debug();
+
+  logNetworkIpInfo("onWiFiConnected");
+
+  if (!tickerActive)
+  {
+    if (mqttSettings.enableMQTT.get())
+    {
+      publishMqttTicker.detach();
+      ListenMQTTTicker.detach();
+      publishMqttTicker.attach(mqttSettings.mqttPublishPeriodSec.get(), cb_PublishToMQTT);
+      ListenMQTTTicker.attach(mqttSettings.mqttListenPeriodSec.get(), cb_MQTTListener);
+    }
+
+    if (systemSettings.allowOTA.get() && !cfg.getOTAManager().isInitialized())
+    {
+      cfg.setupOTA("Ota-esp32-device", systemSettings.otaPassword.get().c_str());
+    }
+
+    tickerActive = true;
+  }
+
+  // Start NTP sync now and schedule periodic resyncs
+  auto doNtpSync = []()
+  {
+    configTzTime(ntpSettings.tz.get().c_str(), ntpSettings.server1.get().c_str(), ntpSettings.server2.get().c_str());
+  };
+  doNtpSync();
+
+  NtpSyncTicker.detach();
+  int ntpInt = ntpSettings.frequencySec.get();
+  if (ntpInt < 60)
+  {
+    ntpInt = 3600;
+  }
+  NtpSyncTicker.attach(ntpInt, +[]()
+                       { configTzTime(ntpSettings.tz.get().c_str(), ntpSettings.server1.get().c_str(), ntpSettings.server2.get().c_str()); });
+}
+
+void onWiFiDisconnected()
+{
+  sl->Printf("[WiFi] Disconnected! Deactivating services...").Debug();
+  sll->Printf("WiFi disconnected!").Debug();
+
+  if (tickerActive)
+  {
+    publishMqttTicker.detach();
+    ListenMQTTTicker.detach();
+    NtpSyncTicker.detach();
+    tickerActive = false;
+  }
+}
+
+void onWiFiAPMode()
+{
+  sl->Printf("[WiFi] AP mode active").Debug();
+  sll->Printf("AP mode").Debug();
+  logNetworkIpInfo("onWiFiAPMode");
+  onWiFiDisconnected();
 }
 
 static float computeDewPoint(float temperatureC, float relHumidityPct) {
