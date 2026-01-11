@@ -54,6 +54,7 @@ void ShowDisplayOff();
 static float computeDewPoint(float temperatureC, float relHumidityPct);
 void HeaterControl(bool heaterOn);
 static void logNetworkIpInfo(const char *context);
+void setupGUI();
 //--------------------------------------------------------------------------------------------------------------
 
 #pragma region configuratio variables
@@ -91,6 +92,8 @@ static bool heaterLatchedState = false; // hysteresis latch for heater
 static unsigned long wifiLastGoodMillis = 0;     // last time WiFi was connected (and not AP)
 static bool wifiAutoRebootArmed = false;         // becomes true after initial setup completion
 
+static inline ConfigManagerRuntime &CRM() { return ConfigManager.getRuntime(); } // Shorthand helper for RuntimeManager access
+
 #pragma endregion configuration variables
 
 //----------------------------------------
@@ -122,7 +125,22 @@ static void logNetworkIpInfo(const char *context)
 void setup()
 {
 
-  LoggerSetupSerial(); // Initialize the serial logger
+  //-----------------------------------------------------------------
+    cfg.setAppName(APP_NAME); // Set an application name, used for SSID in AP mode and as a prefix for the hostname
+    cfg.setVersion(VERSION); // Set the application version for web UI display
+    // Optional demo: global CSS override
+    // cfg.setCustomCss(GLOBAL_THEME_OVERRIDE, sizeof(GLOBAL_THEME_OVERRIDE) - 1); // Register global CSS override
+    // cfg.setSettingsPassword(SETTINGS_PASSWORD); // Set the settings password from wifiSecret.h
+    cfg.enableBuiltinSystemProvider(); // enable the builtin system provider (uptime, freeHeap, rssi etc.)
+  //----------------------------------------------------------------------------------------------------------------------------------
+
+systemSettings.init();    // System settings (OTA, version, etc.)
+buttonSettings.init();    // GPIO button configuration
+tempSettings.init();      // BME280 temperature sensor settings
+ntpSettings.init();       // NTP time synchronization settings
+wifiSettings.init();      // WiFi connection settings
+
+LoggerSetupSerial(); // Initialize the serial logger
 
   sl->Printf("System setup start...").Debug();
 
@@ -131,32 +149,37 @@ void setup()
   SetupCheckForResetButton();
   SetupCheckForAPModeButton();
 
-  // sl->Printf("Clear Settings...").Debug();
-  // cfg.clearAllFromPrefs();
-
-  // Migrate old short/ambiguous Preferences keys to new unique keys before loading
-  migrateConfigManagerPrefsKeys();
-
   sl->Printf("Load configuration...").Debug();
   cfg.loadAll();
-  // Re-apply relay pin modes with loaded settings (pins/polarity may differ from defaults)
-  Relays::initPins();
+  delay(100); // Small delay
+  
+  Relays::initPins();// Re-apply relay pin modes with loaded settings (pins/polarity may differ from defaults)
 
-  //04.09.2025 new function to check all settings with errors
-  cfg.checkSettingsForErrors();
+  if (wifiSettings.wifiSsid.get().isEmpty())
+  {
+      sl->Printf("[MAIN] -------------------------------------------------------------").Debug();
+      sl->Printf("[MAIN] SETUP: *** SSID is empty, setting My values *** ").Debug();
+      sl->Printf("[MAIN] -------------------------------------------------------------").Debug();
+      wifiSettings.wifiSsid.set(MY_WIFI_SSID);
+      wifiSettings.wifiPassword.set(MY_WIFI_PASSWORD);
+      wifiSettings.staticIp.set(MY_WIFI_IP);
+      wifiSettings.useDhcp.set(false);
+      ConfigManager.saveAll();
+      delay(100); // Small delay
+  }
 
-  //05.09.2025 add new updateTopics function to the mqttSettings
   mqttSettings.updateTopics(); // Consider restarting after changing MQTT base topic to avoid heap fragmentation
 
   // init modules...
-  sl->Printf("init modules...").Debug();
+  sl->Printf("[SETUP] init modules...").Debug();
+  sll->Printf("init modules...").Debug();
   SetupStartDisplay();
   ShowDisplay();
 
   helpers.blinkBuidInLEDsetpinMode(); // Initialize the built-in LED pin mode
   helpers.blinkBuidInLED(3, 100);     // Blink the built-in LED 3 times with a 100ms delay
 
-  sl->Printf("Init buffer...!").Debug();
+  sl->Printf("[SETUP] Init buffer...!").Debug();
   powerSmoother = new Smoother(
         limiterSettings.smoothingSize.get(),
         limiterSettings.inputCorrectionOffset.get(),
@@ -165,17 +188,13 @@ void setup()
       );
   powerSmoother->fillBufferOnStart(limiterSettings.minOutput.get());
 
-  sl->Printf("Configuration printout:").Debug();
-  Serial.println(cfg.toJSON(false)); // Print the configuration to the serial monitor
-  // testRS232();
-
   //------------------
-  sl->Printf("[WARNING] SETUP: Starting RS485...").Debug();
+  sl->Printf("[SETUP] Starting RS485...").Debug();
   sll->Printf("Starting RS485...").Debug();
   RS485begin();
 
-  sl->Printf("SETUP: Check and start BME280!").Debug();
-  sll->Printf("Check and start BME280!").Debug();
+  sl->Printf("[SETUP] Check and start BME280!").Debug();
+  sll->Printf("Starting BME280!").Debug();
   SetupStartTemperatureMeasuring(); //also starts the temperature ticker, its allways active
 
   //----------------------------------------
@@ -184,18 +203,20 @@ void setup()
 
   //----------------------------------------
   // -- Setup MQTT connection --
-  sl->Printf("[WARNING] SETUP: Starting MQTT! [%s]", mqttSettings.mqtt_server.get().c_str()).Debug();
+  sl->Printf("[SETUP] Starting MQTT! [%s]", mqttSettings.mqtt_server.get().c_str()).Debug();
   sll->Printf("Starting MQTT! [%s]", mqttSettings.mqtt_server.get().c_str()).Debug();
   client.setServer(mqttSettings.mqtt_server.get().c_str(), static_cast<uint16_t>(mqttSettings.mqtt_port.get())); // Set the MQTT server and port
   client.setCallback(cb_MQTT);
 
   //set rs232 ticker, its always active
-  sl->Debug("Setup RS485 ticker...");
-  sll->Debug("Setup RS485 ticker...");
+  sl->Printf("[SETUP] Setup RS485 ticker...").Debug();
+  sll->Printf("att. RS485 ticker...").Debug();
   RS485Ticker.attach(limiterSettings.RS232PublishPeriod.get(), cb_RS485Listener);
 
-  sl->Debug("System setup completed.");
-  sll->Debug("Setup completed.");
+  setupGUI();
+
+  sl->Printf("[SETUP] System setup completed.").Debug();
+  sll->Printf("Setup completed.").Debug();
 
   // initialize WiFi tracking
   if(WiFi.status() == WL_CONNECTED && WiFi.getMode() != WIFI_AP){
@@ -204,70 +225,6 @@ void setup()
     wifiLastGoodMillis = millis(); // start timer now; will reboot later if never connects
   }
   wifiAutoRebootArmed = true; // after setup we start watching
-
-   // Register Limiter runtime provider
-  cfg.addRuntimeProvider({
-    .name = "Limiter",
-    .fill = [](JsonObject &o){
-      o["enabled"] = limiterSettings.enableController.get();
-      o["gridIn"] = currentGridImportW;
-      o["invSet"] = inverterSetValue;
-    }
-  });
-  cfg.defineRuntimeField("Limiter", "gridIn", "Grid Import", "W", 0.0f, 5000.0f);
-  cfg.defineRuntimeField("Limiter", "invSet", "Inverter Set", "W", 0.0f, 5000.0f);
-  cfg.defineRuntimeBool("Limiter", "enabled", "Limiter Enabled", limiterSettings.enableController.get(), 0);
-
-  // Register system runtime provider
-    cfg.addRuntimeProvider({
-        .name = "system",
-        .fill = [](JsonObject &o){
-            o["freeHeap"] = ESP.getFreeHeap();
-            o["rssi"] = WiFi.RSSI();
-            o["heaterEnabled"] = heaterSettings.enabled.get();
-            o["Fan"] = fanSettings.enabled.get();
-        }
-    });
-    cfg.defineRuntimeField("system", "freeHeap", "Free Heap", "B", 0.0f, 400000.0f);
-    cfg.defineRuntimeField("system", "rssi", "WiFi RSSI", "dBm", -100.0f, 0.0f);
-    cfg.defineRuntimeBool("system", "heaterEnabled", "Heater Feature Enabled", heaterSettings.enabled.get(), 5);
-    cfg.defineRuntimeBool("system", "Fan", "Fan Feature Enabled", fanSettings.enabled.get(), 6);
-
-
-
-  // Runtime live values provider for relay outputs
-  cfg.addRuntimeProvider({
-    .name = String("Outputs"),
-    .fill = [] (JsonObject &o){
-        o["ventilator"] = Relays::getVentilator();
-        o["heater"] = Relays::getHeater();
-        o["dewpoint_risk"] = dewpointRiskActive;
-    }
-  });
-
-  // Alarm: temperature is close to dewpoint (risk of condensation)
-  cfg.defineRuntimeAlarm(
-    "Outputs",
-    "dewpoint_risk",
-    "Dewpoint Risk",
-    [](){
-      return (temperature - Dewpoint) <= 1.2f;
-    },
-    [](){
-      dewpointRiskActive = true;
-      sl->Printf("[ALARM] Dewpoint risk ENTER").Debug();
-      EvaluateHeater(temperature);
-    },
-    [](){
-      dewpointRiskActive = false;
-      sl->Printf("[ALARM] Dewpoint risk EXIT").Debug();
-      EvaluateHeater(temperature);
-    }
-  );
-    
-  cfg.defineRuntimeBool("Outputs", "ventilator", "Ventilator Relay Active", false, 0);
-  cfg.defineRuntimeBool("Outputs", "heater", "Heater Relay Active", false, 0);
-  cfg.defineRuntimeBool("Outputs", "dewpoint_risk", "Dewpoint Risk", false, 0);
 
   HeaterControl(false); // make sure heater is off at startup
 }
@@ -394,6 +351,183 @@ void loop()
   cfg.handleOTA();
   delay(100);
 }
+
+void setupGUI()
+{
+
+  // region sensor fields BME280
+      CRM().addRuntimeProvider("sensors", [](JsonObject &data)
+      {
+          // Apply precision to sensor values to reduce JSON size
+          data["temp"] = roundf(temperature * 10.0f) / 10.0f;     // 1 decimal place
+          data["hum"] = roundf(Humidity * 10.0f) / 10.0f;        // 1 decimal place
+          data["dew"] = roundf(Dewpoint * 10.0f) / 10.0f;        // 1 decimal place
+          data["pressure"] = roundf(Pressure * 10.0f) / 10.0f;   // 1 decimal place
+      });
+
+      
+      // Define sensor display fields using addRuntimeMeta
+      RuntimeFieldMeta tempMeta;
+      tempMeta.group = "sensors";
+      tempMeta.key = "temp";
+      tempMeta.label = "Temperature";
+      tempMeta.unit = "°C";
+      tempMeta.precision = 1;
+      tempMeta.order = 2;
+      CRM().addRuntimeMeta(tempMeta);
+
+      RuntimeFieldMeta humMeta;
+      humMeta.group = "sensors";
+      humMeta.key = "hum";
+      humMeta.label = "Humidity";
+      humMeta.unit = "%";
+      humMeta.precision = 1;
+      humMeta.order = 11;
+      CRM().addRuntimeMeta(humMeta);
+
+      RuntimeFieldMeta dewMeta;
+      dewMeta.group = "sensors";
+      dewMeta.key = "dew";
+      dewMeta.label = "Dewpoint";
+      dewMeta.unit = "°C";
+      dewMeta.precision = 1;
+      dewMeta.order = 12;
+      CRM().addRuntimeMeta(dewMeta);
+
+      RuntimeFieldMeta pressureMeta;
+      pressureMeta.group = "sensors";
+      pressureMeta.key = "pressure";
+      pressureMeta.label = "Pressure";
+      pressureMeta.unit = "hPa";
+      pressureMeta.precision = 1;
+      pressureMeta.order = 13;
+      CRM().addRuntimeMeta(pressureMeta);
+
+
+      RuntimeFieldMeta rangeMeta;
+      rangeMeta.group = "sensors";
+      rangeMeta.key = "range";
+      rangeMeta.label = "Sensor Range";
+      rangeMeta.unit = "V";
+      rangeMeta.precision = 1;
+      rangeMeta.order = 14;
+      CRM().addRuntimeMeta(rangeMeta);
+    // endregion sensor fields
+
+
+  //region Limiter
+      CRM().addRuntimeProvider("Limiter", [](JsonObject &data)
+      {
+          // Apply precision to sensor values to reduce JSON size
+          data["gridIn"] = currentGridImportW;
+          data["invSet"] = inverterSetValue;
+          data["enabled"] = limiterSettings.enableController.get();
+      });
+
+      // Define sensor display fields using addRuntimeMeta
+      RuntimeFieldMeta gridInMeta;
+      gridInMeta.group = "Limiter";
+      gridInMeta.key = "gridIn";
+      gridInMeta.label = "Grid Import";
+      gridInMeta.unit = "W";
+      gridInMeta.precision = 0;
+      gridInMeta.order = 1;
+      CRM().addRuntimeMeta(gridInMeta);
+
+      RuntimeFieldMeta invSetMeta;
+      invSetMeta.group = "Limiter";
+      invSetMeta.key = "invSet";
+      invSetMeta.label = "Inverter Setpoint";
+      invSetMeta.unit = "W";
+      invSetMeta.precision = 0;
+      invSetMeta.order = 2;
+      CRM().addRuntimeMeta(invSetMeta);
+
+      RuntimeFieldMeta limiterEnabledMeta;
+      limiterEnabledMeta.group = "Limiter";
+      limiterEnabledMeta.key = "enabled";
+      limiterEnabledMeta.label = "Limiter Enabled";
+      limiterEnabledMeta.isBool = true;
+      limiterEnabledMeta.order = 3;
+      CRM().addRuntimeMeta(limiterEnabledMeta);
+  //endregion Limiter
+
+
+  //region relay outputs
+      CRM().addRuntimeProvider("Outputs", [](JsonObject &data)
+      {
+          data["ventilator"] = Relays::getVentilator();
+          data["heater"] = Relays::getHeater();
+          data["dewpoint_risk"] = dewpointRiskActive;
+      });
+
+      RuntimeFieldMeta ventilatorMeta;
+      ventilatorMeta.group = "Outputs";
+      ventilatorMeta.key = "ventilator";
+      ventilatorMeta.label = "Ventilator Relay Active";
+      ventilatorMeta.isBool = true;
+      ventilatorMeta.order = 1;
+      CRM().addRuntimeMeta(ventilatorMeta);
+
+      RuntimeFieldMeta heaterMeta;
+      heaterMeta.group = "Outputs";
+      heaterMeta.key = "heater";
+      heaterMeta.label = "Heater Relay Active";
+      heaterMeta.isBool = true;
+      heaterMeta.order = 2;
+      CRM().addRuntimeMeta(heaterMeta);
+
+      RuntimeFieldMeta dewpointRiskMeta;
+      dewpointRiskMeta.group = "Outputs";
+      dewpointRiskMeta.key = "dewpoint_risk";
+      dewpointRiskMeta.label = "Dewpoint Risk";
+      dewpointRiskMeta.isBool = true;
+      dewpointRiskMeta.order = 3;
+      CRM().addRuntimeMeta(dewpointRiskMeta);
+
+      static bool heaterState = false;
+      cfg.defineRuntimeCheckbox("Outputs", "heater", "Heater", []()
+        {
+            return heaterState;
+        }, [](bool state)
+        {
+            heaterState = Relays::getHeater();
+            Relays::setHeater(state);
+        }, "", 21);
+
+      static bool ventilatorState = false;
+      cfg.defineRuntimeCheckbox("Outputs", "ventilator", "Ventilator", []()
+        {
+            return ventilatorState;
+        }, [](bool state)
+        {
+            ventilatorState = Relays::getVentilator();
+            Relays::setVentilator(state);
+        }, "", 22);
+
+        // Alarm: temperature is close to dewpoint (risk of condensation)
+        cfg.defineRuntimeAlarm(
+          "Outputs",
+          "dewpoint_risk",
+          "Dewpoint Risk",
+          [](){
+            return (temperature - Dewpoint) <= 1.2f;
+          },
+          [](){
+            dewpointRiskActive = true;
+            sl->Printf("[ALARM] Dewpoint risk ENTER").Debug();
+            EvaluateHeater(temperature);
+          },
+          [](){
+            dewpointRiskActive = false;
+            sl->Printf("[ALARM] Dewpoint risk EXIT").Debug();
+            EvaluateHeater(temperature);
+          }
+        );
+  //endregion relay outputs
+
+}
+
 
 //----------------------------------------
 // MQTT FUNCTIONS
@@ -590,7 +724,7 @@ void testRS232()
   delay(300);
   if (Serial2.available())
   {
-    Serial.println("Received on Serial2!");
+    sl->Printf("[MAIN] Received on Serial2!").Debug();
   }
 }
 

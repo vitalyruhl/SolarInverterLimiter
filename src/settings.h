@@ -10,8 +10,9 @@
 
 #include "ConfigManager.h"
 
-#define VERSION "2.4.2"           // version of the software (major.minor.patch)
-#define VERSION_DATE "29.09.2025" // date of the version
+#define APP_NAME "Solarinverter - Limiter" // name of the application
+#define VERSION "2.5.0"           // version of the software (major.minor.patch)
+#define VERSION_DATE "11.01.2026" // date of the version
 
 //--------------------------------------------------------------------------------------------------------------
 // set the I2C address for the BME280 sensor for temperature and humidity
@@ -28,85 +29,44 @@
 
 extern ConfigManagerClass cfg;// store it globaly before using it in the settings
 
-void migrateConfigManagerPrefsKeys();
-
 //--------------------------------------------------------------------------------------------------------------
-
-struct WiFi_Settings // wifiSettings (migrated to new ConfigOptions API)
+struct WiFi_Settings // wifiSettings
 {
     Config<String> wifiSsid;
     Config<String> wifiPassword;
-    Config<bool>   useDhcp;
+    Config<bool> useDhcp;
     Config<String> staticIp;
     Config<String> gateway;
     Config<String> subnet;
+    Config<String> dnsPrimary;
+    Config<String> dnsSecondary;
 
-    WiFi_Settings() :
-        wifiSsid(ConfigOptions<String>{
-            .key = "WiFiSSID",
-            .name = "WiFi SSID",
-            .category = "wifi",
-            .defaultValue = String(""),
-            .categoryPretty = "Network"
-        }),
-        wifiPassword(ConfigOptions<String>{
-            .key = "WiFiPassword",
-            .name = "WiFi Password",
-            .category = "wifi",
-            .defaultValue = String(""),
-            .isPassword = true,
-            .categoryPretty = "Network"
-        }),
-        useDhcp(ConfigOptions<bool>{
-            .key = "WiFiUseDHCP",
-            .name = "Use DHCP",
-            .category = "wifi",
-            .defaultValue = true,
-            .categoryPretty = "Network"
-        }),
-        staticIp(ConfigOptions<String>{
-            .key = "WiFiStaticIP",
-            .name = "Static IP",
-            .category = "wifi",
-            .defaultValue = String("192.168.2.126"),
-            .showIf = [this](){ return !this->useDhcp.get(); },
-            .categoryPretty = "Network"
-        }),
-        gateway(ConfigOptions<String>{
-            .key = "WiFiGateway",
-            .name = "Gateway",
-            .category = "wifi",
-            .defaultValue = String("192.168.2.250"),
-            .showIf = [this](){ return !this->useDhcp.get(); },
-            .categoryPretty = "Network"
-        }),
-        subnet(ConfigOptions<String>{
-            .key = "WiFiSubnet",
-            .name = "Subnet Mask",
-            .category = "wifi",
-            .defaultValue = String("255.255.255.0"),
-            .showIf = [this](){ return !this->useDhcp.get(); },
-            .categoryPretty = "Network"
-        })
+    WiFi_Settings() : wifiSsid(ConfigOptions<String>{.key = "WiFiSSID", .name = "WiFi SSID", .category = "WiFi", .defaultValue = "", .showInWeb = true, .sortOrder = 1}),
+                      wifiPassword(ConfigOptions<String>{.key = "WiFiPassword", .name = "WiFi Password", .category = "WiFi", .defaultValue = "secretpass", .showInWeb = true, .isPassword = true, .sortOrder = 2}),
+                      useDhcp(ConfigOptions<bool>{.key = "WiFiUseDHCP", .name = "Use DHCP", .category = "WiFi", .defaultValue = true, .showInWeb = true, .sortOrder = 3}),
+                      staticIp(ConfigOptions<String>{.key = "WiFiStaticIP", .name = "Static IP", .category = "WiFi", .defaultValue = "192.168.2.131", .sortOrder = 4, .showIf = [this](){ return !useDhcp.get(); }}),
+                      gateway(ConfigOptions<String>{.key = "WiFiGateway", .name = "Gateway", .category = "WiFi", .defaultValue = "192.168.2.250", .sortOrder = 5, .showIf = [this](){ return !useDhcp.get(); }}),
+                      subnet(ConfigOptions<String>{.key = "WiFiSubnet", .name = "Subnet Mask", .category = "WiFi", .defaultValue = "255.255.255.0", .sortOrder = 6, .showIf = [this](){ return !useDhcp.get(); }}),
+                      dnsPrimary(ConfigOptions<String>{.key = "WiFiDNS1", .name = "Primary DNS", .category = "WiFi", .defaultValue = "192.168.2.250", .sortOrder = 7, .showIf = [this](){ return !useDhcp.get(); }}),
+                      dnsSecondary(ConfigOptions<String>{.key = "WiFiDNS2", .name = "Secondary DNS", .category = "WiFi", .defaultValue = "8.8.8.8", .sortOrder = 8, .showIf = [this](){ return !useDhcp.get(); }})
     {
+        // Constructor - do not register here due to static initialization order
+    }
+
+    void init() {
+        // Register settings with ConfigManager after ConfigManager is ready
         cfg.addSetting(&wifiSsid);
         cfg.addSetting(&wifiPassword);
         cfg.addSetting(&useDhcp);
         cfg.addSetting(&staticIp);
         cfg.addSetting(&gateway);
         cfg.addSetting(&subnet);
-
-        wifiSsid.setCallback([](const String& v) {
-            Serial.printf("[SETTINGS] WiFi SSID updated (len=%u)\n", (unsigned)v.length());
-        });
-        wifiPassword.setCallback([](const String& v) {
-            Serial.printf("[SETTINGS] WiFi Password updated (len=%u)\n", (unsigned)v.length());
-        });
+        cfg.addSetting(&dnsPrimary);
+        cfg.addSetting(&dnsSecondary);
     }
+
 };
 
-    // String APName = "ESP32_Config";
-    // String pwd = "config1234"; // Default AP password
 
 // mqtt-Setup
 struct MQTT_Settings {
@@ -280,45 +240,30 @@ struct LimiterSettings {
     }
 };
 
-struct TempSettings {
+struct TempSettings // BME280 Settings
+{
     Config<float> tempCorrection;
     Config<float> humidityCorrection;
-    Config<int>   seaLevelPressure;
-    Config<int>   readIntervalSec;
-    TempSettings():
-        tempCorrection(ConfigOptions<float>{
-            .key = "TempTCorr",
-            .name = "Temperature Correction",
-            .category = "Temp",
-            .defaultValue = 0.1f,
-            .categoryPretty = "Temperature"
-        }),
-        humidityCorrection(ConfigOptions<float>{
-            .key = "TempHCorr",
-            .name = "Humidity Correction",
-            .category = "Temp",
-            .defaultValue = 0.1f,
-            .categoryPretty = "Temperature"
-        }),
-        seaLevelPressure(ConfigOptions<int>{
-            .key = "TempSLP",
-            .name = "Sea Level Pressure (hPa)",
-            .category = "Temp",
-            .defaultValue = 1013,
-            .categoryPretty = "Temperature"
-        }),
-        readIntervalSec(ConfigOptions<int>{
-            .key = "TempReadS",
-            .name = "Read Interval (s)",
-            .category = "Temp",
-            .defaultValue = 30,
-            .categoryPretty = "Temperature"
-        })
+    Config<int> seaLevelPressure;
+    Config<int> readIntervalSec;
+    Config<float> dewpointRiskWindow; // ΔT (°C) über Taupunkt, ab der Risiko-Alarm auslöst
+
+    TempSettings() : tempCorrection(ConfigOptions<float>{.key = "TCO", .name = "Temperature Correction", .category = "Temp", .defaultValue = 0.1f}),
+                     humidityCorrection(ConfigOptions<float>{.key = "HYO", .name = "Humidity Correction", .category = "Temp", .defaultValue = 0.1f}),
+                     seaLevelPressure(ConfigOptions<int>{.key = "SLP", .name = "Sea Level Pressure", .category = "Temp", .defaultValue = 1013}),
+                     readIntervalSec(ConfigOptions<int>{.key = "ReadTemp", .name = "Read Temp/Humidity every (s)", .category = "Temp", .defaultValue = 30}),
+                     dewpointRiskWindow(ConfigOptions<float>{.key = "DPWin", .name = "Dewpoint Risk Window (°C)", .category = "Temp", .defaultValue = 1.5f})
     {
+        // Constructor - do not register here due to static initialization order
+    }
+
+    void init() {
+        // Register settings with ConfigManager after ConfigManager is ready
         cfg.addSetting(&tempCorrection);
         cfg.addSetting(&humidityCorrection);
         cfg.addSetting(&seaLevelPressure);
         cfg.addSetting(&readIntervalSec);
+        cfg.addSetting(&dewpointRiskWindow);
     }
 };
 
@@ -505,81 +450,71 @@ struct DisplaySettings {
     }
 };
 
-struct SystemSettings {
+struct SystemSettings
+{
     Config<bool> allowOTA;
     Config<String> otaPassword;
     Config<int> wifiRebootTimeoutMin;
-    Config<bool> unconfigured;
     Config<String> version;
-    SystemSettings():
-        allowOTA(ConfigOptions<bool>{
-            .key = "SysOTA",
-            .name = "Allow OTA Updates",
-            .category = "System",
-            .defaultValue = true,
-            .categoryPretty = "System"
-        }),
-        otaPassword(ConfigOptions<String>{
-            .key = "SysOtaPwd",
-            .name = "OTA Password",
-            .category = "System",
-            .defaultValue = String(""),
-            .isPassword = true,
-            .categoryPretty = "System"
-        }),
-        wifiRebootTimeoutMin(ConfigOptions<int>{
-            .key = "SysRbMin",
-            .name = "Reboot if WiFi lost (min)",
-            .category = "System",
-            .defaultValue = 15,
-            .categoryPretty = "System"
-        }),
-        unconfigured(ConfigOptions<bool>{
-            .key = "SysUnconf",
-            .name = "Unconfigured",
-            .category = "System",
-            .defaultValue = true,
-            .showInWeb = false,
-            .categoryPretty = "System"
-        }),
-        version(ConfigOptions<String>{
-            .key = "SysVer",
-            .name = "Program Version",
-            .category = "System",
-            .defaultValue = String(VERSION),
-            .showInWeb = true,
-            .categoryPretty = "System"
-        })
+    SystemSettings() : allowOTA(ConfigOptions<bool>{.key = "OTAEn", .name = "Allow OTA Updates", .category = "System", .defaultValue = true}),
+                       otaPassword(ConfigOptions<String>{.key = "OTAPass", .name = "OTA Password", .category = "System", .defaultValue = String(OTA_PASSWORD), .showInWeb = true, .isPassword = true}),
+                       wifiRebootTimeoutMin(ConfigOptions<int>{
+                           .key = "WiFiRb",
+                           .name = "Reboot if WiFi lost (min)",
+                           .category = "System",
+                           .defaultValue = 5,
+                           .showInWeb = true}),
+                       version(ConfigOptions<String>{.key = "P_Version", .name = "Program Version", .category = "System", .defaultValue = String(VERSION)})
     {
+        // Constructor - do not register here due to static initialization order
+    }
+
+    void init() {
+        // Register settings with ConfigManager after ConfigManager is ready
         cfg.addSetting(&allowOTA);
         cfg.addSetting(&otaPassword);
         cfg.addSetting(&wifiRebootTimeoutMin);
-        cfg.addSetting(&unconfigured);
         cfg.addSetting(&version);
     }
 };
 
-struct ButtonSettings {
+struct ButtonSettings
+{
     Config<int> apModePin;
     Config<int> resetDefaultsPin;
-    ButtonSettings():
-        apModePin(ConfigOptions<int>{
-            .key = "BtnAP",
-            .name = "AP Mode Button GPIO",
-            .category = "Buttons",
-            .defaultValue = 13,
-            .categoryPretty = "Buttons"
-        }),
-        resetDefaultsPin(ConfigOptions<int>{
-            .key = "BtnRst",
-            .name = "Reset Defaults Button GPIO",
-            .category = "Buttons",
-            .defaultValue = 15,
-            .categoryPretty = "Buttons"
-        })
+    ButtonSettings() : apModePin(ConfigOptions<int>{.key = "BtnAP", .name = "AP Mode Button GPIO", .category = "Buttons", .defaultValue = 13}),
+                       resetDefaultsPin(ConfigOptions<int>{.key = "BtnRst", .name = "Reset Defaults Button GPIO", .category = "Buttons", .defaultValue = 15})
     {
+        // Constructor - do not register here due to static initialization order
+    }
+
+    void init() {
+        // Register settings with ConfigManager after ConfigManager is ready
         cfg.addSetting(&apModePin);
         cfg.addSetting(&resetDefaultsPin);
+    }
+};
+
+struct NTPSettings
+{
+    Config<int> frequencySec; // Sync frequency (seconds)
+    Config<String> server1;   // Primary NTP server
+    Config<String> server2;   // Secondary NTP server
+    Config<String> tz;        // POSIX/TZ string for local time
+    NTPSettings() : frequencySec(ConfigOptions<int>{.key = "NTPFrq", .name = "NTP Sync Interval (s)", .category = "NTP", .defaultValue = 3600, .showInWeb = true}),
+                    server1(ConfigOptions<String>{.key = "NTP1", .name = "NTP Server 1", .category = "NTP", .defaultValue = String("192.168.2.250"), .showInWeb = true}),
+                    server2(ConfigOptions<String>{.key = "NTP2", .name = "NTP Server 2", .category = "NTP", .defaultValue = String("pool.ntp.org"), .showInWeb = true}),
+                    tz(ConfigOptions<String>{.key = "NTPTZ", .name = "Time Zone (POSIX)", .category = "NTP", .defaultValue = String("CET-1CEST,M3.5.0/02,M10.5.0/03"), .showInWeb = true})
+    {
+        // Constructor - do not register here due to static initialization order
+    }
+
+    void init() {
+        // Register settings with ConfigManager after ConfigManager is ready
+        cfg.addSetting(&frequencySec);
+        cfg.addSetting(&server1);
+        cfg.addSetting(&server2);
+        cfg.addSetting(&tz);
     }
 };
 
