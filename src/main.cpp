@@ -145,9 +145,8 @@ LoggerSetupSerial(); // Initialize the serial logger
   sl->Printf("System setup start...").Debug();
 
   PinSetup();
-  sl->Printf("Check for reset/AP button...").Debug();
+  sl->Printf("Check for reset button...").Debug();
   SetupCheckForResetButton();
-  SetupCheckForAPModeButton();
 
   sl->Printf("Load configuration...").Debug();
   cfg.loadAll();
@@ -167,6 +166,9 @@ LoggerSetupSerial(); // Initialize the serial logger
       ConfigManager.saveAll();
       delay(100); // Small delay
   }
+
+  sl->Printf("[SETUP] Check for AP mode button...").Debug();
+  SetupCheckForAPModeButton();
 
   mqttSettings.updateTopics(); // Consider restarting after changing MQTT base topic to avoid heap fragmentation
 
@@ -197,7 +199,16 @@ LoggerSetupSerial(); // Initialize the serial logger
   sll->Printf("Starting BME280!").Debug();
   SetupStartTemperatureMeasuring(); //also starts the temperature ticker, its allways active
 
-  //----------------------------------------
+  // Configure Smart WiFi Roaming with default values (can be customized in setup if needed)
+  cfg.enableSmartRoaming(true);            // Re-enabled now that WiFi stack is fixed
+  cfg.setRoamingThreshold(-75);            // Trigger roaming at -75 dBm
+  cfg.setRoamingCooldown(30);              // Wait 30 seconds between attempts (reduced from 120)
+  cfg.setRoamingImprovement(10);           // Require 10 dBm improvement
+
+  //----------------------------------------------------------------------------------------------------------------------------------
+  // Configure WiFi AP MAC filtering/priority (example - customize as needed)
+  // cfg.setWifiAPMacFilter("60:B5:8D:4C:E1:D5");     // Only connect to this specific AP
+  cfg.setWifiAPMacPriority("60:B5:8D:4C:E1:D5");   // Prefer this AP, fallback to others
 
   bool isStartedAsAP = SetupStartWebServer();
 
@@ -740,7 +751,6 @@ void SetupCheckForResetButton()
   sll->Internal("Reset all settings!");
     cfg.clearAllFromPrefs(); // Clear all settings from EEPROM
     delay(10000);            // Wait for 10 seconds to avoid multiple resets
-  systemSettings.unconfigured.set(true); // Set the unconfigured flag to true
     cfg.saveAll();           // Save the default settings to EEPROM
     delay(10000);            // Wait for 10 seconds to avoid multiple resets
     ESP.restart();           // Restart the ESP32
@@ -756,11 +766,9 @@ void SetupCheckForAPModeButton()
   if (wifiSettings.wifiSsid.get().length() == 0 )
   {
   sl->Printf("[WARNING] SETUP: WiFi SSID is empty [%s] (fresh/unconfigured)", wifiSettings.wifiSsid.get().c_str()).Error();
-    cfg.initializeEncryption();
     cfg.startAccessPoint(APName, pwd);
     delay(250);
     logNetworkIpInfo("AP started (no SSID)");
-  systemSettings.unconfigured.set(false); // Set the unconfigured flag to false after starting the access point
     cfg.saveAll(); // Save the settings to EEPROM
   }
 
@@ -771,7 +779,6 @@ void SetupCheckForAPModeButton()
   sl->Internal("AP mode button pressed -> starting AP mode...");
   sll->Internal("AP mode button!");
   sll->Internal("-> starting AP mode...");
-    cfg.initializeEncryption();
     cfg.startAccessPoint(APName, pwd);
     delay(250);
     logNetworkIpInfo("AP started (button)");
@@ -831,7 +838,6 @@ bool SetupStartWebServer()
     sl->Printf("No SSID! --> Start AP!").Debug();
     sll->Printf("No SSID!").Debug();
     sll->Printf("Start AP!").Debug();
-    cfg.initializeEncryption();
     cfg.startAccessPoint(APMODE_SSID, APMODE_PASSWORD);
     delay(1000);
     logNetworkIpInfo("SetupStartWebServer");

@@ -10,6 +10,17 @@
 
 #include "ConfigManager.h"
 
+// Make secrets available for defaults used in settings constructors.
+// This header is guarded with pragma once.
+#if __has_include("secret/wifiSecret.h")
+#include "secret/wifiSecret.h"
+#endif
+
+// Provide safe fallback if OTA_PASSWORD is not defined by secrets.
+#ifndef OTA_PASSWORD
+#define OTA_PASSWORD "otasecret"
+#endif
+
 #define APP_NAME "Solarinverter - Limiter" // name of the application
 #define VERSION "2.5.0"           // version of the software (major.minor.patch)
 #define VERSION_DATE "11.01.2026" // date of the version
@@ -27,7 +38,7 @@
 #define WDT_TIMEOUT 60
 
 
-extern ConfigManagerClass cfg;// store it globaly before using it in the settings
+extern ConfigManagerClass &cfg; // alias to global ConfigManager instance (defined by library)
 
 //--------------------------------------------------------------------------------------------------------------
 struct WiFi_Settings // wifiSettings
@@ -542,6 +553,7 @@ extern ButtonSettings buttonSettings;
 extern RS485_Settings rs485settings;
 extern SigmaLogLevel logLevel;
 extern WiFi_Settings wifiSettings;
+extern NTPSettings ntpSettings;
 // extern LDR_Settings ldrSettings;
 
 #endif // SETTINGS_H
