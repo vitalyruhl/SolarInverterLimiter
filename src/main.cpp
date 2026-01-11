@@ -87,6 +87,12 @@ static bool heaterLatchedState = false; // hysteresis latch for heater
 
 static inline ConfigManagerRuntime &CRM() { return ConfigManager.getRuntime(); } // Shorthand helper for RuntimeManager access
 
+static const char GLOBAL_THEME_OVERRIDE[] PROGMEM = R"CSS(
+.rw[data-group="sensors"][data-key="temp"] .rw{ color:rgba(16, 23, 198, 1);font-weight:900;font-size: 1.2rem;}
+.rw[data-group="sensors"][data-key="temp"] .val{ color:rgba(16, 23, 198, 1);font-weight:900;font-size: 1.2rem;}
+.rw[data-group="sensors"][data-key="temp"] .un{ color:rgba(16, 23, 198, 1);font-weight:900;font-size: 1.2rem;}
+)CSS";
+
 #pragma endregion configuration variables
 
 //----------------------------------------
@@ -122,7 +128,7 @@ void setup()
     cfg.setAppName(APP_NAME); // Set an application name, used for SSID in AP mode and as a prefix for the hostname
     cfg.setVersion(VERSION); // Set the application version for web UI display
     // Optional demo: global CSS override
-    // cfg.setCustomCss(GLOBAL_THEME_OVERRIDE, sizeof(GLOBAL_THEME_OVERRIDE) - 1); // Register global CSS override
+    cfg.setCustomCss(GLOBAL_THEME_OVERRIDE, sizeof(GLOBAL_THEME_OVERRIDE) - 1); // Register global CSS override
     // cfg.setSettingsPassword(SETTINGS_PASSWORD); // Set the settings password from wifiSecret.h
     cfg.enableBuiltinSystemProvider(); // enable the builtin system provider (uptime, freeHeap, rssi etc.)
   //----------------------------------------------------------------------------------------------------------------------------------
