@@ -1,6 +1,5 @@
 #include <Arduino.h>
-#include <PubSubClient.h> // for MQTT
-#include <esp_task_wdt.h> // for watchdog timer
+#include <ArduinoJson.h>
 #include <stdarg.h>       // for variadic functions (printf-style)
 #include <Ticker.h>
 #include "Wire.h"
@@ -14,6 +13,7 @@
 #include "logging/logging.h"
 #include "RS485Module/RS485Module.h"
 #include "helpers/helpers.h"
+#include "helpers/mqtt_manager.h"
 #include "Smoother/Smoother.h"
 #include "helpers/relays.h"
 
@@ -31,11 +31,7 @@
 
 // predeclare the functions (prototypes)
 void SetupStartDisplay();
-void reconnectMQTT();
-void cb_MQTT(char *topic, byte *message, unsigned int length);
-void publishToMQTT();
 void cb_PublishToMQTT();
-void cb_MQTTListener();
 void cb_RS485Listener();
 void testRS232();
 void readBme280();
@@ -68,14 +64,11 @@ Helpers helpers;
 
 Ticker publishMqttTicker;
 Ticker publishMqttSettingsTicker;
-Ticker ListenMQTTTicker;
 Ticker RS485Ticker;
 Ticker temperatureTicker;
 Ticker displayTicker;
 Ticker NtpSyncTicker;
-
-WiFiClient espClient;
-PubSubClient client(espClient);
+MQTTManager mqttManager;
 
 Smoother* powerSmoother = nullptr; //there is a memory allocation in setup, better use a pointer here
 
@@ -216,8 +209,22 @@ LoggerSetupSerial(); // Initialize the serial logger
   // -- Setup MQTT connection --
   sl->Printf("[SETUP] Starting MQTT! [%s]", mqttSettings.mqtt_server.get().c_str()).Debug();
   sll->Printf("Starting MQTT! [%s]", mqttSettings.mqtt_server.get().c_str()).Debug();
-  client.setServer(mqttSettings.mqtt_server.get().c_str(), static_cast<uint16_t>(mqttSettings.mqtt_port.get())); // Set the MQTT server and port
-  client.setCallback(cb_MQTT);
+  mqttManager.setServer(mqttSettings.mqtt_server.get().c_str(), static_cast<uint16_t>(mqttSettings.mqtt_port.get()));
+  mqttManager.setCredentials(mqttSettings.mqtt_username.get().c_str(), mqttSettings.mqtt_password.get().c_str());
+  mqttManager.setClientId(mqttSettings.publishTopicBase.get().c_str());
+  mqttManager.configurePowerUsage(mqttSettings.mqtt_sensor_powerusage_topic.get(),
+                                 mqttSettings.mqtt_sensor_powerusage_json_keypath.get(),
+                                 &currentGridImportW);
+  mqttManager.onConnected([]() {
+    if (!mqttSettings.enableMQTT.get())
+      return;
+    mqttManager.subscribe(mqttSettings.mqtt_sensor_powerusage_topic.get().c_str());
+    cb_PublishToMQTT();
+  });
+  mqttManager.onDisconnected([]() {
+    sll->Debug("MQTT disconnected");
+  });
+  mqttManager.begin();
 
   //set rs232 ticker, its always active
   sl->Printf("[SETUP] Setup RS485 ticker...").Debug();
@@ -234,11 +241,32 @@ LoggerSetupSerial(); // Initialize the serial logger
 
 void loop()
 {
+  static unsigned long lastMqttLoopMs = 0;
+  static unsigned long lastMqttPublishMs = 0;
+
   CheckButtons();
 
   // Let ConfigManager handle WiFi state machine and callbacks.
   cfg.updateLoopTiming();
   cfg.getWiFiManager().update();
+
+  // Keep MQTT work out of Ticker callbacks (esp_timer task) to avoid watchdog resets.
+  if (mqttSettings.enableMQTT.get() && cfg.getWiFiManager().isConnected() && !cfg.getWiFiManager().isInAPMode())
+  {
+    const unsigned long now = millis();
+    if (now - lastMqttLoopMs >= 25)
+    {
+      mqttManager.loop();
+      lastMqttLoopMs = now;
+    }
+
+    const unsigned long publishIntervalMs = static_cast<unsigned long>(mqttSettings.mqttPublishPeriodSec.get()) * 1000UL;
+    if (publishIntervalMs > 0 && (now - lastMqttPublishMs) >= publishIntervalMs)
+    {
+      cb_PublishToMQTT();
+      lastMqttPublishMs = now;
+    }
+  }
 
   // Services managed by ConfigManager.
   cfg.handleClient();
@@ -249,22 +277,13 @@ void loop()
   // Status LED: simple feedback
   if (cfg.getWiFiManager().isInAPMode()) {
     digitalWrite(LED_BUILTIN, HIGH);
-  } else if (cfg.getWiFiManager().isConnected() && client.connected()) {
+  } else if (cfg.getWiFiManager().isConnected() && mqttManager.isConnected()) {
     digitalWrite(LED_BUILTIN, LOW);
   } else {
     digitalWrite(LED_BUILTIN, HIGH);
   }
 
   WriteToDisplay();
-
-  if (cfg.getWiFiManager().isConnected() && !cfg.getWiFiManager().isInAPMode())
-  {
-    if (!client.connected() && mqttSettings.enableMQTT.get())
-    {
-      sll->Debug("MQTT Not Connected! -> reconnecting...");
-      reconnectMQTT();
-    }
-  }
 
   CheckVentilator(temperature);
   EvaluateHeater(temperature);
@@ -273,7 +292,6 @@ void loop()
 
 void setupGUI()
 {
-
   // region sensor fields BME280
     CRM().addRuntimeProvider("sensors", [](JsonObject &data)
       {
@@ -282,7 +300,7 @@ void setupGUI()
           data["hum"] = roundf(Humidity * 10.0f) / 10.0f;        // 1 decimal place
           data["dew"] = roundf(Dewpoint * 10.0f) / 10.0f;        // 1 decimal place
           data["pressure"] = roundf(Pressure * 10.0f) / 10.0f;   // 1 decimal place
-    }, 1);
+    }, 2);
 
       
       // Define sensor display fields using addRuntimeMeta
@@ -341,7 +359,7 @@ void setupGUI()
           data["gridIn"] = currentGridImportW;
           data["invSet"] = inverterSetValue;
           data["enabled"] = limiterSettings.enableController.get();
-      }, 2);
+      }, 1);
 
       // Define sensor display fields using addRuntimeMeta
       RuntimeFieldMeta gridInMeta;
@@ -454,160 +472,24 @@ void setupGUI()
 //----------------------------------------
 // MQTT FUNCTIONS
 //----------------------------------------
-void reconnectMQTT()
-{
-  IPAddress mqttIP;
-  if (mqttIP.fromString(mqttSettings.mqtt_server.get()))
-  {
-    client.setServer(mqttIP, static_cast<uint16_t>(mqttSettings.mqtt_port.get()));
-  }
-  else
-  {
-    sl->Printf("Invalid MQTT IP: %s", mqttSettings.mqtt_server.get().c_str()).Error();
-  }
 
-  if (WiFi.status() != WL_CONNECTED || WiFi.getMode() == WIFI_AP)
+void cb_PublishToMQTT()
+{
+  if (!mqttManager.isConnected())
   {
-    // sl->Debug("WiFi not connected or in AP mode! Skipping mqttSettings.");
     return;
   }
 
-  int retry = 0;
-  int maxRetry = 10; // max retry count
-
-  while (!client.connected() && retry < maxRetry) // Retry 5 times before restarting
-  {
-    // sl->Printf("MQTT reconnect attempt %d...", retry + 1).Log(level);
-
-    sl->Printf("Attempting MQTT connection to %s:%d...",
-               mqttSettings.mqtt_server.get().c_str(),
-               mqttSettings.mqtt_port.get())
-        .Debug();
-
-    helpers.blinkBuidInLED(5, 300);
-    retry++;
-
-    // print the mqtt settings
-    sl->Printf("Connecting to MQTT broker...").Debug();
-    sl->Printf("MQTT Hostname: %s", mqttSettings.publishTopicBase.get().c_str()).Debug();
-    sl->Printf("MQTT Server: %s", mqttSettings.mqtt_server.get().c_str()).Debug();
-    sl->Printf("MQTT Port: %d", mqttSettings.mqtt_port.get()).Debug();
-    sl->Printf("MQTT User: %s", mqttSettings.mqtt_username.get().c_str()).Debug();
-    // sl->Printf("MQTT Password: %s", mqttSettings.mqtt_password.get().c_str()).Debug();
-    sl->Printf("MQTT Password: ***").Debug();
-    sl->Printf("MQTT Sensor Power Usage Topic: %s", mqttSettings.mqtt_sensor_powerusage_topic.get().c_str()).Debug();
-
-    client.connect(mqttSettings.publishTopicBase.get().c_str(), mqttSettings.mqtt_username.get().c_str(), mqttSettings.mqtt_password.get().c_str()); // Connect to the MQTT broker
-    delay(2000);
-
-    if (client.connected())
-    {
-      sl->Debug("Connected!");
-    }
-    else
-    {
-      sl->Printf("Failed, rc=%d", client.state()).Error();
-    }
-
-    if (client.connected())
-      break; // Exit the loop if connected successfully
-
-    // disconnect from MQTT broker if not connected
-    client.disconnect();
-    delay(500);
-    esp_task_wdt_reset(); // Reset watchdog to prevent reboot
-  }
-
-  if (retry >= maxRetry)
-  {
-    sl->Printf("MQTT reconnect failed after %d attempts. go to next loop...", maxRetry);
-
-    // if we dont get a actual value from the grid, reduce the acktual value step by 1 up to 0
-    if (currentGridImportW > 0)
-    {
-      currentGridImportW = currentGridImportW - 10;
-      // inverterSetValue = powerSmoother.smooth(currentGridImportW);
-      inverterSetValue = powerSmoother->smooth(currentGridImportW);
-    }
-    // currentGridImportW
-    // delay(1000);   // Wait for 1 second before restarting
-    // todo: add logic to restart the ESP32 if no connection is available after 10 minutes
-    // ESP.restart(); // Restart the ESP32
-    return; // exit the function if max retry reached
-  }
-
-  else
-  {
-    sl->Debug("MQTT connected!");
-    cb_PublishToMQTT(); // publish the settings to the MQTT broker, before subscribing to the topics
-    sl->Debug("trying to subscribe to topics...");
-    sll->Debug("subscribe to mqtt...");
-
-    if (client.subscribe(mqttSettings.mqtt_sensor_powerusage_topic.get().c_str()))
-    {
-      sl->Printf("[SUCCESS] Subscribed to topic: [%s]\n", mqttSettings.mqtt_sensor_powerusage_topic.get().c_str());
-    }
-    else
-    {
-      sl->Printf("[ERROR] Subscription to topic [%s] failed!", mqttSettings.mqtt_sensor_powerusage_topic.get().c_str());
-    }
-  }
-}
-
-void publishToMQTT()
-{
-  if (client.connected())
-  {
-    sl->Printf("--> MQTT: Topic[%s] -> [%d]", mqttSettings.mqtt_publish_setvalue_topic.c_str(), inverterSetValue).Debug();
-    client.publish(mqttSettings.mqtt_publish_setvalue_topic.c_str(), String(inverterSetValue).c_str());
-    client.publish(mqttSettings.mqtt_publish_getvalue_topic.c_str(), String(currentGridImportW).c_str());
-    client.publish(mqttSettings.mqtt_publish_Temperature_topic.c_str(), String(temperature).c_str());
-    client.publish(mqttSettings.mqtt_publish_Humidity_topic.c_str(), String(Humidity).c_str());
-    client.publish(mqttSettings.mqtt_publish_Dewpoint_topic.c_str(), String(Dewpoint).c_str());
-  }
-  else
-  {
-    sl->Debug("publishToMQTT: MQTT not connected!");
-  }
-}
-
-void cb_MQTT(char *topic, byte *message, unsigned int length)
-{
-  String messageTemp((char *)message, length); // Convert byte array to String using constructor
-  messageTemp.trim();                          // Remove leading and trailing whitespace
-
-  sl->Printf("<-- MQTT: Topic[%s] <-- [%s]", topic, messageTemp.c_str()).Debug();
-  helpers.blinkBuidInLED(1, 100); // blink the LED once to indicate that the loop is running
-  if (strcmp(topic, mqttSettings.mqtt_sensor_powerusage_topic.get().c_str()) == 0)
-  {
-    // check if it is a number, if not set it to 0
-    if (messageTemp.equalsIgnoreCase("null") ||
-        messageTemp.equalsIgnoreCase("undefined") ||
-        messageTemp.equalsIgnoreCase("NaN") ||
-        messageTemp.equalsIgnoreCase("Infinity") ||
-        messageTemp.equalsIgnoreCase("-Infinity"))
-    {
-      sl->Printf("Received invalid value from MQTT: %s", messageTemp.c_str());
-      messageTemp = "0";
-    }
-
-    currentGridImportW = messageTemp.toInt();
-  }
+  mqttManager.publish(mqttSettings.mqtt_publish_setvalue_topic.c_str(), String(inverterSetValue));
+  mqttManager.publish(mqttSettings.mqtt_publish_getvalue_topic.c_str(), String(currentGridImportW));
+  mqttManager.publish(mqttSettings.mqtt_publish_Temperature_topic.c_str(), String(temperature));
+  mqttManager.publish(mqttSettings.mqtt_publish_Humidity_topic.c_str(), String(Humidity));
+  mqttManager.publish(mqttSettings.mqtt_publish_Dewpoint_topic.c_str(), String(Dewpoint));
 }
 
 //----------------------------------------
 // HELPER FUNCTIONS
 //----------------------------------------
-
-void cb_PublishToMQTT()
-{
-  publishToMQTT(); // send to Mqtt
-}
-
-void cb_MQTTListener()
-{
-  client.loop(); // process incoming MQTT messages
-}
 
 void cb_RS485Listener()
 {
@@ -775,14 +657,6 @@ void onWiFiConnected()
 
   if (!tickerActive)
   {
-    if (mqttSettings.enableMQTT.get())
-    {
-      publishMqttTicker.detach();
-      ListenMQTTTicker.detach();
-      publishMqttTicker.attach(mqttSettings.mqttPublishPeriodSec.get(), cb_PublishToMQTT);
-      ListenMQTTTicker.attach(mqttSettings.mqttListenPeriodSec.get(), cb_MQTTListener);
-    }
-
     if (systemSettings.allowOTA.get() && !cfg.getOTAManager().isInitialized())
     {
       cfg.setupOTA("Ota-esp32-device", systemSettings.otaPassword.get().c_str());
@@ -815,8 +689,6 @@ void onWiFiDisconnected()
 
   if (tickerActive)
   {
-    publishMqttTicker.detach();
-    ListenMQTTTicker.detach();
     NtpSyncTicker.detach();
     tickerActive = false;
   }

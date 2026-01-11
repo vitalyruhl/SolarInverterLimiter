@@ -22,7 +22,7 @@
 #endif
 
 #define APP_NAME "Solarinverter - Limiter" // name of the application
-#define VERSION "2.5.0"           // version of the software (major.minor.patch)
+#define VERSION "3.0.0"           // version of the software (major.minor.patch)
 #define VERSION_DATE "11.01.2026" // date of the version
 
 //--------------------------------------------------------------------------------------------------------------
@@ -86,6 +86,7 @@ struct MQTT_Settings {
     Config<String> mqtt_username;
     Config<String> mqtt_password;
     Config<String> mqtt_sensor_powerusage_topic;
+    Config<String> mqtt_sensor_powerusage_json_keypath;
     Config<String> publishTopicBase;
     Config<float> mqttPublishPeriodSec;
     Config<float> mqttListenPeriodSec;
@@ -149,6 +150,13 @@ struct MQTT_Settings {
             .defaultValue = String("emon/emonpi/power1"),
             .categoryPretty = "MQTT"
         }),
+        mqtt_sensor_powerusage_json_keypath(ConfigOptions<String>{
+            .key = "MQTTPwrKey",
+            .name = "Power Usage JSON Key",
+            .category = "MQTT",
+            .defaultValue = String("none"),
+            .categoryPretty = "MQTT"
+        }),
         publishTopicBase(ConfigOptions<String>{
             .key = "MQTTBaseTopic",
             .name = "Base Topic",
@@ -169,6 +177,7 @@ struct MQTT_Settings {
         cfg.addSetting(&mqtt_username);
         cfg.addSetting(&mqtt_password);
         cfg.addSetting(&mqtt_sensor_powerusage_topic);
+        cfg.addSetting(&mqtt_sensor_powerusage_json_keypath);
         cfg.addSetting(&publishTopicBase);
         cfg.addSetting(&mqttPublishPeriodSec);
         cfg.addSetting(&mqttListenPeriodSec);

@@ -195,6 +195,51 @@ mqttManager.begin();  // No setClientId() called
 
 ## Integration Examples
 
+## SolarInverterLimiter Example (Power Usage)
+
+This project uses `MQTTManager` to read the current grid import/export power from an MQTT topic. Depending on your power meter / Home Assistant / Tasmota setup, the payload may be either:
+
+- Plain number (e.g. `734`)
+- JSON object (e.g. `{"Time":"...","E320":{"Power_in":734}}`)
+
+### Settings
+
+Relevant settings in the Web UI:
+
+- **Power Usage Topic**: Example `tele/powerMeter/powerMeter/SENSOR`
+- **Power Usage JSON Key**:
+    - `none` (default): accept only plain numeric payloads; JSON payloads are ignored
+    - dot-path (e.g. `E320.Power_in`): parse JSON and read the value at this path
+
+### Wiring in `setup()`
+
+```cpp
+// Configure connection from ConfigManager settings
+mqttManager.setServer(mqttSettings.mqtt_server.get().c_str(), mqttSettings.mqtt_port.get());
+mqttManager.setCredentials(mqttSettings.mqtt_username.get().c_str(), mqttSettings.mqtt_password.get().c_str());
+mqttManager.setClientId(mqttSettings.publishTopicBase.get().c_str());
+
+// Configure power usage parsing
+mqttManager.configurePowerUsage(
+        mqttSettings.mqtt_sensor_powerusage_topic.get(),
+        mqttSettings.mqtt_sensor_powerusage_json_keypath.get(),
+        &currentGridImportW
+);
+
+// Subscribe when connected
+mqttManager.onConnected([]() {
+        if (!mqttSettings.enableMQTT.get()) return;
+        mqttManager.subscribe(mqttSettings.mqtt_sensor_powerusage_topic.get().c_str());
+});
+
+mqttManager.begin();
+```
+
+Notes:
+
+- If the configured JSON key path does not exist in the payload, the power value is set to `0`.
+- If the payload is malformed, it is ignored and the power value is set to `0`.
+
 ### With Configuration Manager
 
 ```cpp
