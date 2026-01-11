@@ -10,8 +10,20 @@
 
 #include "ConfigManager.h"
 
-#define VERSION "2.4.2"           // version of the software (major.minor.patch)
-#define VERSION_DATE "29.09.2025" // date of the version
+// Make secrets available for defaults used in settings constructors.
+// This header is guarded with pragma once.
+#if __has_include("secret/wifiSecret.h")
+#include "secret/wifiSecret.h"
+#endif
+
+// Provide safe fallback if OTA_PASSWORD is not defined by secrets.
+#ifndef OTA_PASSWORD
+#define OTA_PASSWORD "otasecret"
+#endif
+
+#define APP_NAME "Solarinverter - Limiter" // name of the application
+#define VERSION "3.0.0"           // version of the software (major.minor.patch)
+#define VERSION_DATE "11.01.2026" // date of the version
 
 //--------------------------------------------------------------------------------------------------------------
 // set the I2C address for the BME280 sensor for temperature and humidity
@@ -26,79 +38,46 @@
 #define WDT_TIMEOUT 60
 
 
-extern ConfigManagerClass cfg;// store it globaly before using it in the settings
+extern ConfigManagerClass &cfg; // alias to global ConfigManager instance (defined by library)
 
 //--------------------------------------------------------------------------------------------------------------
-
-struct WiFi_Settings // wifiSettings (migrated to new ConfigOptions API)
+struct WiFi_Settings // wifiSettings
 {
     Config<String> wifiSsid;
     Config<String> wifiPassword;
-    Config<bool>   useDhcp;
+    Config<bool> useDhcp;
     Config<String> staticIp;
     Config<String> gateway;
     Config<String> subnet;
+    Config<String> dnsPrimary;
+    Config<String> dnsSecondary;
 
-    WiFi_Settings() :
-        wifiSsid(ConfigOptions<String>{
-            .keyName = "ssid",
-            .category = "wifi",
-            .defaultValue = String("MyWiFi"),
-            .prettyName = "WiFi SSID",
-            .prettyCat = "Network Settings"
-        }),
-        wifiPassword(ConfigOptions<String>{
-            .keyName = "password",
-            .category = "wifi",
-            .defaultValue = String("secretpass"),
-            .prettyName = "WiFi Password",
-            .prettyCat = "Network Settings",
-            .showInWeb = true,
-            .isPassword = true
-        }),
-        useDhcp(ConfigOptions<bool>{
-            .keyName = "dhcp",
-            .category = "wifi",
-            .defaultValue = false,
-            .prettyName = "Use DHCP",
-            .prettyCat = "Network Settings"
-        }),
-        staticIp(ConfigOptions<String>{
-            .keyName = "sIP",
-            .category = "wifi",
-            .defaultValue = String("192.168.2.126"),
-            .prettyName = "Static IP",
-            .prettyCat = "Network Settings",
-            .showIf = [this](){ return !this->useDhcp.get(); }
-        }),
-        gateway(ConfigOptions<String>{
-            .keyName = "GW",
-            .category = "wifi",
-            .defaultValue = String("192.168.2.250"),
-            .prettyName = "Gateway",
-            .prettyCat = "Network Settings",
-            .showIf = [this](){ return !this->useDhcp.get(); }
-        }),
-        subnet(ConfigOptions<String>{
-            .keyName = "subnet",
-            .category = "wifi",
-            .defaultValue = String("255.255.255.0"),
-            .prettyName = "Subnet-Mask",
-            .prettyCat = "Network Settings",
-            .showIf = [this](){ return !this->useDhcp.get(); }
-        })
+    WiFi_Settings() : wifiSsid(ConfigOptions<String>{.key = "WiFiSSID", .name = "WiFi SSID", .category = "WiFi", .defaultValue = "", .showInWeb = true, .sortOrder = 1}),
+                      wifiPassword(ConfigOptions<String>{.key = "WiFiPassword", .name = "WiFi Password", .category = "WiFi", .defaultValue = "secretpass", .showInWeb = true, .isPassword = true, .sortOrder = 2}),
+                      useDhcp(ConfigOptions<bool>{.key = "WiFiUseDHCP", .name = "Use DHCP", .category = "WiFi", .defaultValue = true, .showInWeb = true, .sortOrder = 3}),
+                      staticIp(ConfigOptions<String>{.key = "WiFiStaticIP", .name = "Static IP", .category = "WiFi", .defaultValue = "192.168.2.131", .sortOrder = 4, .showIf = [this](){ return !useDhcp.get(); }}),
+                      gateway(ConfigOptions<String>{.key = "WiFiGateway", .name = "Gateway", .category = "WiFi", .defaultValue = "192.168.2.250", .sortOrder = 5, .showIf = [this](){ return !useDhcp.get(); }}),
+                      subnet(ConfigOptions<String>{.key = "WiFiSubnet", .name = "Subnet Mask", .category = "WiFi", .defaultValue = "255.255.255.0", .sortOrder = 6, .showIf = [this](){ return !useDhcp.get(); }}),
+                      dnsPrimary(ConfigOptions<String>{.key = "WiFiDNS1", .name = "Primary DNS", .category = "WiFi", .defaultValue = "192.168.2.250", .sortOrder = 7, .showIf = [this](){ return !useDhcp.get(); }}),
+                      dnsSecondary(ConfigOptions<String>{.key = "WiFiDNS2", .name = "Secondary DNS", .category = "WiFi", .defaultValue = "8.8.8.8", .sortOrder = 8, .showIf = [this](){ return !useDhcp.get(); }})
     {
+        // Constructor - do not register here due to static initialization order
+    }
+
+    void init() {
+        // Register settings with ConfigManager after ConfigManager is ready
         cfg.addSetting(&wifiSsid);
         cfg.addSetting(&wifiPassword);
         cfg.addSetting(&useDhcp);
         cfg.addSetting(&staticIp);
         cfg.addSetting(&gateway);
         cfg.addSetting(&subnet);
+        cfg.addSetting(&dnsPrimary);
+        cfg.addSetting(&dnsSecondary);
     }
+
 };
 
-    // String APName = "ESP32_Config";
-    // String pwd = "config1234"; // Default AP password
 
 // mqtt-Setup
 struct MQTT_Settings {
@@ -107,9 +86,10 @@ struct MQTT_Settings {
     Config<String> mqtt_username;
     Config<String> mqtt_password;
     Config<String> mqtt_sensor_powerusage_topic;
-    Config<String> Publish_Topic;
-    Config<float> MQTTPublischPeriod;
-    Config<float> MQTTListenPeriod;
+    Config<String> mqtt_sensor_powerusage_json_keypath;
+    Config<String> publishTopicBase;
+    Config<float> mqttPublishPeriodSec;
+    Config<float> mqttListenPeriodSec;
     Config<bool>  enableMQTT; // moved from LimiterSettings
 
     // dynamic topics (derived)
@@ -120,64 +100,76 @@ struct MQTT_Settings {
     String mqtt_publish_Dewpoint_topic;
 
     MQTT_Settings() :
-
-        MQTTPublischPeriod(ConfigOptions<float>{
-            .keyName = "MQTTP", .category = "MQTT", .defaultValue = 5.0f, .prettyName = "MQTT Publishing Period", .prettyCat = "MQTT-Section"
+        mqttPublishPeriodSec(ConfigOptions<float>{
+            .key = "MQTTPubPer",
+            .name = "Publish Period (s)",
+            .category = "MQTT",
+            .defaultValue = 5.0f,
+            .categoryPretty = "MQTT"
         }),
-        MQTTListenPeriod(ConfigOptions<float>{
-            .keyName = "MQTTL", .category = "MQTT", .defaultValue = 0.5f, .prettyName = "MQTT Listening Period", .prettyCat = "MQTT-Section"
+        mqttListenPeriodSec(ConfigOptions<float>{
+            .key = "MQTTSubPer",
+            .name = "Listen Period (s)",
+            .category = "MQTT",
+            .defaultValue = 0.5f,
+            .categoryPretty = "MQTT"
         }),
-
         mqtt_port(ConfigOptions<int>{
-            .keyName = "Port",
+            .key = "MQTTPort",
+            .name = "Port",
             .category = "MQTT",
             .defaultValue = 1883,
-            .prettyName = "Port",
-            .prettyCat = "MQTT-Section"
+            .categoryPretty = "MQTT"
         }),
         mqtt_server(ConfigOptions<String>{
-            .keyName = "Server",
+            .key = "MQTTHost",
+            .name = "Server",
             .category = "MQTT",
             .defaultValue = String("192.168.2.3"),
-            .prettyName = "Server-IP",
-            .prettyCat = "MQTT-Section"
+            .categoryPretty = "MQTT"
         }),
         mqtt_username(ConfigOptions<String>{
-            .keyName = "User",
+            .key = "MQTTUser",
+            .name = "Username",
             .category = "MQTT",
-            .defaultValue = String("housebattery"),
-            .prettyName = "User",
-            .prettyCat = "MQTT-Section"
+            .defaultValue = String(""),
+            .categoryPretty = "MQTT"
         }),
         mqtt_password(ConfigOptions<String>{
-            .keyName = "Pass",
+            .key = "MQTTPass",
+            .name = "Password",
             .category = "MQTT",
-            .defaultValue = String("mqttsecret"),
-            .prettyName = "Password",
-            .prettyCat = "MQTT-Section",
-            .showInWeb = true,
-            .isPassword = true
+            .defaultValue = String(""),
+            .isPassword = true,
+            .categoryPretty = "MQTT"
         }),
         mqtt_sensor_powerusage_topic(ConfigOptions<String>{
-            .keyName = "PUT",
+            .key = "MQTTPwrTopic",
+            .name = "Power Usage Topic",
             .category = "MQTT",
             .defaultValue = String("emon/emonpi/power1"),
-            .prettyName = "Powerusage Topic",
-            .prettyCat = "MQTT-Section"
+            .categoryPretty = "MQTT"
         }),
-        Publish_Topic(ConfigOptions<String>{
-            .keyName = "MQTTT",
+        mqtt_sensor_powerusage_json_keypath(ConfigOptions<String>{
+            .key = "MQTTPwrKey",
+            .name = "Power Usage JSON Key",
             .category = "MQTT",
-            .defaultValue = String("SolarLimiter"),
-            .prettyName = "Publish-Topic",
-            .prettyCat = "MQTT-Section"
+            .defaultValue = String("none"),
+            .categoryPretty = "MQTT"
+        }),
+        publishTopicBase(ConfigOptions<String>{
+            .key = "MQTTBaseTopic",
+            .name = "Base Topic",
+            .category = "MQTT",
+            .defaultValue = String("SolarLimiter2"),
+            .categoryPretty = "MQTT"
         }),
         enableMQTT(ConfigOptions<bool>{
-            .keyName = "enMQTT",
+            .key = "MQTTEnable",
+            .name = "Enable MQTT",
             .category = "MQTT",
             .defaultValue = true,
-            .prettyName = "Enable MQTT Propagation",
-            .prettyCat = "MQTT-Section"
+            .categoryPretty = "MQTT"
         })
     {
         cfg.addSetting(&mqtt_port);
@@ -185,18 +177,19 @@ struct MQTT_Settings {
         cfg.addSetting(&mqtt_username);
         cfg.addSetting(&mqtt_password);
         cfg.addSetting(&mqtt_sensor_powerusage_topic);
-        cfg.addSetting(&Publish_Topic);
-        cfg.addSetting(&MQTTPublischPeriod);
-        cfg.addSetting(&MQTTListenPeriod);
+        cfg.addSetting(&mqtt_sensor_powerusage_json_keypath);
+        cfg.addSetting(&publishTopicBase);
+        cfg.addSetting(&mqttPublishPeriodSec);
+        cfg.addSetting(&mqttListenPeriodSec);
         cfg.addSetting(&enableMQTT);
 
         // capturing lambda requires std::function path -> use setCallback after construction
-        Publish_Topic.setCallback([this](String){ this->updateTopics(); });
+        publishTopicBase.setCallback([this](String){ this->updateTopics(); });
         updateTopics();
     }
 
     void updateTopics() {
-        String hostname = Publish_Topic.get();
+        String hostname = publishTopicBase.get();
         mqtt_publish_setvalue_topic      = hostname + "/SetValue";
         mqtt_publish_getvalue_topic      = hostname + "/GetValue";
         mqtt_publish_Temperature_topic   = hostname + "/Temperature";
@@ -215,12 +208,48 @@ struct LimiterSettings {
     Config<int>  smoothingSize;
     Config<float> RS232PublishPeriod; // keep here for now
     LimiterSettings() :
-        enableController({"enCtrl","Limiter",true,"Enable Limitation"}),
-        maxOutput({"MaxO","Limiter",1100,"Max-Output"}),
-        minOutput({"MinO","Limiter",500,"Min-Output"}),
-        inputCorrectionOffset({"ICO","Limiter",50,"Correction-Offset"}),
-        smoothingSize({"Smooth","Limiter",10,"Smoothing Level"}),
-        RS232PublishPeriod({"RS232P","Limiter",2.0f,"RS232 Publish Period"})
+        enableController(ConfigOptions<bool>{
+            .key = "LimiterEnable",
+            .name = "Limiter Enabled",
+            .category = "Limiter",
+            .defaultValue = true,
+            .categoryPretty = "Limiter"
+        }),
+        maxOutput(ConfigOptions<int>{
+            .key = "LimiterMaxW",
+            .name = "Max Output (W)",
+            .category = "Limiter",
+            .defaultValue = 1100,
+            .categoryPretty = "Limiter"
+        }),
+        minOutput(ConfigOptions<int>{
+            .key = "LimiterMinW",
+            .name = "Min Output (W)",
+            .category = "Limiter",
+            .defaultValue = 500,
+            .categoryPretty = "Limiter"
+        }),
+        inputCorrectionOffset(ConfigOptions<int>{
+            .key = "LimiterCorrW",
+            .name = "Input Correction Offset (W)",
+            .category = "Limiter",
+            .defaultValue = 50,
+            .categoryPretty = "Limiter"
+        }),
+        smoothingSize(ConfigOptions<int>{
+            .key = "LimiterSmooth",
+            .name = "Smoothing Level",
+            .category = "Limiter",
+            .defaultValue = 10,
+            .categoryPretty = "Limiter"
+        }),
+        RS232PublishPeriod(ConfigOptions<float>{
+            .key = "LimiterRS485P",
+            .name = "RS485 Publish Period (s)",
+            .category = "Limiter",
+            .defaultValue = 2.0f,
+            .categoryPretty = "Limiter"
+        })
     {
         cfg.addSetting(&enableController);
         cfg.addSetting(&maxOutput);
@@ -231,21 +260,30 @@ struct LimiterSettings {
     }
 };
 
-struct TempSettings {
+struct TempSettings // BME280 Settings
+{
     Config<float> tempCorrection;
     Config<float> humidityCorrection;
-    Config<int>   seaLevelPressure;
-    Config<int>   readIntervalSec;
-    TempSettings():
-        tempCorrection({"TCO","Temp",0.1f,"Temperature Correction","Temperature Settings"}),
-        humidityCorrection({"HYO","Temp",0.1f,"Humidity Correction","Temperature Settings"}),
-        seaLevelPressure({"SLP","Temp",1013,"Sea Level Pressure","Temperature Settings"}),
-        readIntervalSec({"ReadTemp","Temp",30,"Read Temp/Humidity every (s)","Temperature Settings"})
+    Config<int> seaLevelPressure;
+    Config<int> readIntervalSec;
+    Config<float> dewpointRiskWindow; // ΔT (°C) über Taupunkt, ab der Risiko-Alarm auslöst
+
+    TempSettings() : tempCorrection(ConfigOptions<float>{.key = "TCO", .name = "Temperature Correction", .category = "Temp", .defaultValue = 0.1f}),
+                     humidityCorrection(ConfigOptions<float>{.key = "HYO", .name = "Humidity Correction", .category = "Temp", .defaultValue = 0.1f}),
+                     seaLevelPressure(ConfigOptions<int>{.key = "SLP", .name = "Sea Level Pressure", .category = "Temp", .defaultValue = 1013}),
+                     readIntervalSec(ConfigOptions<int>{.key = "ReadTemp", .name = "Read Temp/Humidity every (s)", .category = "Temp", .defaultValue = 30}),
+                     dewpointRiskWindow(ConfigOptions<float>{.key = "DPWin", .name = "Dewpoint Risk Window (°C)", .category = "Temp", .defaultValue = 1.5f})
     {
+        // Constructor - do not register here due to static initialization order
+    }
+
+    void init() {
+        // Register settings with ConfigManager after ConfigManager is ready
         cfg.addSetting(&tempCorrection);
         cfg.addSetting(&humidityCorrection);
         cfg.addSetting(&seaLevelPressure);
         cfg.addSetting(&readIntervalSec);
+        cfg.addSetting(&dewpointRiskWindow);
     }
 };
 
@@ -256,11 +294,41 @@ struct I2CSettings {
     Config<int> bmeFreq;
     Config<int> displayAddr;
     I2CSettings():
-        sdaPin({"I2CSDA","I2C",21,"I2C SDA Pin","I2C"}),
-        sclPin({"I2CSCL","I2C",22,"I2C SCL Pin","I2C"}),
-        busFreq({"I2CFreq","I2C",400000,"I2C Bus Freq","I2C"}),
-        bmeFreq({"BMEFreq","I2C",400000,"BME280 Bus Freq","I2C"}),
-        displayAddr({"DispAddr","I2C",0x3C,"Display I2C Address","I2C"})
+        sdaPin(ConfigOptions<int>{
+            .key = "I2CSDA",
+            .name = "SDA Pin",
+            .category = "I2C",
+            .defaultValue = 21,
+            .categoryPretty = "I2C"
+        }),
+        sclPin(ConfigOptions<int>{
+            .key = "I2CSCL",
+            .name = "SCL Pin",
+            .category = "I2C",
+            .defaultValue = 22,
+            .categoryPretty = "I2C"
+        }),
+        busFreq(ConfigOptions<int>{
+            .key = "I2CFreq",
+            .name = "Bus Frequency (Hz)",
+            .category = "I2C",
+            .defaultValue = 400000,
+            .categoryPretty = "I2C"
+        }),
+        bmeFreq(ConfigOptions<int>{
+            .key = "I2CBmeHz",
+            .name = "BME280 Frequency (Hz)",
+            .category = "I2C",
+            .defaultValue = 400000,
+            .categoryPretty = "I2C"
+        }),
+        displayAddr(ConfigOptions<int>{
+            .key = "I2CDisp",
+            .name = "Display Address",
+            .category = "I2C",
+            .defaultValue = 0x3C,
+            .categoryPretty = "I2C"
+        })
     {
         cfg.addSetting(&sdaPin);
         cfg.addSetting(&sclPin);
@@ -278,43 +346,41 @@ struct FanSettings {
     Config<bool>  activeLow;
     FanSettings():
         enabled(ConfigOptions<bool>{
-            .keyName = "VentEn",
-            .category = "FAN",
+            .key = "FanEnable",
+            .name = "Enable Fan Control",
+            .category = "Fan",
             .defaultValue = true,
-            .prettyName = "Enable Fan Control",
-            .prettyCat = "FAN Control"
+            .categoryPretty = "Fan"
         }),
         onThreshold(ConfigOptions<float>{
-            .keyName = "VentOn",
-            .category = "FAN",
+            .key = "FanOn",
+            .name = "Fan ON above (°C)",
+            .category = "Fan",
             .defaultValue = 30.0f,
-            .prettyName = "Fan On over",
-            .prettyCat = "FAN Control",
-            .showInWeb = true,
-            .showIf = [this](){return this->enabled.get();}
+            .showIf = [this](){return this->enabled.get();},
+            .categoryPretty = "Fan"
         }),
         offThreshold(ConfigOptions<float>{
-            .keyName = "VentOff",
-            .category = "FAN",
+            .key = "FanOff",
+            .name = "Fan OFF below (°C)",
+            .category = "Fan",
             .defaultValue = 27.0f,
-            .prettyName = "Fan Off under",
-            .prettyCat = "FAN Control",
-            .showInWeb = true,
-            .showIf = [this](){return this->enabled.get();}
+            .showIf = [this](){return this->enabled.get();},
+            .categoryPretty = "Fan"
         }),
         relayPin(ConfigOptions<int>{
-            .keyName = "RlfPin",
-            .category = "FAN",
+            .key = "FanPin",
+            .name = "Relay GPIO",
+            .category = "Fan",
             .defaultValue = 23,
-            .prettyName = "Fan Relay GPIO",
-            .prettyCat = "FAN Control"
+            .categoryPretty = "Fan"
         }),
         activeLow(ConfigOptions<bool>{
-            .keyName = "RlfLow",
-            .category = "FAN",
+            .key = "FanLow",
+            .name = "Active LOW",
+            .category = "Fan",
             .defaultValue = true,
-            .prettyName = "Fan Active LOW",
-            .prettyCat = "FAN Control"
+            .categoryPretty = "Fan"
         })
     {
         cfg.addSetting(&enabled);
@@ -333,47 +399,43 @@ struct HeaterSettings {
     Config<bool>  activeLow;
     HeaterSettings():
         enabled(ConfigOptions<bool>{
-            .keyName = "HeatEn",
+            .key = "HeatEnable",
+            .name = "Enable Heater Control",
             .category = "Heater",
             .defaultValue = false,
-            .prettyName = "Enable Heater Control",
-            .prettyCat = "Heater Control"
+            .categoryPretty = "Heater"
         }),
         onTemp(ConfigOptions<float>{
-            .keyName = "HOn",
+            .key = "HeatOn",
+            .name = "Heater ON below (°C)",
             .category = "Heater",
             .defaultValue = 0.0f,
-            .prettyName = "Heater ON below",
-            .prettyCat = "Heater Control",
-            .showIf = [this](){return this->enabled.get();}
+            .showIf = [this](){return this->enabled.get();},
+            .categoryPretty = "Heater"
         }),
         offTemp(ConfigOptions<float>{
-            .keyName = "HOff",
+            .key = "HeatOff",
+            .name = "Heater OFF above (°C)",
             .category = "Heater",
             .defaultValue = 0.5f,
-            .prettyName = "Heater OFF above",
-            .prettyCat = "Heater Control",
-            .showIf = [this](){return this->enabled.get();}
+            .showIf = [this](){return this->enabled.get();},
+            .categoryPretty = "Heater"
         }),
-        
         relayPin(ConfigOptions<int>{
-            .keyName = "RlhPin",
+            .key = "HeatPin",
+            .name = "Relay GPIO",
             .category = "Heater",
             .defaultValue = 33,
-            .prettyName = "Heater Relay GPIO",
-            .prettyCat = "Heater Control",
-            .showIf = [this](){return this->enabled.get();}
+            .showIf = [this](){return this->enabled.get();},
+            .categoryPretty = "Heater"
         }),
         activeLow(ConfigOptions<bool>{
-            .keyName = "RlhLow",
+            .key = "HeatLow",
+            .name = "Active LOW",
             .category = "Heater",
             .defaultValue = true,
-            .prettyName = "Heater Relay Active LOW",
-            .prettyCat = "Heater Control",
-            .showInWeb = true,
-            .isPassword = false,
-            .cb = nullptr,
-            .showIf = [this](){return this->enabled.get();}
+            .showIf = [this](){return this->enabled.get();},
+            .categoryPretty = "Heater"
         })
     {
         cfg.addSetting(&enabled);
@@ -388,51 +450,91 @@ struct DisplaySettings {
     Config<bool> turnDisplayOff;
     Config<int>  onTimeSec;
     DisplaySettings():
-        turnDisplayOff({"DispSave","Display",true,"Turn Display Off","Display Settings"}),
-        onTimeSec({"DispTime","Display",60,"Display On-Time (s)","Display Settings"})
+        turnDisplayOff(ConfigOptions<bool>{
+            .key = "DispSleep",
+            .name = "Turn Display Off",
+            .category = "Display",
+            .defaultValue = true,
+            .categoryPretty = "Display"
+        }),
+        onTimeSec(ConfigOptions<int>{
+            .key = "DispOnS",
+            .name = "On Time (s)",
+            .category = "Display",
+            .defaultValue = 60,
+            .categoryPretty = "Display"
+        })
     {
         cfg.addSetting(&turnDisplayOff);
         cfg.addSetting(&onTimeSec);
     }
 };
 
-struct SystemSettings {
+struct SystemSettings
+{
     Config<bool> allowOTA;
     Config<String> otaPassword;
     Config<int> wifiRebootTimeoutMin;
-    Config<bool> unconfigured;
     Config<String> version;
-    SystemSettings():
-        allowOTA({"OTAEn","System",true,"Allow OTA Updates"}),
-        otaPassword({"OTAPass","System",String("ota1234"),"OTA Password","System",true,true}),
-        wifiRebootTimeoutMin(ConfigOptions<int>{
-            .keyName = "WiFiRb",
-            .category = "System",
-            .defaultValue = 15,
-            .prettyName = "Reboot if WiFi lost (min)",
-            .prettyCat = "System",
-            .showInWeb = true
-        }),
-        unconfigured({"Unconfigured","System",true,"ESP is unconfigured","System", false,false}),
-        version({"Version","System",String(VERSION),"Program Version"})
+    SystemSettings() : allowOTA(ConfigOptions<bool>{.key = "OTAEn", .name = "Allow OTA Updates", .category = "System", .defaultValue = true}),
+                       otaPassword(ConfigOptions<String>{.key = "OTAPass", .name = "OTA Password", .category = "System", .defaultValue = String(OTA_PASSWORD), .showInWeb = true, .isPassword = true}),
+                       wifiRebootTimeoutMin(ConfigOptions<int>{
+                           .key = "WiFiRb",
+                           .name = "Reboot if WiFi lost (min)",
+                           .category = "System",
+                           .defaultValue = 5,
+                           .showInWeb = true}),
+                       version(ConfigOptions<String>{.key = "P_Version", .name = "Program Version", .category = "System", .defaultValue = String(VERSION)})
     {
+        // Constructor - do not register here due to static initialization order
+    }
+
+    void init() {
+        // Register settings with ConfigManager after ConfigManager is ready
         cfg.addSetting(&allowOTA);
         cfg.addSetting(&otaPassword);
         cfg.addSetting(&wifiRebootTimeoutMin);
-        cfg.addSetting(&unconfigured);
         cfg.addSetting(&version);
     }
 };
 
-struct ButtonSettings {
+struct ButtonSettings
+{
     Config<int> apModePin;
     Config<int> resetDefaultsPin;
-    ButtonSettings():
-        apModePin({"BtnAP","Buttons",13,"AP Mode Button GPIO","Buttons"}),
-        resetDefaultsPin({"BtnRst","Buttons",15,"Reset Defaults Button GPIO","Buttons"})
+    ButtonSettings() : apModePin(ConfigOptions<int>{.key = "BtnAP", .name = "AP Mode Button GPIO", .category = "Buttons", .defaultValue = 13}),
+                       resetDefaultsPin(ConfigOptions<int>{.key = "BtnRst", .name = "Reset Defaults Button GPIO", .category = "Buttons", .defaultValue = 15})
     {
+        // Constructor - do not register here due to static initialization order
+    }
+
+    void init() {
+        // Register settings with ConfigManager after ConfigManager is ready
         cfg.addSetting(&apModePin);
         cfg.addSetting(&resetDefaultsPin);
+    }
+};
+
+struct NTPSettings
+{
+    Config<int> frequencySec; // Sync frequency (seconds)
+    Config<String> server1;   // Primary NTP server
+    Config<String> server2;   // Secondary NTP server
+    Config<String> tz;        // POSIX/TZ string for local time
+    NTPSettings() : frequencySec(ConfigOptions<int>{.key = "NTPFrq", .name = "NTP Sync Interval (s)", .category = "NTP", .defaultValue = 3600, .showInWeb = true}),
+                    server1(ConfigOptions<String>{.key = "NTP1", .name = "NTP Server 1", .category = "NTP", .defaultValue = String("192.168.2.250"), .showInWeb = true}),
+                    server2(ConfigOptions<String>{.key = "NTP2", .name = "NTP Server 2", .category = "NTP", .defaultValue = String("pool.ntp.org"), .showInWeb = true}),
+                    tz(ConfigOptions<String>{.key = "NTPTZ", .name = "Time Zone (POSIX)", .category = "NTP", .defaultValue = String("CET-1CEST,M3.5.0/02,M10.5.0/03"), .showInWeb = true})
+    {
+        // Constructor - do not register here due to static initialization order
+    }
+
+    void init() {
+        // Register settings with ConfigManager after ConfigManager is ready
+        cfg.addSetting(&frequencySec);
+        cfg.addSetting(&server1);
+        cfg.addSetting(&server2);
+        cfg.addSetting(&tz);
     }
 };
 
@@ -460,6 +562,7 @@ extern ButtonSettings buttonSettings;
 extern RS485_Settings rs485settings;
 extern SigmaLogLevel logLevel;
 extern WiFi_Settings wifiSettings;
+extern NTPSettings ntpSettings;
 // extern LDR_Settings ldrSettings;
 
 #endif // SETTINGS_H

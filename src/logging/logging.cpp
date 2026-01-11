@@ -19,6 +19,9 @@ size_t lcdCurrentLine = 0;
 
 void cbMyConfigLogger(const char *msg)
 {
+    // Always print ConfigManager logs to Serial as well.
+    // SigmaLog may filter Debug-level logs depending on configuration.
+    Serial.println(msg);
     sl->Debug(msg);
 }
 
@@ -91,7 +94,7 @@ void LCDUpdate()
 {
     if (lcdCurrentLine >= lcdCurrentMessage.size())
     {
-        // aktuelle Nachricht fertig, nächste holen
+        // Current message finished, fetch next
         if (!lcdMessageQueue.empty())
         {
             lcdCurrentMessage = lcdMessageQueue.front();
@@ -100,11 +103,11 @@ void LCDUpdate()
         }
         else
         {
-            return; // nichts zu tun
+            return; // Nothing to do
         }
     }
 
-    // aktuelle Zeile anzeigen
+    // Render current line
     display.fillRect(0, 25, 128, 8, BLACK);
     display.setCursor(0, 25);
     display.setTextSize(1);
