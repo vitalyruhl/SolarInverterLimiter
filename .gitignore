@@ -11,3 +11,4 @@ src/SolarInverterLimiter.code-workspace
 src/secret/wifiSecret.h
 src/salt.h
 
+secrets.h
