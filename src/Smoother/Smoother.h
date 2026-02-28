@@ -12,6 +12,7 @@ public:
   // Setters to update config at runtime
   void setCorrectionOffset(int offset);
   void setLimits(int min, int max);
+  void setBufferSize(int size);
 
 private:
   int* buffer;

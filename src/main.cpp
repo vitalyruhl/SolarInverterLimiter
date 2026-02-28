@@ -82,6 +82,8 @@ static void registerProjectSettings();
 static void registerIOBindings();
 static bool isValidMacAddress(const String &value);
 static void applyAccessPointMacPriority();
+static void resetPidController();
+static int computePidSmoothedValue(int targetValue, int configuredMin, int configuredMax);
 static void updateMqttTopics();
 static void publishMqttNow();
 static void updateStatusLED();
@@ -102,7 +104,11 @@ struct LimiterSettings
     Config<int> minOutput{ConfigOptions<int>{.key = "LimiterMinW", .name = "Min Output (W)", .category = "Limiter", .defaultValue = 500, .sortOrder = 3}};
     Config<int> inputCorrectionOffset{ConfigOptions<int>{.key = "LimiterCorrW", .name = "Input Correction Offset (W)", .category = "Limiter", .defaultValue = 50, .sortOrder = 4}};
     Config<int> smoothingSize{ConfigOptions<int>{.key = "LimiterSmooth", .name = "Smoothing Level", .category = "Limiter", .defaultValue = 10, .sortOrder = 5}};
-    Config<float> RS232PublishPeriod{ConfigOptions<float>{.key = "LimiterRS485P", .name = "RS485 Publish Period (s)", .category = "Limiter", .defaultValue = 2.0f, .sortOrder = 6}};
+    Config<bool> usePidSmoothing{ConfigOptions<bool>{.key = "LimiterUsePID", .name = "Use PID Smoothing", .category = "Limiter", .defaultValue = false, .sortOrder = 6}};
+    Config<float> pidKp{ConfigOptions<float>{.key = "LimiterPIDKp", .name = "PID Kp", .category = "Limiter", .defaultValue = 0.35f, .sortOrder = 7}};
+    Config<float> pidKi{ConfigOptions<float>{.key = "LimiterPIDKi", .name = "PID Ki", .category = "Limiter", .defaultValue = 0.05f, .sortOrder = 8}};
+    Config<float> pidKd{ConfigOptions<float>{.key = "LimiterPIDKd", .name = "PID Kd", .category = "Limiter", .defaultValue = 0.02f, .sortOrder = 9}};
+    Config<float> RS232PublishPeriod{ConfigOptions<float>{.key = "LimiterRS485P", .name = "RS485 Publish Period (s)", .category = "Limiter", .defaultValue = 2.0f, .sortOrder = 10}};
 
     void attachTo(ConfigManagerClass &cfg)
     {
@@ -111,6 +117,10 @@ struct LimiterSettings
         cfg.addSetting(&minOutput);
         cfg.addSetting(&inputCorrectionOffset);
         cfg.addSetting(&smoothingSize);
+        cfg.addSetting(&usePidSmoothing);
+        cfg.addSetting(&pidKp);
+        cfg.addSetting(&pidKi);
+        cfg.addSetting(&pidKd);
         cfg.addSetting(&RS232PublishPeriod);
     }
 };
@@ -214,7 +224,8 @@ Smoother *powerSmoother = nullptr; // there is a memory allocation in setup, bet
 
 // global helper variables
 int currentGridImportW = 0; // amount of electricity being imported from grid
-int inverterSetValue = 0;   // current power inverter should deliver (default to zero)
+int inverterCalculatedValue = 0; // calculated controller output before limiter ON/OFF is applied
+int inverterSetValue = 0;        // value sent to RS485
 int solarPowerW = 0;        // current solar production
 float temperature = 0.0;    // current temperature in Celsius
 float Dewpoint = 0.0;       // current dewpoint in Celsius
@@ -223,6 +234,7 @@ float Pressure = 0.0;       // current pressure in hPa
 
 bool displayActive = true; // flag to indicate if the display is active
 static bool displayInitialized = false;
+static bool bme280Initialized = false;
 static bool dewpointRiskActive = false;   // tracks dewpoint alarm state
 static bool heaterLatchedState = false;   // hysteresis latch for heater
 static bool manualOverrideActive = false; // when enabled, buttons control relays and automation pauses
@@ -264,10 +276,23 @@ static constexpr char IO_AP_ID[] = "ap_btn";
 
 static String mqttBaseTopic;
 static String topicPublishSetValueW;
+static String topicPublishCalculatedValueW;
 static String topicPublishGridImportW;
 static String topicPublishTempC;
 static String topicPublishHumidityPct;
 static String topicPublishDewpointC;
+
+struct PidControllerState
+{
+    bool initialized = false;
+    float output = 0.0f;
+    float integral = 0.0f;
+    float previousError = 0.0f;
+    unsigned long lastUpdateMs = 0;
+};
+
+static PidControllerState pidController;
+static bool lastLimiterModeWasPid = false;
 
 #pragma endregion configurationn variables
 
@@ -445,12 +470,19 @@ void setupGUI()
         .precision(0)
         .order(3);
 
+    limiter.value("invCalc", []()
+                  { return inverterCalculatedValue; })
+        .label("Calculated Setpoint")
+        .unit("W")
+        .precision(0)
+        .order(4);
+
     limiter.value("solar", []()
                   { return solarPowerW; })
         .label("Solar power")
         .unit("W")
         .precision(0)
-        .order(4);
+        .order(5);
     // endregion Limiter
 
     // region relay outputs
@@ -870,10 +902,62 @@ static void updateMqttTopics()
 
     mqttBaseTopic = base;
     topicPublishSetValueW = mqttBaseTopic + "/SetValue";
+    topicPublishCalculatedValueW = mqttBaseTopic + "/CalculatedValue";
     topicPublishGridImportW = mqttBaseTopic + "/GetValue";
     topicPublishTempC = mqttBaseTopic + "/Temperature";
     topicPublishHumidityPct = mqttBaseTopic + "/Humidity";
     topicPublishDewpointC = mqttBaseTopic + "/Dewpoint";
+}
+
+static void resetPidController()
+{
+    pidController.initialized = false;
+    pidController.output = 0.0f;
+    pidController.integral = 0.0f;
+    pidController.previousError = 0.0f;
+    pidController.lastUpdateMs = 0;
+}
+
+static int computePidSmoothedValue(int targetValue, int configuredMin, int configuredMax)
+{
+    const unsigned long nowMs = millis();
+    float dtSeconds = limiterSettings.RS232PublishPeriod.get();
+
+    if (pidController.initialized)
+    {
+        const unsigned long elapsedMs = nowMs - pidController.lastUpdateMs;
+        if (elapsedMs > 0)
+        {
+            dtSeconds = static_cast<float>(elapsedMs) / 1000.0f;
+        }
+    }
+
+    dtSeconds = constrain(dtSeconds, 0.05f, 10.0f);
+
+    if (!pidController.initialized)
+    {
+        pidController.initialized = true;
+        pidController.output = static_cast<float>(targetValue);
+        pidController.integral = 0.0f;
+        pidController.previousError = 0.0f;
+    }
+
+    const float error = static_cast<float>(targetValue) - pidController.output;
+    pidController.integral += error * dtSeconds;
+    pidController.integral = constrain(pidController.integral, -5000.0f, 5000.0f);
+
+    const float derivative = (error - pidController.previousError) / dtSeconds;
+    const float delta = limiterSettings.pidKp.get() * error +
+                        limiterSettings.pidKi.get() * pidController.integral +
+                        limiterSettings.pidKd.get() * derivative;
+
+    pidController.output += delta;
+    pidController.output = constrain(pidController.output, static_cast<float>(configuredMin), static_cast<float>(configuredMax));
+
+    pidController.previousError = error;
+    pidController.lastUpdateMs = nowMs;
+
+    return static_cast<int>(roundf(pidController.output));
 }
 
 static void setFanRelay(bool on)
@@ -928,6 +1012,7 @@ static void publishMqttNow()
     updateMqttTopics();
 
     mqtt.publishExtraTopic("setvalue_w", topicPublishSetValueW.c_str(), String(inverterSetValue), false);
+    mqtt.publishExtraTopic("calculated_w", topicPublishCalculatedValueW.c_str(), String(inverterCalculatedValue), false);
     mqtt.publishExtraTopic("grid_import_w", topicPublishGridImportW.c_str(), String(currentGridImportW), false);
     mqtt.publishExtraTopic("temperature_c", topicPublishTempC.c_str(), String(temperature), false);
     mqtt.publishExtraTopic("humidity_pct", topicPublishHumidityPct.c_str(), String(Humidity), false);
@@ -968,12 +1053,6 @@ static void updateStatusLED()
 
 void cb_RS485Listener()
 {
-    if (powerSmoother == nullptr)
-    {
-        lmg.logTag(LL::Warn, "RS485", "Smoother not initialized");
-        return;
-    }
-
     int configuredMin = limiterSettings.minOutput.get();
     int configuredMax = limiterSettings.maxOutput.get();
     if (configuredMin > configuredMax)
@@ -983,18 +1062,49 @@ void cb_RS485Listener()
         configuredMax = tmp;
     }
 
-    powerSmoother->setCorrectionOffset(limiterSettings.inputCorrectionOffset.get());
-    powerSmoother->setLimits(configuredMin, configuredMax);
+    if (powerSmoother != nullptr)
+    {
+        powerSmoother->setBufferSize(limiterSettings.smoothingSize.get());
+        powerSmoother->setCorrectionOffset(limiterSettings.inputCorrectionOffset.get());
+        powerSmoother->setLimits(configuredMin, configuredMax);
+    }
+
+    const bool usePidSmoothing = limiterSettings.usePidSmoothing.get();
+    if (usePidSmoothing != lastLimiterModeWasPid)
+    {
+        resetPidController();
+        if (powerSmoother != nullptr)
+        {
+            powerSmoother->fillBufferOnStart(currentGridImportW + limiterSettings.inputCorrectionOffset.get());
+        }
+        lastLimiterModeWasPid = usePidSmoothing;
+    }
+
+    if (usePidSmoothing)
+    {
+        const int pidTarget = constrain(currentGridImportW + limiterSettings.inputCorrectionOffset.get(), configuredMin, configuredMax);
+        inverterCalculatedValue = computePidSmoothedValue(pidTarget, configuredMin, configuredMax);
+    }
+    else if (powerSmoother != nullptr)
+    {
+        inverterCalculatedValue = powerSmoother->smooth(currentGridImportW);
+    }
+    else
+    {
+        inverterCalculatedValue = configuredMax;
+        lmg.logTag(LL::Warn, "RS485", "Smoother not initialized -> fallback to MAX");
+    }
 
     if (limiterSettings.enableController.get())
     {
-        inverterSetValue = powerSmoother->smooth(currentGridImportW);
+        inverterSetValue = inverterCalculatedValue;
         sendToRS485(static_cast<uint16_t>(inverterSetValue));
-        lmg.logTag(LL::Trace, "RS485", "Controller enabled -> set inverter to %d W", inverterSetValue);
+        lmg.logTag(LL::Trace, "RS485", "Controller enabled -> set inverter to %d W (calc=%d)", inverterSetValue, inverterCalculatedValue);
     }
     else
     {
         inverterSetValue = configuredMax;
+        resetPidController();
         lmg.logTag(LL::Info, "RS485", "Controller disabled -> using MAX output");
         sendToRS485(static_cast<uint16_t>(inverterSetValue));
     }
@@ -1058,10 +1168,12 @@ void SetupStartTemperatureMeasuring()
         bme280.BME280_MODE_NORMAL);
     if (!isStatus)
     {
+        bme280Initialized = false;
         lmg.logTag(LL::Error, "BME280", "BME280 init failed");
     }
     else
     {
+        bme280Initialized = true;
         lmg.logTag(LL::Info, "BME280", "BME280 ready. Starting measurement ticker...");
 
         temperatureTicker.attach(tempSettings.readIntervalSec.get(), readBme280); // Attach the ticker to read BME280
@@ -1091,15 +1203,35 @@ void onWiFiAPMode()
 
 void readBme280()
 {
+    if (!bme280Initialized)
+    {
+        lmg.logTag(LL::Warn, "BME280", "Skip read: sensor not initialized");
+        return;
+    }
+
     // todo: add settings for correcting the values!!!
     //   set sea-level pressure
     bme280.setSeaLevelPressure(tempSettings.seaLevelPressure.get());
 
     bme280.read();
 
-    temperature = bme280.data.temperature + tempSettings.tempCorrection.get(); // apply correction
-    Humidity = bme280.data.humidity + tempSettings.humidityCorrection.get();   // apply correction
-    Pressure = bme280.data.pressure;
+    const float measuredTemperature = bme280.data.temperature + tempSettings.tempCorrection.get();
+    const float measuredHumidity = bme280.data.humidity + tempSettings.humidityCorrection.get();
+    const float measuredPressure = bme280.data.pressure;
+
+    const bool temperatureValid = isfinite(measuredTemperature) && measuredTemperature >= -20.0f && measuredTemperature <= 70.0f;
+    const bool humidityValid = isfinite(measuredHumidity) && measuredHumidity >= 0.0f && measuredHumidity <= 100.0f;
+    const bool pressureValid = isfinite(measuredPressure) && measuredPressure >= 300.0f && measuredPressure <= 1200.0f;
+
+    if (!temperatureValid || !humidityValid || !pressureValid)
+    {
+        lmg.logTag(LL::Warn, "BME280", "Invalid read T=%.1f H=%.1f P=%.1f -> keep last", measuredTemperature, measuredHumidity, measuredPressure);
+        return;
+    }
+
+    temperature = measuredTemperature;
+    Humidity = measuredHumidity;
+    Pressure = measuredPressure;
     Dewpoint = cm::helpers::computeDewPoint(temperature, Humidity);
 
     // output formatted values to serial console

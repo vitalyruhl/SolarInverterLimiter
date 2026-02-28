@@ -1,7 +1,7 @@
 #include "Smoother.h"
 
 Smoother::Smoother(int size, int correctionOffset, int min, int max)
-  : bufferSize(size),
+  : bufferSize(size > 0 ? size : 1),
     bufferIndex(0),
     correctionOffset(correctionOffset),
     minLimit(min),
@@ -35,6 +35,17 @@ void Smoother::setLimits(int min, int max) {
   maxLimit = max;
 }
 
+void Smoother::setBufferSize(int size) {
+  if (size <= 0 || size == bufferSize) {
+    return;
+  }
+
+  delete[] buffer;
+  bufferSize = size;
+  buffer = new int[bufferSize];
+  fillBufferOnStart(minLimit);
+}
+
 int Smoother::applyLimiter(int value) {
   if (value >= maxLimit) return maxLimit;
   if (value < minLimit) return minLimit;
@@ -42,9 +53,6 @@ int Smoother::applyLimiter(int value) {
 }
 
 int Smoother::smooth(int newValue) {
-  if (newValue == 0) {
-    return applyLimiter(buffer[bufferIndex]);
-  }
   buffer[bufferIndex] = newValue + correctionOffset;
   bufferIndex = (bufferIndex + 1) % bufferSize;
 
