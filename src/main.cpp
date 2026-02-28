@@ -80,6 +80,8 @@ static void setupMqtt();
 static void setupNetworkDefaults();
 static void registerProjectSettings();
 static void registerIOBindings();
+static bool isValidMacAddress(const String &value);
+static void applyAccessPointMacPriority();
 static void updateMqttTopics();
 static void publishMqttNow();
 static void updateStatusLED();
@@ -187,6 +189,16 @@ struct DisplaySettings
     }
 };
 
+struct WiFiRoamingSettings
+{
+    Config<String> preferredApMac{ConfigOptions<String>{.key = "WiFiMacPrio", .name = "Preferred AP MAC", .category = "WiFi", .defaultValue = "", .sortOrder = 90}};
+
+    void attachTo(ConfigManagerClass &cfg)
+    {
+        cfg.addSetting(&preferredApMac);
+    }
+};
+
 BME280_I2C bme280;
 
 static constexpr int OLED_WIDTH = 128;
@@ -236,6 +248,7 @@ I2CSettings i2cSettings;
 FanSettings fanSettings;
 HeaterSettings heaterSettings;
 DisplaySettings displaySettings;
+WiFiRoamingSettings wifiRoamingSettings;
 RS485_Settings rs485settings;
 
 static cm::CoreSettings &coreSettings = cm::CoreSettings::instance();
@@ -299,10 +312,7 @@ void setup()
     ConfigManager.setRoamingThreshold(-75);
     ConfigManager.setRoamingCooldown(30);
     ConfigManager.setRoamingImprovement(10);
-
-#if defined(WIFI_FILTER_MAC_PRIORITY)
-    ConfigManager.setAccessPointMacPriority(WIFI_FILTER_MAC_PRIORITY);
-#endif
+    applyAccessPointMacPriority();
 
     updateMqttTopics();
     setupGUI();
@@ -658,6 +668,7 @@ static void registerProjectSettings()
     fanSettings.attachTo(ConfigManager);
     heaterSettings.attachTo(ConfigManager);
     displaySettings.attachTo(ConfigManager);
+    wifiRoamingSettings.attachTo(ConfigManager);
     rs485settings.attachTo(ConfigManager);
 }
 
@@ -761,6 +772,72 @@ static void setupNetworkDefaults()
     {
         systemSettings.otaPassword.save(OTA_PASSWORD);
     }
+
+#if defined(WIFI_FILTER_MAC_PRIORITY)
+    if (wifiRoamingSettings.preferredApMac.get().isEmpty())
+    {
+        wifiRoamingSettings.preferredApMac.save(WIFI_FILTER_MAC_PRIORITY);
+    }
+#endif
+}
+
+static bool isValidMacAddress(const String &value)
+{
+    if (value.length() != 17)
+    {
+        return false;
+    }
+
+    for (int i = 0; i < value.length(); ++i)
+    {
+        const char c = value.charAt(i);
+        if ((i + 1) % 3 == 0)
+        {
+            if (c != ':')
+            {
+                return false;
+            }
+            continue;
+        }
+
+        const bool isDigit = (c >= '0' && c <= '9');
+        const bool isUpperHex = (c >= 'A' && c <= 'F');
+        const bool isLowerHex = (c >= 'a' && c <= 'f');
+        if (!isDigit && !isUpperHex && !isLowerHex)
+        {
+            return false;
+        }
+    }
+
+    return true;
+}
+
+static void applyAccessPointMacPriority()
+{
+    String preferredMac = wifiRoamingSettings.preferredApMac.get();
+    preferredMac.trim();
+
+#if defined(WIFI_FILTER_MAC_PRIORITY)
+    if (preferredMac.isEmpty())
+    {
+        preferredMac = WIFI_FILTER_MAC_PRIORITY;
+    }
+#endif
+
+    if (preferredMac.isEmpty())
+    {
+        lmg.logTag(LL::Debug, "WiFi", "AP MAC priority not configured");
+        return;
+    }
+
+    if (!isValidMacAddress(preferredMac))
+    {
+        lmg.logTag(LL::Warn, "WiFi", "AP MAC priority invalid: %s", preferredMac.c_str());
+        return;
+    }
+
+    ConfigManager.setAccessPointMacPriority(preferredMac.c_str());
+    lmg.logTag(LL::Info, "WiFi", "AP MAC priority set: %s", preferredMac.c_str());
 }
 
 static void updateMqttTopics()
@@ -891,21 +968,35 @@ static void updateStatusLED()
 
 void cb_RS485Listener()
 {
-    // inverterSetValue = powerSmoother.smooth(currentGridImportW);
-    inverterSetValue = powerSmoother->smooth(currentGridImportW);
-    // (legacy) previously: if (generalSettings.enableController.get())
+    if (powerSmoother == nullptr)
+    {
+        lmg.logTag(LL::Warn, "RS485", "Smoother not initialized");
+        return;
+    }
+
+    int configuredMin = limiterSettings.minOutput.get();
+    int configuredMax = limiterSettings.maxOutput.get();
+    if (configuredMin > configuredMax)
+    {
+        const int tmp = configuredMin;
+        configuredMin = configuredMax;
+        configuredMax = tmp;
+    }
+
+    powerSmoother->setCorrectionOffset(limiterSettings.inputCorrectionOffset.get());
+    powerSmoother->setLimits(configuredMin, configuredMax);
+
     if (limiterSettings.enableController.get())
     {
-        // rs485.sendToRS485(static_cast<uint16_t>(inverterSetValue));
-        // legacy comment: powerSmoother.setCorrectionOffset(generalSettings.inputCorrectionOffset.get());
-        powerSmoother->setCorrectionOffset(limiterSettings.inputCorrectionOffset.get()); // apply the correction offset to the smoother, if needed
+        inverterSetValue = powerSmoother->smooth(currentGridImportW);
         sendToRS485(static_cast<uint16_t>(inverterSetValue));
         lmg.logTag(LL::Trace, "RS485", "Controller enabled -> set inverter to %d W", inverterSetValue);
     }
     else
     {
+        inverterSetValue = configuredMax;
         lmg.logTag(LL::Info, "RS485", "Controller disabled -> using MAX output");
-        sendToRS485(limiterSettings.maxOutput.get()); // send the maxOutput to the RS485 module
+        sendToRS485(static_cast<uint16_t>(inverterSetValue));
     }
 }
 
