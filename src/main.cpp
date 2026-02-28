@@ -307,19 +307,7 @@ static bool lastLimiterModeWasPid = false;
 void setup()
 {
     Serial.begin(115200);
-    delay(300);
-    Serial.println("[BOOT] setup() enter");
-    Serial.printf("[BOOT] reset reason raw=%d\n", static_cast<int>(esp_reset_reason()));
-    Serial.flush();
-
-    Serial.println("[BOOT] S1: ensureNvsReady");
-
-    if (!ensureNvsReady())
-    {
-        Serial.println("[BOOT] NVS init failed");
-    }
-
-    Serial.println("[BOOT] S2: setupLogging");
+    ensureNvsReady();
 
     setupLogging();
     lmg.scopedTag("SETUP");
@@ -333,36 +321,19 @@ void setup()
     ConfigManager.setCustomCss(GLOBAL_THEME_OVERRIDE, sizeof(GLOBAL_THEME_OVERRIDE) - 1);
     ConfigManager.enableBuiltinSystemProvider();
 
-    Serial.println("[BOOT] S3: attach core settings");
-
     coreSettings.attachWiFi(ConfigManager);
     coreSettings.attachSystem(ConfigManager);
     coreSettings.attachNtp(ConfigManager);
-
-    Serial.println("[BOOT] S4: register settings/io/mqtt");
 
     registerProjectSettings();
     registerIOBindings();
     setupMqtt();
 
-    Serial.println("[BOOT] S5: load config");
-
     ConfigManager.checkSettingsForErrors();
     ConfigManager.loadAll();
     delay(100);
-
-    Serial.println("[BOOT] S6: setup defaults");
     setupNetworkDefaults();
-
-    Serial.println("[BOOT] S7: io begin");
     ioManager.begin();
-
-    // Apply WiFi reboot timeout from settings (minutes)
-    ConfigManager.getWiFiManager().setAutoRebootTimeout(0);
-    ConfigManager.getWiFiManager().enableAutoReboot(false);
-    lmg.logTag(LL::Info, "WiFi", "Auto reboot disabled");
-
-    Serial.println("[BOOT] S8: start web");
 
     ConfigManager.startWebServer();
 
@@ -371,8 +342,6 @@ void setup()
     ConfigManager.setRoamingCooldown(30);
     ConfigManager.setRoamingImprovement(10);
     applyAccessPointMacPriority();
-
-    Serial.println("[BOOT] S9: gui/display");
 
     updateMqttTopics();
     setupGUI();
@@ -384,8 +353,6 @@ void setup()
     powerSmoother = new Smoother(limiterSettings.smoothingSize.get());
     powerSmoother->fillBufferOnStart(currentGridImportW);
 
-    Serial.println("[BOOT] S10: rs485/temp");
-
     RS485begin();
     SetupStartTemperatureMeasuring();
 
@@ -393,8 +360,6 @@ void setup()
 
     setFanRelay(false);
     setHeaterRelay(false);
-
-    Serial.println("[BOOT] S11: setup done");
 
     lmg.logTag(LL::Info, "SETUP", "Completed successfully. Starting main loop...");
 }
@@ -409,23 +374,21 @@ static bool ensureNvsReady()
 
     if (err == ESP_ERR_NVS_NO_FREE_PAGES || err == ESP_ERR_NVS_NEW_VERSION_FOUND || err == ESP_ERR_NVS_INVALID_STATE)
     {
-        Serial.printf("[BOOT] NVS init warning (%d) -> erase\n", static_cast<int>(err));
         const esp_err_t eraseErr = nvs_flash_erase();
         if (eraseErr != ESP_OK)
         {
-            Serial.printf("[BOOT] NVS erase failed (%d)\n", static_cast<int>(eraseErr));
+            Serial.printf("[E] NVS erase failed (%d)\n", static_cast<int>(eraseErr));
             return false;
         }
 
         err = nvs_flash_init();
         if (err == ESP_OK)
         {
-            Serial.println("[BOOT] NVS reinit OK");
             return true;
         }
     }
 
-    Serial.printf("[BOOT] NVS init failed (%d)\n", static_cast<int>(err));
+    Serial.printf("[E] NVS init failed (%d)\n", static_cast<int>(err));
     return false;
 }
 
@@ -688,7 +651,11 @@ static void registerIOBindings()
                 ShowDisplayOn(); },
             .onLongPressOnStartup = []()
             {
-                lmg.logTag(LL::Warn, "IO", "Reset on startup disabled (safety)"); },
+                lmg.logTag(LL::Warn, "IO", "Reset button pressed at startup -> restoring defaults");
+                ConfigManager.clearAllFromPrefs();
+                ConfigManager.saveAll();
+                delay(500);
+                ESP.restart(); },
         },
         resetOptions);
 
@@ -703,7 +670,8 @@ static void registerIOBindings()
                 ShowDisplayOn(); },
             .onLongPressOnStartup = []()
             {
-                lmg.logTag(LL::Warn, "IO", "AP startup action disabled (diagnostic)"); },
+                lmg.logTag(LL::Warn, "IO", "AP button pressed at startup -> starting AP mode");
+                ConfigManager.startAccessPoint(APMODE_SSID, APMODE_PASSWORD); },
         },
         apOptions);
 }
