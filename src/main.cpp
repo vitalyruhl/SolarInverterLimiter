@@ -1,4 +1,6 @@
 #include <Arduino.h>
+#include <esp_system.h>
+#include <nvs_flash.h>
 #include <Ticker.h>
 #include <Wire.h>
 #include <WiFi.h>
@@ -80,10 +82,12 @@ static void setupMqtt();
 static void setupNetworkDefaults();
 static void registerProjectSettings();
 static void registerIOBindings();
+static bool ensureNvsReady();
+static const char *resetReasonToText(esp_reset_reason_t reason);
 static bool isValidMacAddress(const String &value);
 static void applyAccessPointMacPriority();
 static void resetPidController();
-static int computePidSmoothedValue(int targetValue, int configuredMin, int configuredMax);
+static int computePidSmoothedValue(int targetValue);
 static void updateMqttTopics();
 static void publishMqttNow();
 static void updateStatusLED();
@@ -161,7 +165,7 @@ struct I2CSettings
 
 struct FanSettings
 {
-    Config<bool> enabled{ConfigOptions<bool>{.key = "FanEnable", .name = "Enable Fan Control", .category = "Fan", .defaultValue = true, .sortOrder = 1}};
+    Config<bool> enabled{ConfigOptions<bool>{.key = "FanEnable", .name = "Enable Fan Control", .category = "Fan", .defaultValue = false, .sortOrder = 1}};
     Config<float> onThreshold{ConfigOptions<float>{.key = "FanOn", .name = "Fan ON above (C)", .category = "Fan", .defaultValue = 30.0f, .sortOrder = 2}};
     Config<float> offThreshold{ConfigOptions<float>{.key = "FanOff", .name = "Fan OFF below (C)", .category = "Fan", .defaultValue = 27.0f, .sortOrder = 3}};
 
@@ -224,8 +228,8 @@ Smoother *powerSmoother = nullptr; // there is a memory allocation in setup, bet
 
 // global helper variables
 int currentGridImportW = 0; // amount of electricity being imported from grid
-int inverterCalculatedValue = 0; // calculated controller output before limiter ON/OFF is applied
-int inverterSetValue = 0;        // value sent to RS485
+int inverterCalculatedValue = 0; // raw calculated controller output (without offset/min-max)
+int inverterSetValue = 0;        // value sent to RS485 (with offset and min-max, or max when limiter off)
 int solarPowerW = 0;        // current solar production
 float temperature = 0.0;    // current temperature in Celsius
 float Dewpoint = 0.0;       // current dewpoint in Celsius
@@ -302,8 +306,24 @@ static bool lastLimiterModeWasPid = false;
 
 void setup()
 {
+    Serial.begin(115200);
+    delay(300);
+    Serial.println("[BOOT] setup() enter");
+    Serial.printf("[BOOT] reset reason raw=%d\n", static_cast<int>(esp_reset_reason()));
+    Serial.flush();
+
+    Serial.println("[BOOT] S1: ensureNvsReady");
+
+    if (!ensureNvsReady())
+    {
+        Serial.println("[BOOT] NVS init failed");
+    }
+
+    Serial.println("[BOOT] S2: setupLogging");
+
     setupLogging();
     lmg.scopedTag("SETUP");
+    lmg.logTag(LL::Info, "SETUP", "Reset reason: %s (%d)", resetReasonToText(esp_reset_reason()), static_cast<int>(esp_reset_reason()));
     lmg.log("System setup start...");
 
     ConfigManager.setAppName(APP_NAME);
@@ -313,23 +333,36 @@ void setup()
     ConfigManager.setCustomCss(GLOBAL_THEME_OVERRIDE, sizeof(GLOBAL_THEME_OVERRIDE) - 1);
     ConfigManager.enableBuiltinSystemProvider();
 
+    Serial.println("[BOOT] S3: attach core settings");
+
     coreSettings.attachWiFi(ConfigManager);
     coreSettings.attachSystem(ConfigManager);
     coreSettings.attachNtp(ConfigManager);
+
+    Serial.println("[BOOT] S4: register settings/io/mqtt");
 
     registerProjectSettings();
     registerIOBindings();
     setupMqtt();
 
+    Serial.println("[BOOT] S5: load config");
+
     ConfigManager.checkSettingsForErrors();
     ConfigManager.loadAll();
     delay(100);
 
+    Serial.println("[BOOT] S6: setup defaults");
     setupNetworkDefaults();
 
+    Serial.println("[BOOT] S7: io begin");
     ioManager.begin();
 
     // Apply WiFi reboot timeout from settings (minutes)
+    ConfigManager.getWiFiManager().setAutoRebootTimeout(0);
+    ConfigManager.getWiFiManager().enableAutoReboot(false);
+    lmg.logTag(LL::Info, "WiFi", "Auto reboot disabled");
+
+    Serial.println("[BOOT] S8: start web");
 
     ConfigManager.startWebServer();
 
@@ -339,6 +372,8 @@ void setup()
     ConfigManager.setRoamingImprovement(10);
     applyAccessPointMacPriority();
 
+    Serial.println("[BOOT] S9: gui/display");
+
     updateMqttTopics();
     setupGUI();
     SetupStartDisplay();
@@ -346,12 +381,10 @@ void setup()
 
     cm::helpers::pulseWait(LED_BUILTIN, cm::helpers::PulseOutput::ActiveLevel::ActiveHigh, 3, 100);
 
-    powerSmoother = new Smoother(
-        limiterSettings.smoothingSize.get(),
-        limiterSettings.inputCorrectionOffset.get(),
-        limiterSettings.minOutput.get(),
-        limiterSettings.maxOutput.get());
-    powerSmoother->fillBufferOnStart(limiterSettings.minOutput.get());
+    powerSmoother = new Smoother(limiterSettings.smoothingSize.get());
+    powerSmoother->fillBufferOnStart(currentGridImportW);
+
+    Serial.println("[BOOT] S10: rs485/temp");
 
     RS485begin();
     SetupStartTemperatureMeasuring();
@@ -361,7 +394,39 @@ void setup()
     setFanRelay(false);
     setHeaterRelay(false);
 
+    Serial.println("[BOOT] S11: setup done");
+
     lmg.logTag(LL::Info, "SETUP", "Completed successfully. Starting main loop...");
+}
+
+static bool ensureNvsReady()
+{
+    esp_err_t err = nvs_flash_init();
+    if (err == ESP_OK)
+    {
+        return true;
+    }
+
+    if (err == ESP_ERR_NVS_NO_FREE_PAGES || err == ESP_ERR_NVS_NEW_VERSION_FOUND || err == ESP_ERR_NVS_INVALID_STATE)
+    {
+        Serial.printf("[BOOT] NVS init warning (%d) -> erase\n", static_cast<int>(err));
+        const esp_err_t eraseErr = nvs_flash_erase();
+        if (eraseErr != ESP_OK)
+        {
+            Serial.printf("[BOOT] NVS erase failed (%d)\n", static_cast<int>(eraseErr));
+            return false;
+        }
+
+        err = nvs_flash_init();
+        if (err == ESP_OK)
+        {
+            Serial.println("[BOOT] NVS reinit OK");
+            return true;
+        }
+    }
+
+    Serial.printf("[BOOT] NVS init failed (%d)\n", static_cast<int>(err));
+    return false;
 }
 
 void loop()
@@ -623,11 +688,7 @@ static void registerIOBindings()
                 ShowDisplayOn(); },
             .onLongPressOnStartup = []()
             {
-                lmg.logTag(LL::Warn, "IO", "Reset button pressed at startup -> restoring defaults");
-                ConfigManager.clearAllFromPrefs();
-                ConfigManager.saveAll();
-                delay(500);
-                ESP.restart(); },
+                lmg.logTag(LL::Warn, "IO", "Reset on startup disabled (safety)"); },
         },
         resetOptions);
 
@@ -642,10 +703,40 @@ static void registerIOBindings()
                 ShowDisplayOn(); },
             .onLongPressOnStartup = []()
             {
-                lmg.logTag(LL::Warn, "IO", "AP button pressed at startup -> starting AP mode");
-                ConfigManager.startAccessPoint(APMODE_SSID, APMODE_PASSWORD); },
+                lmg.logTag(LL::Warn, "IO", "AP startup action disabled (diagnostic)"); },
         },
         apOptions);
+}
+
+static const char *resetReasonToText(esp_reset_reason_t reason)
+{
+    switch (reason)
+    {
+    case ESP_RST_UNKNOWN:
+        return "UNKNOWN";
+    case ESP_RST_POWERON:
+        return "POWERON";
+    case ESP_RST_EXT:
+        return "EXT";
+    case ESP_RST_SW:
+        return "SW";
+    case ESP_RST_PANIC:
+        return "PANIC";
+    case ESP_RST_INT_WDT:
+        return "INT_WDT";
+    case ESP_RST_TASK_WDT:
+        return "TASK_WDT";
+    case ESP_RST_WDT:
+        return "WDT";
+    case ESP_RST_DEEPSLEEP:
+        return "DEEPSLEEP";
+    case ESP_RST_BROWNOUT:
+        return "BROWNOUT";
+    case ESP_RST_SDIO:
+        return "SDIO";
+    default:
+        return "OTHER";
+    }
 }
 
 static void setupMqtt()
@@ -764,10 +855,9 @@ static void setupNetworkDefaults()
 #endif
         ConfigManager.saveAll();
         lmg.log(LL::Debug, "-------------------------------------------------------------");
-        lmg.log(LL::Debug, "Restarting ESP, after auto setting WiFi credentials");
+        lmg.log(LL::Info, "Applied WiFi defaults from secrets");
+        lmg.log(LL::Info, "Skipping forced reboot to avoid reset loops");
         lmg.log(LL::Debug, "-------------------------------------------------------------");
-        delay(500);
-        ESP.restart();
 #else
         lmg.log(LL::Warn, "SETUP: WiFi credentials missing/invalid but secret/secrets.h is missing; using UI/AP mode");
 #endif
@@ -918,7 +1008,7 @@ static void resetPidController()
     pidController.lastUpdateMs = 0;
 }
 
-static int computePidSmoothedValue(int targetValue, int configuredMin, int configuredMax)
+static int computePidSmoothedValue(int targetValue)
 {
     const unsigned long nowMs = millis();
     float dtSeconds = limiterSettings.RS232PublishPeriod.get();
@@ -952,7 +1042,7 @@ static int computePidSmoothedValue(int targetValue, int configuredMin, int confi
                         limiterSettings.pidKd.get() * derivative;
 
     pidController.output += delta;
-    pidController.output = constrain(pidController.output, static_cast<float>(configuredMin), static_cast<float>(configuredMax));
+    pidController.output = constrain(pidController.output, 0.0f, 4000.0f);
 
     pidController.previousError = error;
     pidController.lastUpdateMs = nowMs;
@@ -1065,8 +1155,6 @@ void cb_RS485Listener()
     if (powerSmoother != nullptr)
     {
         powerSmoother->setBufferSize(limiterSettings.smoothingSize.get());
-        powerSmoother->setCorrectionOffset(limiterSettings.inputCorrectionOffset.get());
-        powerSmoother->setLimits(configuredMin, configuredMax);
     }
 
     const bool usePidSmoothing = limiterSettings.usePidSmoothing.get();
@@ -1075,15 +1163,14 @@ void cb_RS485Listener()
         resetPidController();
         if (powerSmoother != nullptr)
         {
-            powerSmoother->fillBufferOnStart(currentGridImportW + limiterSettings.inputCorrectionOffset.get());
+            powerSmoother->fillBufferOnStart(currentGridImportW);
         }
         lastLimiterModeWasPid = usePidSmoothing;
     }
 
     if (usePidSmoothing)
     {
-        const int pidTarget = constrain(currentGridImportW + limiterSettings.inputCorrectionOffset.get(), configuredMin, configuredMax);
-        inverterCalculatedValue = computePidSmoothedValue(pidTarget, configuredMin, configuredMax);
+        inverterCalculatedValue = computePidSmoothedValue(currentGridImportW);
     }
     else if (powerSmoother != nullptr)
     {
@@ -1097,9 +1184,10 @@ void cb_RS485Listener()
 
     if (limiterSettings.enableController.get())
     {
-        inverterSetValue = inverterCalculatedValue;
+        const int correctedValue = inverterCalculatedValue + limiterSettings.inputCorrectionOffset.get();
+        inverterSetValue = constrain(correctedValue, configuredMin, configuredMax);
         sendToRS485(static_cast<uint16_t>(inverterSetValue));
-        lmg.logTag(LL::Trace, "RS485", "Controller enabled -> set inverter to %d W (calc=%d)", inverterSetValue, inverterCalculatedValue);
+        lmg.logTag(LL::Trace, "RS485", "Controller enabled -> set inverter to %d W (calc=%d, corr=%d)", inverterSetValue, inverterCalculatedValue, correctedValue);
     }
     else
     {
