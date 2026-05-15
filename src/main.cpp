@@ -87,7 +87,7 @@ static const char *resetReasonToText(esp_reset_reason_t reason);
 static bool isValidMacAddress(const String &value);
 static void applyAccessPointMacPriority();
 static void resetPidController();
-static int computePidSmoothedValue(int targetValue);
+static int computePidStabilizedTarget(int baseTarget, int configuredMin, int configuredMax);
 static void updateMqttTopics();
 static void publishMqttNow();
 static void updateStatusLED();
@@ -227,8 +227,8 @@ Ticker displayTicker;
 Smoother *powerSmoother = nullptr; // there is a memory allocation in setup, better use a pointer here
 
 // global helper variables
-int currentGridImportW = 0; // amount of electricity being imported from grid
-int inverterCalculatedValue = 0; // raw calculated controller output (without offset/min-max)
+int currentGridImportW = 0; // signed grid power: positive import, negative export
+int inverterCalculatedValue = 0; // calculated controller output before final send decision
 int inverterSetValue = 0;        // value sent to RS485 (with offset and min-max, or max when limiter off)
 int solarPowerW = 0;        // current solar production
 float temperature = 0.0;    // current temperature in Celsius
@@ -717,10 +717,10 @@ static void setupMqtt()
     mqtt.addMQTTRuntimeProviderToGUI(ConfigManager, "mqtt");
     mqtt.addMqttSettingsToSettingsGroup(ConfigManager, "MQTT", "MQTT Settings", 40);
 
-    // Receive: grid import W (from power meter JSON)
+    // Receive: signed grid power W (positive import, negative export)
     mqtt.addTopicReceiveInt(
         "grid_import_w",
-        "Grid Import",
+        "Grid Power",
         "tele/powerMeter/powerMeter/SENSOR",
         &currentGridImportW,
         "W",
@@ -976,7 +976,7 @@ static void resetPidController()
     pidController.lastUpdateMs = 0;
 }
 
-static int computePidSmoothedValue(int targetValue)
+static int computePidStabilizedTarget(int baseTarget, int configuredMin, int configuredMax)
 {
     const unsigned long nowMs = millis();
     float dtSeconds = limiterSettings.RS232PublishPeriod.get();
@@ -995,22 +995,30 @@ static int computePidSmoothedValue(int targetValue)
     if (!pidController.initialized)
     {
         pidController.initialized = true;
-        pidController.output = static_cast<float>(targetValue);
+        pidController.output = constrain(static_cast<float>(baseTarget), static_cast<float>(configuredMin), static_cast<float>(configuredMax));
         pidController.integral = 0.0f;
         pidController.previousError = 0.0f;
     }
 
-    const float error = static_cast<float>(targetValue) - pidController.output;
-    pidController.integral += error * dtSeconds;
-    pidController.integral = constrain(pidController.integral, -5000.0f, 5000.0f);
-
+    // PID setpoint is the desired inverter target. PID input is the last commanded target.
+    const float error = static_cast<float>(baseTarget) - pidController.output;
+    const float candidateIntegral = constrain(pidController.integral + error * dtSeconds, -5000.0f, 5000.0f);
     const float derivative = (error - pidController.previousError) / dtSeconds;
     const float delta = limiterSettings.pidKp.get() * error +
-                        limiterSettings.pidKi.get() * pidController.integral +
+                        limiterSettings.pidKi.get() * candidateIntegral +
                         limiterSettings.pidKd.get() * derivative;
 
-    pidController.output += delta;
-    pidController.output = constrain(pidController.output, 0.0f, 4000.0f);
+    const float candidateOutput = pidController.output + delta;
+    const float clampedOutput = constrain(candidateOutput, static_cast<float>(configuredMin), static_cast<float>(configuredMax));
+
+    if (candidateOutput == clampedOutput ||
+        (candidateOutput > static_cast<float>(configuredMax) && error < 0.0f) ||
+        (candidateOutput < static_cast<float>(configuredMin) && error > 0.0f))
+    {
+        pidController.integral = candidateIntegral;
+    }
+
+    pidController.output = clampedOutput;
 
     pidController.previousError = error;
     pidController.lastUpdateMs = nowMs;
@@ -1136,9 +1144,21 @@ void cb_RS485Listener()
         lastLimiterModeWasPid = usePidSmoothing;
     }
 
+    const int offset = limiterSettings.inputCorrectionOffset.get();
+    const int currentInverterOutputW = solarPowerW;
+    const int signedGridPowerW = currentGridImportW;
+    const int gridImportW = max(signedGridPowerW, 0);
+    const int gridExportW = max(-signedGridPowerW, 0);
+    int pidBaseTarget = 0;
+    int pidClampedBaseTarget = 0;
+    int pidInput = 0;
+
     if (usePidSmoothing)
     {
-        inverterCalculatedValue = computePidSmoothedValue(currentGridImportW);
+        pidBaseTarget = currentInverterOutputW + signedGridPowerW + offset;
+        pidClampedBaseTarget = constrain(pidBaseTarget, configuredMin, configuredMax);
+        pidInput = pidController.initialized ? static_cast<int>(roundf(pidController.output)) : pidClampedBaseTarget;
+        inverterCalculatedValue = computePidStabilizedTarget(pidBaseTarget, configuredMin, configuredMax);
     }
     else if (powerSmoother != nullptr)
     {
@@ -1152,10 +1172,16 @@ void cb_RS485Listener()
 
     if (limiterSettings.enableController.get())
     {
-        const int correctedValue = inverterCalculatedValue + limiterSettings.inputCorrectionOffset.get();
+        const int correctedValue = usePidSmoothing ? inverterCalculatedValue : inverterCalculatedValue + offset;
         inverterSetValue = constrain(correctedValue, configuredMin, configuredMax);
         sendToRS485(static_cast<uint16_t>(inverterSetValue));
         lmg.logTag(LL::Trace, "RS485", "Controller enabled -> set inverter to %d W (calc=%d, corr=%d)", inverterSetValue, inverterCalculatedValue, correctedValue);
+        if (usePidSmoothing)
+        {
+            lmg.logTag(LL::Debug, "PID", "inv=%d gridSigned=%d gridIn=%d gridOut=%d off=%d base=%d clamp=%d in=%d out=%d min=%d max=%d set=%d",
+                       currentInverterOutputW, signedGridPowerW, gridImportW, gridExportW, offset, pidBaseTarget, pidClampedBaseTarget,
+                       pidInput, inverterCalculatedValue, configuredMin, configuredMax, inverterSetValue);
+        }
     }
     else
     {
