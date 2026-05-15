@@ -42,7 +42,7 @@ PlatformIO and the Arduino framework.
 - Use `.github/agents/refactor.agent.md` for code changes, refactors, tests, and
   build validation.
 - Use `.github/agents/workflow.agent.md` for branches, issues, PRs, releases,
-  checkpoints, and end-of-session flows.
+  checkpoints, and explicit session-close workflows.
 - Use `.github/agents/docs.agent.md` for documentation work.
 - Agent files may add scope-specific rules, but they must not contradict this
   file. If they do, follow this file and report the drift.

@@ -2,7 +2,7 @@
 
 Purpose:
 Provide repository workflow rules for branches, issues, PRs, checkpoints,
-release branches, and end-of-session handling.
+release branches, and explicit session-close handling.
 
 This agent must apply `.github/AGENTS.md`.
 
@@ -107,35 +107,6 @@ This agent must apply `.github/AGENTS.md`.
 - Do not invent semantic-version or `pyproject.toml` release steps for this
   repository unless the repository later adds such files and policy.
 
-## End-Of-Session Workflow
-
-Trigger phrases:
-
-- `ich mach jetzt feierabend`
-- `ich will jetzt feierabend machen`
-
-Treat these as an end-of-session cue, not as an implicit release-promotion
-request.
-
-Default behavior:
-
-1. Inspect repository state.
-2. If there are coherent changes on a non-`main` work branch, use
-   `workflow.checkpoint` semantics when the user requested a checkpoint or an
-   end-of-session save.
-3. If `.cpp` or `.h` files changed, run `pio run -e usb` before claiming the
-   checkpoint is validated.
-4. If only Markdown or governance files changed, skip PlatformIO build and report
-   that reason.
-5. Do not update `release/*` or `main` implicitly.
-6. Use `workflow.ready` only when the user asks to prepare validated work for
-   review or integration.
-
-If the active branch is `main` or `master` during this workflow:
-
-- Emit a `[W]` warning.
-- Ask before committing directly to `main`.
-
 ## Workflow Shortcuts
 
 These names describe expected intent if the user invokes them:
@@ -145,10 +116,15 @@ These names describe expected intent if the user invokes them:
 - `workflow.docs`: perform a narrow documentation-only synchronization.
 - `workflow.audit`: read-only workflow or repository-state audit.
 - `workflow.ship`: build and verify artifacts without implicit merge.
-- `workflow.ready`: prepare work for review or integration.
+- `workflow.ready`: prepare work for review or integration, run or report
+  relevant validation, do not merge to `main`, do not update `release/*`, and do
+  not push unless explicitly requested or covered by a named workflow.
 - `workflow.toMain`: get validated work onto `main` through the agreed workflow.
 - `workflow.cleanBranches`: delete only branches verified as integrated.
-- `workflow.end`: end the session safely without claiming merge or fix success.
+- `workflow.end`: inspect repository state and report current branch, changed
+  files, validation state, and blockers without claiming merge or fix success.
+  Do not commit, push, merge, or update release branches unless explicitly
+  requested.
 
 Shortcut behavior must remain conservative:
 
