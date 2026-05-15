@@ -61,6 +61,13 @@
 #define VERSION "4.1.0"
 #endif
 
+enum class NegativePriceSettingPreference : uint8_t
+{
+    None,
+    ForceMin,
+    SetZero
+};
+
 // predeclare the functions (prototypes)
 void SetupStartDisplay();
 void cb_RS485Listener();
@@ -84,6 +91,8 @@ static void setupNetworkDefaults();
 static void attachSystemSettings();
 static void syncStoredCodeVersion();
 static void registerProjectSettings();
+static void configureLimiterSettingsBehavior();
+static void normalizeNegativePriceSettings(NegativePriceSettingPreference preferred, bool persist, bool logCorrection);
 static void registerIOBindings();
 static bool ensureNvsReady();
 static const char *resetReasonToText(esp_reset_reason_t reason);
@@ -116,7 +125,8 @@ struct LimiterSettings
     Config<float> pidKi{ConfigOptions<float>{.key = "LimiterPIDKi", .name = "PID Ki", .category = "Limiter", .defaultValue = 0.05f, .sortOrder = 8}};
     Config<float> pidKd{ConfigOptions<float>{.key = "LimiterPIDKd", .name = "PID Kd", .category = "Limiter", .defaultValue = 0.02f, .sortOrder = 9}};
     Config<bool> forceMinOnNegativePrice{ConfigOptions<bool>{.key = "LimiterNegPrice", .name = "Force Min On Negative Price", .category = "Limiter", .defaultValue = false, .sortOrder = 10}};
-    Config<float> RS232PublishPeriod{ConfigOptions<float>{.key = "LimiterRS485P", .name = "RS485 Publish Period (s)", .category = "Limiter", .defaultValue = 2.0f, .sortOrder = 11}};
+    Config<bool> setZeroOnNegativePrice{ConfigOptions<bool>{.key = "LimNegZero", .name = "Set 0 On Negative Price", .category = "Limiter", .defaultValue = false, .sortOrder = 11}};
+    Config<float> RS232PublishPeriod{ConfigOptions<float>{.key = "LimiterRS485P", .name = "RS485 Publish Period (s)", .category = "Limiter", .defaultValue = 2.0f, .sortOrder = 12}};
 
     void attachTo(ConfigManagerClass &cfg)
     {
@@ -130,6 +140,7 @@ struct LimiterSettings
         cfg.addSetting(&pidKi);
         cfg.addSetting(&pidKd);
         cfg.addSetting(&forceMinOnNegativePrice);
+        cfg.addSetting(&setZeroOnNegativePrice);
         cfg.addSetting(&RS232PublishPeriod);
     }
 };
@@ -304,7 +315,9 @@ struct PidControllerState
 
 static PidControllerState pidController;
 static bool lastLimiterModeWasPid = false;
-static bool lastNegativePriceMinActive = false;
+static int lastNegativePriceOverrideTarget = -1;
+static NegativePriceSettingPreference lastNegativePriceSettingPreference = NegativePriceSettingPreference::None;
+static bool normalizingNegativePriceSettings = false;
 
 #pragma endregion configurationn variables
 
@@ -334,11 +347,13 @@ void setup()
     coreSettings.attachNtp(ConfigManager);
 
     registerProjectSettings();
+    configureLimiterSettingsBehavior();
     registerIOBindings();
     setupMqtt();
 
     ConfigManager.checkSettingsForErrors();
     ConfigManager.loadAll();
+    normalizeNegativePriceSettings(NegativePriceSettingPreference::None, true, true);
     syncStoredCodeVersion();
     delay(100);
     setupNetworkDefaults();
@@ -802,6 +817,71 @@ static void registerProjectSettings()
     rs485settings.attachTo(ConfigManager);
 }
 
+static void configureLimiterSettingsBehavior()
+{
+    limiterSettings.smoothingSize.showIfFunc = []()
+    { return !limiterSettings.usePidSmoothing.get(); };
+
+    limiterSettings.forceMinOnNegativePrice.setCallback([](bool enabled)
+                                                        {
+        if (normalizingNegativePriceSettings || !enabled)
+        {
+            return;
+        }
+        lastNegativePriceSettingPreference = NegativePriceSettingPreference::ForceMin;
+        normalizeNegativePriceSettings(NegativePriceSettingPreference::ForceMin, true, true); });
+
+    limiterSettings.setZeroOnNegativePrice.setCallback([](bool enabled)
+                                                       {
+        if (normalizingNegativePriceSettings || !enabled)
+        {
+            return;
+        }
+        lastNegativePriceSettingPreference = NegativePriceSettingPreference::SetZero;
+        normalizeNegativePriceSettings(NegativePriceSettingPreference::SetZero, true, true); });
+}
+
+static void normalizeNegativePriceSettings(NegativePriceSettingPreference preferred, bool persist, bool logCorrection)
+{
+    if (!limiterSettings.forceMinOnNegativePrice.get() || !limiterSettings.setZeroOnNegativePrice.get())
+    {
+        return;
+    }
+
+    NegativePriceSettingPreference winner = preferred;
+    if (winner == NegativePriceSettingPreference::None)
+    {
+        winner = lastNegativePriceSettingPreference;
+    }
+    if (winner == NegativePriceSettingPreference::None)
+    {
+        winner = NegativePriceSettingPreference::ForceMin;
+    }
+
+    normalizingNegativePriceSettings = true;
+    if (winner == NegativePriceSettingPreference::SetZero)
+    {
+        limiterSettings.forceMinOnNegativePrice.set(false);
+    }
+    else
+    {
+        winner = NegativePriceSettingPreference::ForceMin;
+        limiterSettings.setZeroOnNegativePrice.set(false);
+    }
+    normalizingNegativePriceSettings = false;
+    lastNegativePriceSettingPreference = winner;
+
+    if (logCorrection)
+    {
+        lmg.logTag(LL::Warn, "PRICE", "Corrected conflicting negative-price settings -> %s",
+                   winner == NegativePriceSettingPreference::SetZero ? "zero" : "min");
+    }
+    if (persist)
+    {
+        ConfigManager.saveAll();
+    }
+}
+
 static bool hasValidStationCredentials(const String &ssid, const String &password)
 {
     if (ssid.isEmpty())
@@ -1226,27 +1306,31 @@ void cb_RS485Listener()
     const int signedGridPowerW = currentGridImportW;
     const int gridImportW = max(signedGridPowerW, 0);
     const int gridExportW = max(-signedGridPowerW, 0);
-    const bool negativePriceMinActive = limiterSettings.forceMinOnNegativePrice.get() && negativePriceActive;
-    if (negativePriceMinActive != lastNegativePriceMinActive)
+    const bool negativePriceForceMinEnabled = limiterSettings.forceMinOnNegativePrice.get();
+    const bool negativePriceSetZeroEnabled = !negativePriceForceMinEnabled && limiterSettings.setZeroOnNegativePrice.get();
+    const bool negativePriceMinActive = negativePriceActive && negativePriceForceMinEnabled;
+    const bool negativePriceZeroActive = negativePriceActive && negativePriceSetZeroEnabled;
+    const int negativePriceOverrideTarget = negativePriceZeroActive ? 0 : (negativePriceMinActive ? configuredMin : -1);
+    if (negativePriceOverrideTarget != lastNegativePriceOverrideTarget)
     {
-        if (negativePriceMinActive)
+        if (negativePriceOverrideTarget >= 0)
         {
-            lmg.logTag(LL::Info, "PRICE", "Negative price active (%.3f EUR/kWh) -> forcing min %d W", electricityPriceEurKwh, configuredMin);
+            lmg.logTag(LL::Info, "PRICE", "Negative price active (%.3f EUR/kWh) -> forcing %d W", electricityPriceEurKwh, negativePriceOverrideTarget);
         }
         else
         {
             lmg.logTag(LL::Info, "PRICE", "Negative price inactive (%.3f EUR/kWh) -> resuming normal output path", electricityPriceEurKwh);
         }
-        lastNegativePriceMinActive = negativePriceMinActive;
+        lastNegativePriceOverrideTarget = negativePriceOverrideTarget;
     }
     int pidBaseTarget = 0;
     int pidClampedBaseTarget = 0;
     int pidInput = 0;
 
-    if (negativePriceMinActive)
+    if (negativePriceOverrideTarget >= 0)
     {
         resetPidController();
-        inverterCalculatedValue = configuredMin;
+        inverterCalculatedValue = negativePriceOverrideTarget;
     }
     else if (usePidSmoothing)
     {
@@ -1265,9 +1349,9 @@ void cb_RS485Listener()
         lmg.logTag(LL::Warn, "RS485", "Smoother not initialized -> fallback to MAX");
     }
 
-    if (negativePriceMinActive)
+    if (negativePriceOverrideTarget >= 0)
     {
-        inverterSetValue = configuredMin;
+        inverterSetValue = negativePriceOverrideTarget;
         sendToRS485(static_cast<uint16_t>(inverterSetValue));
     }
     else if (limiterSettings.enableController.get())
