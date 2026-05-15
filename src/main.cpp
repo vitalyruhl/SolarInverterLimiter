@@ -1,6 +1,7 @@
 #include <Arduino.h>
 #include <esp_system.h>
 #include <nvs_flash.h>
+#include <Preferences.h>
 #include <Ticker.h>
 #include <Wire.h>
 #include <WiFi.h>
@@ -57,7 +58,7 @@
 #endif
 
 #ifndef VERSION
-#define VERSION "4.0.0"
+#define VERSION "4.1.0"
 #endif
 
 // predeclare the functions (prototypes)
@@ -80,6 +81,8 @@ void onWiFiAPMode();
 static void setupLogging();
 static void setupMqtt();
 static void setupNetworkDefaults();
+static void attachSystemSettings();
+static void syncStoredCodeVersion();
 static void registerProjectSettings();
 static void registerIOBindings();
 static bool ensureNvsReady();
@@ -112,7 +115,8 @@ struct LimiterSettings
     Config<float> pidKp{ConfigOptions<float>{.key = "LimiterPIDKp", .name = "PID Kp", .category = "Limiter", .defaultValue = 0.35f, .sortOrder = 7}};
     Config<float> pidKi{ConfigOptions<float>{.key = "LimiterPIDKi", .name = "PID Ki", .category = "Limiter", .defaultValue = 0.05f, .sortOrder = 8}};
     Config<float> pidKd{ConfigOptions<float>{.key = "LimiterPIDKd", .name = "PID Kd", .category = "Limiter", .defaultValue = 0.02f, .sortOrder = 9}};
-    Config<float> RS232PublishPeriod{ConfigOptions<float>{.key = "LimiterRS485P", .name = "RS485 Publish Period (s)", .category = "Limiter", .defaultValue = 2.0f, .sortOrder = 10}};
+    Config<bool> forceMinOnNegativePrice{ConfigOptions<bool>{.key = "LimiterNegPrice", .name = "Force Min On Negative Price", .category = "Limiter", .defaultValue = false, .sortOrder = 10}};
+    Config<float> RS232PublishPeriod{ConfigOptions<float>{.key = "LimiterRS485P", .name = "RS485 Publish Period (s)", .category = "Limiter", .defaultValue = 2.0f, .sortOrder = 11}};
 
     void attachTo(ConfigManagerClass &cfg)
     {
@@ -125,6 +129,7 @@ struct LimiterSettings
         cfg.addSetting(&pidKp);
         cfg.addSetting(&pidKi);
         cfg.addSetting(&pidKd);
+        cfg.addSetting(&forceMinOnNegativePrice);
         cfg.addSetting(&RS232PublishPeriod);
     }
 };
@@ -231,6 +236,8 @@ int currentGridImportW = 0; // signed grid power: positive import, negative expo
 int inverterCalculatedValue = 0; // calculated controller output before final send decision
 int inverterSetValue = 0;        // value sent to RS485 (with offset and min-max, or max when limiter off)
 int solarPowerW = 0;        // current solar production
+bool negativePriceActive = false; // MQTT input: true forces minimum output when enabled
+float electricityPriceEurKwh = 0.0f; // optional MQTT input for status/logging
 float temperature = 0.0;    // current temperature in Celsius
 float Dewpoint = 0.0;       // current dewpoint in Celsius
 float Humidity = 0.0;       // current humidity in percent
@@ -297,6 +304,7 @@ struct PidControllerState
 
 static PidControllerState pidController;
 static bool lastLimiterModeWasPid = false;
+static bool lastNegativePriceMinActive = false;
 
 #pragma endregion configurationn variables
 
@@ -322,7 +330,7 @@ void setup()
     ConfigManager.enableBuiltinSystemProvider();
 
     coreSettings.attachWiFi(ConfigManager);
-    coreSettings.attachSystem(ConfigManager);
+    attachSystemSettings();
     coreSettings.attachNtp(ConfigManager);
 
     registerProjectSettings();
@@ -331,6 +339,7 @@ void setup()
 
     ConfigManager.checkSettingsForErrors();
     ConfigManager.loadAll();
+    syncStoredCodeVersion();
     delay(100);
     setupNetworkDefaults();
     ioManager.begin();
@@ -511,6 +520,18 @@ void setupGUI()
         .unit("W")
         .precision(0)
         .order(5);
+
+    limiter.value("negPrice", []()
+                  { return negativePriceActive; })
+        .label("Negative Price")
+        .order(6);
+
+    limiter.value("price", []()
+                  { return electricityPriceEurKwh; })
+        .label("Electricity Price")
+        .unit("EUR/kWh")
+        .precision(3)
+        .order(7);
     // endregion Limiter
 
     // region relay outputs
@@ -609,17 +630,17 @@ static void setupLogging()
     Serial.begin(115200);
 
     auto serialOut = std::make_unique<cm::LoggingManager::SerialOutput>(Serial);
-    serialOut->setLevel(LL::Debug);
+    serialOut->setLevel(LL::Info);
     serialOut->addTimestamp(cm::LoggingManager::Output::TimestampMode::DateTime);
     serialOut->setRateLimitMs(2);
     lmg.addOutput(std::move(serialOut));
 
-    lmg.setGlobalLevel(LL::Debug);
-    lmg.attachToConfigManager(LL::Debug, LL::Debug, "");
+    lmg.setGlobalLevel(LL::Info);
+    lmg.attachToConfigManager(LL::Info, LL::Info, "");
 
     auto guiOut = std::make_unique<cm::LoggingManager::GuiOutput>(ConfigManager, 50);
     guiOut->addTimestamp(cm::LoggingManager::Output::TimestampMode::DateTime);
-    guiOut->setLevel(LL::Debug);
+    guiOut->setLevel(LL::Info);
     lmg.addOutput(std::move(guiOut));
 }
 
@@ -734,8 +755,26 @@ static void setupMqtt()
         "W",
         "ENERGY.Power");
 
+    mqtt.addTopicReceiveBool(
+        "negative_price",
+        "Negative Price",
+        "SolarLimiter/Input/NegativePrice",
+        &negativePriceActive,
+        "none");
+
+    mqtt.addTopicReceiveFloat(
+        "electricity_price",
+        "Electricity Price",
+        "SolarLimiter/Input/ElectricityPrice",
+        &electricityPriceEurKwh,
+        "EUR/kWh",
+        3,
+        "none");
+
     mqtt.addMqttTopicToSettingsGroup(ConfigManager, "grid_import_w", "MQTT-Topics", "MQTT-Topics", "MQTT-Received", 50);
     mqtt.addMqttTopicToSettingsGroup(ConfigManager, "solar_power_w", "MQTT-Topics", "MQTT-Topics", "MQTT-Received", 51);
+    mqtt.addMqttTopicToSettingsGroup(ConfigManager, "negative_price", "MQTT-Topics", "MQTT-Topics", "MQTT-Received", 52);
+    mqtt.addMqttTopicToSettingsGroup(ConfigManager, "electricity_price", "MQTT-Topics", "MQTT-Topics", "MQTT-Received", 53);
 
     // Optional: show receive topics in runtime UI
     // mqtt.addMqttTopicToLiveGroup(ConfigManager, "grid_import_w", "mqtt", "MQTT-Received", "MQTT-Received", 1);
@@ -744,7 +783,7 @@ static void setupMqtt()
     if (!mqttLogAdded)
     {
         auto mqttLog = std::make_unique<cm::MQTTLogOutput>(mqtt);
-        mqttLog->setLevel(LL::Debug);
+        mqttLog->setLevel(LL::Info);
         mqttLog->addTimestamp(cm::LoggingManager::Output::TimestampMode::DateTime);
         lmg.addOutput(std::move(mqttLog));
         mqttLogAdded = true;
@@ -869,6 +908,44 @@ static void setupNetworkDefaults()
         wifiRoamingSettings.preferredApMac.save(WIFI_FILTER_MAC_PRIORITY);
     }
 #endif
+}
+
+static void attachSystemSettings()
+{
+    ConfigManager.setCategoryLayoutOverride(cm::CoreCategories::System, cm::CoreCategories::System, cm::CoreCategories::System, "System Settings", 20);
+    ConfigManager.addSettingsPage(cm::CoreCategories::System, 20);
+    ConfigManager.addSettingsGroup(cm::CoreCategories::System, cm::CoreCategories::System, "System Settings", 20);
+    ConfigManager.addSetting(&systemSettings.allowOTA);
+    ConfigManager.addSetting(&systemSettings.otaPassword);
+}
+
+static void syncStoredCodeVersion()
+{
+    ConfigManager.setVersion(VERSION);
+
+    Preferences prefs;
+    if (!prefs.begin("ConfigManager", false))
+    {
+        lmg.logTag(LL::Warn, "SETUP", "Version sync skipped: preferences unavailable");
+        return;
+    }
+
+    const char *versionKey = systemSettings.version.getKey();
+    const String codeVersion(VERSION);
+    const String storedVersion = prefs.getString(versionKey, "");
+    if (storedVersion != codeVersion)
+    {
+        const size_t bytesWritten = prefs.putString(versionKey, codeVersion);
+        if (bytesWritten > 0)
+        {
+            lmg.logTag(LL::Info, "SETUP", "Stored version synced to %s", VERSION);
+        }
+        else
+        {
+            lmg.logTag(LL::Warn, "SETUP", "Stored version sync failed");
+        }
+    }
+    prefs.end();
 }
 
 static bool isValidMacAddress(const String &value)
@@ -1149,11 +1226,29 @@ void cb_RS485Listener()
     const int signedGridPowerW = currentGridImportW;
     const int gridImportW = max(signedGridPowerW, 0);
     const int gridExportW = max(-signedGridPowerW, 0);
+    const bool negativePriceMinActive = limiterSettings.forceMinOnNegativePrice.get() && negativePriceActive;
+    if (negativePriceMinActive != lastNegativePriceMinActive)
+    {
+        if (negativePriceMinActive)
+        {
+            lmg.logTag(LL::Info, "PRICE", "Negative price active (%.3f EUR/kWh) -> forcing min %d W", electricityPriceEurKwh, configuredMin);
+        }
+        else
+        {
+            lmg.logTag(LL::Info, "PRICE", "Negative price inactive (%.3f EUR/kWh) -> resuming normal output path", electricityPriceEurKwh);
+        }
+        lastNegativePriceMinActive = negativePriceMinActive;
+    }
     int pidBaseTarget = 0;
     int pidClampedBaseTarget = 0;
     int pidInput = 0;
 
-    if (usePidSmoothing)
+    if (negativePriceMinActive)
+    {
+        resetPidController();
+        inverterCalculatedValue = configuredMin;
+    }
+    else if (usePidSmoothing)
     {
         pidBaseTarget = currentInverterOutputW + signedGridPowerW + offset;
         pidClampedBaseTarget = constrain(pidBaseTarget, configuredMin, configuredMax);
@@ -1170,7 +1265,12 @@ void cb_RS485Listener()
         lmg.logTag(LL::Warn, "RS485", "Smoother not initialized -> fallback to MAX");
     }
 
-    if (limiterSettings.enableController.get())
+    if (negativePriceMinActive)
+    {
+        inverterSetValue = configuredMin;
+        sendToRS485(static_cast<uint16_t>(inverterSetValue));
+    }
+    else if (limiterSettings.enableController.get())
     {
         const int correctedValue = usePidSmoothing ? inverterCalculatedValue : inverterCalculatedValue + offset;
         inverterSetValue = constrain(correctedValue, configuredMin, configuredMax);
