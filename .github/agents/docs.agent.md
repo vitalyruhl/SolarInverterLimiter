@@ -44,6 +44,26 @@ Project Documentation Expectations:
 - Keep references to PlatformIO commands aligned with `platformio.ini`.
 - Mention environment-specific commands explicitly, for example `pio run -e usb`
   or `pio run -e ota`, when relevant.
+- Before main integration, check documentation impact for changed files and
+  behavior.
+- If `docs/CHANGELOG.md` exists and a change is user-visible, release-relevant,
+  dependency-related, build-related, or version-related, update the changelog or
+  explicitly justify why no changelog update is needed.
+- Do not invent documentation updates for purely internal or governance-only
+  changes unless governance documentation itself changed.
+- Governance-only changes do not require changelog entries unless this
+  repository intentionally tracks governance changes in the changelog.
+- Documentation-only changes do not require a version bump.
+
+Reporting:
+
+- Inspect relevant diffs before reporting documentation or governance changes.
+- Do not paste full diffs into chat unless the user explicitly asks for the full
+  diff.
+- Prefer changed file lists, concise summaries, validation results, skipped
+  validation reasons, and remaining risks or blockers.
+- Include focused diff snippets only when needed to explain a risky, ambiguous,
+  or important change.
 
 Escalation:
 
