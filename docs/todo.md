@@ -39,3 +39,11 @@ Legend:
 	- Note: No backward compatibility / migration by explicit decision
 
 ## P1 (high) – Update HomeAssistant YAML to the new structure
+
+## P1 (high) – Reduce firmware flash usage
+
+- [NEXT] Evaluate OLED display stack replacement
+	- Current assessment: replacing `Adafruit SSD1306` + `Adafruit GFX` is likely worth about 12-16 KB Flash and 1024 B RAM with a text-only OLED library
+	- Alternative assessment: a lighter graphics/text library with similar layout is likely worth about 6-10 KB Flash
+	- Current display usage is mostly text plus a simple frame, so a smaller display stack should preserve user-visible behavior
+	- Bigger flash savings are more likely in the embedded ConfigManager WebUI, but that is a separate larger effort
