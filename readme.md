@@ -13,7 +13,7 @@ This project is an ESP32-based solar inverter limiter that can be used to limit 
 
 ## ConfigManager v4 note
 
-- This project is aligned to `ESP32 Configuration Manager` `v4.x` (currently `^4.0.0` in `platformio.ini`).
+- This project is aligned to `ESP32 Configuration Manager` `v4.x` (currently `^4.2.2` in `platformio.ini`).
 - The pre-build step uses `tools/precompile_wrapper.py`.
 - The wrapper delegates to the library script inside `.pio/libdeps/<env>/ESP32 Configuration Manager/tools/preCompile_script.py`.
 - This keeps WebUI/header generation in sync with the installed ConfigManager library version.
