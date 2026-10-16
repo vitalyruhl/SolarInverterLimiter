@@ -95,7 +95,7 @@
 #endif
 
 #ifndef VERSION
-#define VERSION "4.3.1"
+#define VERSION "4.3.2"
 #endif
 
 enum class NegativePriceSettingPreference : uint8_t
@@ -489,6 +489,11 @@ void setup()
     syncStoredCodeVersion();
     delay(100);
     setupNetworkDefaults();
+#if defined(SIL_BENCH_TEST) && SIL_BENCH_TEST
+    // Keep bench firmware from driving the production inverter.
+    mqttSettings.enableMQTT.set(false);
+    rs485settings.enableRS485.set(false);
+#endif
     ioManager.begin();
 
     ConfigManager.startWebServer();
@@ -832,22 +837,18 @@ static void setupLogging()
     Serial.begin(115200);
 
     auto serialOut = std::make_unique<cm::LoggingManager::SerialOutput>(Serial);
-    serialOut->setLevel(LL::Off);
-    // serialOut->setLevel(LL::Info);
-    // serialOut->setLevel(LL::Debug);
-    serialOut->addTimestamp(cm::LoggingManager::Output::TimestampMode::DateTime);
-    serialOut->setRateLimitMs(2);
+    serialOut->setLevel(LL::Info);
     lmg.addOutput(std::move(serialOut));
 
-    // lmg.setGlobalLevel(LL::Info);
-    lmg.setGlobalLevel(LL::Debug);
+    // Keep normal UART diagnostics without debug or trace output.
+    lmg.setGlobalLevel(LL::Info);
     lmg.attachToConfigManager(LL::Info, LL::Debug, "");
 
+#if !CM_DISABLE_GUI_LOGGING
     auto guiOut = std::make_unique<cm::LoggingManager::GuiOutput>(ConfigManager, 20);
-    guiOut->addTimestamp(cm::LoggingManager::Output::TimestampMode::DateTime);
-    // guiOut->setLevel(LL::Info);
-    guiOut->setLevel(LL::Debug);
+    guiOut->setLevel(LL::Error);
     lmg.addOutput(std::move(guiOut));
+#endif
 }
 
 static void registerIOBindings()
