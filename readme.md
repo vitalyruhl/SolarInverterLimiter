@@ -9,14 +9,19 @@ This project is an ESP32-based solar inverter limiter that can be used to limit 
 - Publishes power and sensor values via MQTT
 - Configurable power output limit
 - Web-based settings UI (ConfigManager)
-- Optional OLED and BME280 sensor support via compile-time feature flags
+- BME280 sensor support; OLED and GUI/MQTT logging are disabled in the production profiles
 
 ## ConfigManager v4 note
 
-- This project is aligned to `ESP32 Configuration Manager` `v4.x` (currently `^4.2.2` in `platformio.ini`).
+- This project is aligned to `ESP32 Configuration Manager` `4.6.0`, pinned to commit `554869da7efc98e0c1874e74bf0c78d4bcd1664a` in `platformio.ini`.
 - The pre-build step uses `tools/precompile_wrapper.py`.
 - The wrapper delegates to the library script inside `.pio/libdeps/<env>/ESP32 Configuration Manager/tools/preCompile_script.py`.
-- This keeps WebUI/header generation in sync with the installed ConfigManager library version.
+- Link-time optimization preserves OTA slot headroom without changing the partition layout. Normal UART logging at Info level and ESP32 ROM/panic diagnostics remain available.
+- The wrapper builds only the resolved dependency; it no longer replaces backend or WebUI files from a local checkout.
+- SIL firmware version `4.3.2` adopts this pinned dependency without changing the inverter control algorithm.
+- Memory decision (2026-10-16): remove OLED and GUI/MQTT logging now, retain normal UART Info logging and BME280 support. If a future build reaches a demonstrated memory limit, the maintainer has authorized removing BME280 support as a fallback; it is not removed preemptively.
+
+Build and hardware acceptance evidence: [CM runtime validation](docs/cm-runtime-validation-2026-10-16.md).
 
 ## Maintenance notes 2026-05-15
 
@@ -54,9 +59,10 @@ Open follow-up:
 
 ## Build variants
 
-- `usb`: default local build and USB upload workflow.
-- `ota`: OTA build and upload workflow for the full example.
-- `ota_no_oled`: disables the OLED display feature for smaller OTA builds.
+- `usb`: production profile without OLED or GUI/MQTT logging; BME280 remains enabled.
+- `usb_bench`: COM7 smoke test with MQTT and RS485 disabled in memory before startup; existing WiFi/NVS network settings are preserved. Never use this variant for the production inverter.
+- `ota`: the same lean production profile with OTA upload.
+- `ota_no_oled`: compatibility alias for the production profile.
 - `ota_no_oled_no_bme`: disables both OLED and BME280 so the example also builds without the I2C sensor/display stack.
 
 When `FEATURE_BME280_ENABLED=0`, the temperature, humidity, and dewpoint runtime values and MQTT topics are omitted. When both OLED and BME280 are disabled, the example also omits the shared I2C settings page.
