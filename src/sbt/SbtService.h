@@ -130,6 +130,14 @@ class Service {
         }
     }
 
+    double liveMeasurement(const char *topic, uint32_t now) {
+        if (!mutex_ || !mqtt_ || !mqtt_->isConnected()) return NAN;
+        xSemaphoreTake(mutex_, portMAX_DELAY);
+        const double value = receiver_.valid(topic, now) ? receiver_.numeric(topic) : NAN;
+        xSemaphoreGive(mutex_);
+        return value;
+    }
+
     struct ControlSnapshot {
         bool bmsValid = false, chargerValid = false;
         float soc = 0, batteryW = 0, chargerW = 0, fullCapacityAh = NAN;

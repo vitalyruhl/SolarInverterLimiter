@@ -1,5 +1,5 @@
 # Append this list item to HA automations.yaml. No hardware writes.
-# Start with SILTest only. Add SolarLimiter only after mock acceptance.
+# Shared price source; consumers independently configure this input topic.
 - id: sil_publish_price_schedule
   alias: SIL - publish future electricity prices
   description: Publish confirmed EPEX quarter-hour prices; SIL applies its own factor.
@@ -12,9 +12,7 @@
     - trigger: time_pattern
       minutes: "/5"
   variables:
-    roots:
-      - SILTest
-      # - SolarLimiter
+    schedule_topic: homeassistant/sensor/electricity_price/schedule
     revision: "{{ as_timestamp(now()) | int }}"
     start_utc: "{{ ((as_timestamp(now()) | int) // 900) * 900 }}"
     prices: >-
@@ -42,20 +40,15 @@
       {{ ns.values if ns.values | count >= 2 else [] }}
   actions:
     - repeat:
-        for_each: "{{ roots }}"
+        count: "{{ [1, ((prices | count + 23) // 24)] | max }}"
         sequence:
-          - variables:
-              root: "{{ repeat.item }}"
-          - repeat:
-              count: "{{ [1, ((prices | count + 23) // 24)] | max }}"
-              sequence:
-                - action: mqtt.publish
-                  data:
-                    topic: "{{ root }}/PriceSchedule"
-                    qos: 1
-                    retain: false
-                    payload: >-
-                      {{ {'v': 1, 'r': revision | int, 't': start_utc | int,
-                          'n': prices | count, 'k': repeat.index - 1,
-                          'p': prices[(repeat.index - 1) * 24 : repeat.index * 24]} | to_json }}
+          - action: mqtt.publish
+            data:
+              topic: "{{ schedule_topic }}"
+              qos: 1
+              retain: false
+              payload: >-
+                {{ {'v': 1, 'r': revision | int, 't': start_utc | int,
+                    'n': prices | count, 'k': repeat.index - 1,
+                    'p': prices[(repeat.index - 1) * 24 : repeat.index * 24]} | to_json }}
   mode: single

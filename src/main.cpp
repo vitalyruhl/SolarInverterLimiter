@@ -211,11 +211,13 @@ struct LimiterSettings
     Config<float> priceComfort{ConfigOptions<float>{.key = "priceC", .name = "Price Comfort (EUR/kWh)", .category = "Limiter", .defaultValue = 0.25f, .sortOrder = 25}};
     Config<float> priceDeadband{ConfigOptions<float>{.key = "priceDb", .name = "Price Deadband (EUR/kWh)", .category = "Limiter", .defaultValue = 0.06f, .sortOrder = 26}};
 
+    Config<String> priceScheduleInputTopic{ConfigOptions<String>{.key = "fcTopic", .name = "Price Schedule Topic", .category = "MQTT-Topics", .defaultValue = String("homeassistant/sensor/electricity_price/schedule"), .sortOrder = 54}};
     Config<float> forecastPriceFactor{ConfigOptions<float>{.key = "fcPriceF", .name = "Forecast Price Factor", .category = "Limiter", .defaultValue = 0.93137255f, .sortOrder = 27}};
 
     void attachTo(ConfigManagerClass &cfg)
     {
         cfg.addSetting(&forecastPriceFactor);
+        cfg.addSetting(&priceScheduleInputTopic);
         cfg.addSetting(&enableController);
         cfg.addSetting(&maxOutput);
         cfg.addSetting(&minOutput);
@@ -731,7 +733,7 @@ void setupGUI()
 
     limiter.value("invSet", []()
                   { return inverterSetValue; })
-        .label("Inverter Setpoint")
+        .label(kRs485MockTransport ? "Mock Inverter Demand (no TX)" : "Requested Inverter Output (not ACK)")
         .unit("W")
         .precision(0)
         .order(3);
@@ -744,8 +746,12 @@ void setupGUI()
         .order(4);
 
     limiter.value("solar", []()
-                  { return solarPowerW; })
-        .label("Solar power")
+                  {
+        float watts = 0;
+        return telemetryAge.read(control::TelemetryAge::Inverter, millis(), control::kGridAcStaleMs, watts)
+            ? double(watts) : NAN;
+    })
+        .label("Measured Inverter AC Output")
         .unit("W")
         .precision(0)
         .order(5);
@@ -761,6 +767,49 @@ void setupGUI()
         .unit("EUR/kWh")
         .precision(3)
         .order(7);
+    limiter.value("pvPower", []()
+                  { return sbtInputs.liveMeasurement("victron/solar_power_w", millis()); })
+        .label("PV Solar Power (Victron)")
+        .unit("W")
+        .precision(0)
+        .order(8);
+
+    limiter.value("batteryPower", []()
+                  { return sbtInputs.liveMeasurement("bms/power_w", millis()); })
+        .label("Battery Power (+charge / -discharge)")
+        .unit("W")
+        .precision(0)
+        .order(9);
+
+    limiter.value("priceBand", []()
+                  { return String(currentDecisionAvailable ? currentDecision.priceBand : "unknown"); })
+        .label("Current Price Band")
+        .order(10);
+
+    limiter.value("forecastValid", []()
+                  { return currentDecisionAvailable && futurePlan.valid; })
+        .label("Future Price Plan Valid")
+        .order(11);
+
+    limiter.value("forecastStatus", []()
+                  { return String(currentDecisionAvailable ? futurePlan.reason : "startup"); })
+        .label("Future Price Plan Status")
+        .order(12);
+
+    limiter.value("forecastSlots", []()
+                  { return futurePrices.slots(); })
+        .label("Received Price Slots (15 min)")
+        .order(13);
+
+    limiter.value("controlReason", []()
+                  { return String(currentDecisionAvailable ? currentDecision.reason : "startup"); })
+        .label("Output Decision Reason")
+        .order(14);
+
+    limiter.value("mockTransport", []()
+                  { return kRs485MockTransport; })
+        .label("Mock Transport (no hardware TX)")
+        .order(15);
     // endregion Limiter
 
     // region relay outputs
@@ -1416,13 +1465,6 @@ static void updateMqttTopics()
         return;
     }
 
-    if (priceScheduleSubscribed) {
-        if (!mqtt.unsubscribe(priceScheduleTopic.c_str()))
-            lmg.logTag(LL::Warn, "FORECAST", "old topic unsubscribe failed");
-    }
-    priceScheduleSubscribed = false;
-    futurePrices.clear();
-    priceScheduleTopic = base + "/PriceSchedule";
     mqttBaseTopic = base;
     topicPublishSetValueW = mqttBaseTopic + "/SetValue";
     topicPublishCalculatedValueW = mqttBaseTopic + "/CalculatedValue";
@@ -1513,7 +1555,21 @@ static void publishMqttNow()
     }
 
     static uint32_t nextScheduleSubscribeMs = 0;
-    if (!priceScheduleSubscribed && (nextScheduleSubscribeMs == 0 ||
+    const String &inputTopic = limiterSettings.priceScheduleInputTopic.get();
+    if (priceScheduleTopic != inputTopic) {
+        if (priceScheduleSubscribed && !mqtt.unsubscribe(priceScheduleTopic.c_str()))
+            lmg.logTag(LL::Warn, "FORECAST", "old topic unsubscribe failed");
+        priceScheduleSubscribed = false;
+        futurePrices.clear();
+        futurePlan = control::FuturePlan{};
+        priceScheduleTopic = inputTopic;
+        nextScheduleSubscribeMs = 0;
+        if (inputTopic.isEmpty() || inputTopic.indexOf('+') >= 0 || inputTopic.indexOf('#') >= 0)
+            lmg.logTag(LL::Warn, "FORECAST", "invalid input topic; subscription disabled");
+    }
+    const bool scheduleTopicValid = !priceScheduleTopic.isEmpty() &&
+        priceScheduleTopic.indexOf('+') < 0 && priceScheduleTopic.indexOf('#') < 0;
+    if (scheduleTopicValid && !priceScheduleSubscribed && (nextScheduleSubscribeMs == 0 ||
         static_cast<int32_t>(nowMs - nextScheduleSubscribeMs) >= 0)) {
         nextScheduleSubscribeMs = nowMs + 5000UL;
         priceScheduleSubscribed = mqtt.subscribe(priceScheduleTopic.c_str(), 1);
