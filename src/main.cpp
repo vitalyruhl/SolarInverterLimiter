@@ -98,7 +98,7 @@
 #endif
 
 #ifndef VERSION
-#define VERSION "5.0.0"
+#define VERSION "5.0.1"
 #endif
 
 enum class NegativePriceSettingPreference : uint8_t
@@ -152,6 +152,9 @@ void testRS232();
 static void resetPidController();
 static int computePidStabilizedTarget(int baseTarget, int configuredMin, int configuredMax);
 static void processRS485Tick();
+#if CM_ENABLE_LOGGING && CM_ENABLE_VERBOSE_LOGGING
+static void verboseLogging();
+#endif
 
 // Display helpers
 #if FEATURE_OLED_DISPLAY_ENABLED
@@ -474,6 +477,18 @@ static bool lastIssuedCommandKnown = false;
 static int lastNegativePriceOverrideTarget = -1;
 static NegativePriceSettingPreference lastNegativePriceSettingPreference = NegativePriceSettingPreference::None;
 static bool normalizingNegativePriceSettings = false;
+
+#if CM_ENABLE_LOGGING && CM_ENABLE_VERBOSE_LOGGING
+struct ControlLogSnapshot
+{
+    control::CurrentInputs inputs;
+    float gridW = 0, inverterW = 0;
+    bool gridFresh = false, inverterFresh = false;
+    int minW = 0, maxW = 0, offsetW = 0;
+    uint32_t atMs = 0;
+};
+static ControlLogSnapshot controlLog;
+#endif
 
 #pragma endregion configurationn variables
 
@@ -1637,7 +1652,8 @@ static void issueInverterCommand(int watts)
     if (kRs485MockTransport)
     {
         lastMockCommandW = watts;
-        lmg.logTag(LL::Info, "MOCK", "[MOCKED!] RS485 demand=%d W; no hardware TX", watts);
+        lmg.logTag(LL::Info, "MOCK", "[MOCKED!] demand=%dW reason=%s band=%s limit=%dW; no hardware TX",
+            watts, currentDecision.reason, currentDecision.priceBand, currentDecision.ceilingW);
         return;
     }
     sendToRS485(static_cast<uint16_t>(watts));
@@ -1691,9 +1707,6 @@ static void processRS485Tick()
     int pidInput = 0;
 
     const auto source = sbtInputs.controlSnapshot(nowMs);
-#if CM_ENABLE_LOGGING && CM_ENABLE_VERBOSE_LOGGING
-    const auto diagnostics = sbtInputs.diagnosticSnapshot(nowMs);
-#endif
     control::CurrentInputs inputs;
     inputs.bmsValid = source.bmsValid;
     inputs.chargerValid = source.chargerValid;
@@ -1765,30 +1778,91 @@ static void processRS485Tick()
     }
 
 #if CM_ENABLE_LOGGING && CM_ENABLE_VERBOSE_LOGGING
+    controlLog.inputs = inputs;
+    controlLog.gridW = measuredGridW;
+    controlLog.inverterW = measuredInverterW;
+    controlLog.gridFresh = gridFresh;
+    controlLog.inverterFresh = inverterFresh;
+    controlLog.minW = configuredMin;
+    controlLog.maxW = configuredMax;
+    controlLog.offsetW = offset;
+    controlLog.atMs = nowMs;
+    verboseLogging();
+#endif
+}
+
+#if CM_ENABLE_LOGGING && CM_ENABLE_VERBOSE_LOGGING
+static void verboseLogging()
+{
+    const auto &inputs = controlLog.inputs;
+    static const char *lastReason = nullptr, *lastBand = nullptr;
+    static int lastSetW = -1;
+    const bool boundaryChanged = inverterSetValue != lastSetW &&
+        (inverterSetValue == 0 || inverterSetValue == controlLog.maxW);
+    if (!lastReason || strcmp(lastReason, currentDecision.reason) != 0 ||
+        strcmp(lastBand, currentDecision.priceBand) != 0 || boundaryChanged)
+    {
+        lmg.logTag(LL::Info, "CTRL-STEP", "set=%dW limit=%dW strategy=%s reason=%s band=%s",
+            inverterSetValue, currentDecision.ceilingW, currentDecision.strategy,
+            currentDecision.reason, currentDecision.priceBand);
+        lmg.logTag(LL::Info, "CTRL-STEP", "valid grid/inv/bms/charger/price=%d/%d/%d/%d/%d mqtt=%d neg=%d",
+            controlLog.gridFresh, controlLog.inverterFresh, inputs.bmsValid, inputs.chargerValid,
+            inputs.priceValid, mqtt.isConnected(), negativePriceActive);
+        lmg.logTag(LL::Info, "CTRL-STEP", "grid=%+.1fW invAC=%.1fW batt=%+.1fW charger=%.1fW calc=%dW",
+            controlLog.gridFresh ? controlLog.gridW : NAN, controlLog.inverterFresh ? controlLog.inverterW : NAN,
+            inputs.bmsValid ? inputs.batteryW : NAN, inputs.chargerValid ? inputs.chargerW : NAN,
+            inverterCalculatedValue);
+    }
+    lastReason = currentDecision.reason;
+    lastBand = currentDecision.priceBand;
+    lastSetW = inverterSetValue;
+
+    static bool logged = false;
+    static uint32_t lastLogMs = 0;
+    const float publishSec = mqttSettings.publishIntervalSec.get();
+    // Match the MQTT period, but never flood logs in publish-on-change mode.
+    const double intervalMs = std::isfinite(publishSec) && publishSec > 10.0f
+        ? double(publishSec) * 1000.0 : 10000.0;
+    if (logged && uint32_t(controlLog.atMs - lastLogMs) < intervalMs)
+        return;
+    logged = true;
+    lastLogMs = controlLog.atMs;
+
+    const auto diagnostics = sbtInputs.diagnosticSnapshot(controlLog.atMs);
     const auto sample = [&diagnostics](unsigned i) -> double {
         return i < sbt::channelCount && (diagnostics.validMask & (uint32_t(1) << i))
                    ? diagnostics.values[i] : NAN;
     };
     // Verbose-only diagnostics use the existing visible Info sink. Trace is
     // intentionally filtered by setupLogging, independently of these flags.
-    lmg.logTag(LL::Info, "CTRL-IN", "\n\n ---------------------------------- \n");
+    lmg.logTag(LL::Info, "CTRL", "---------- snapshot ms=%lu mock=%d ----------",
+        static_cast<unsigned long>(controlLog.atMs), kRs485MockTransport);
     lmg.logTag(LL::Info, "CTRL-IN", "grid(GetValue)=%+.1fW valid=%d invAC=%+.1fW valid=%d price=%.4f valid=%d neg=%d",
-        gridFresh ? measuredGridW : NAN, gridFresh, inverterFresh ? measuredInverterW : NAN, inverterFresh,
-        priceFresh ? measuredPrice : NAN, priceFresh, negativePriceActive);
-    lmg.logTag(LL::Info, "CTRL-CFG", "lim=%d inv=%d rs485=%d min/max=%d/%d offset=%d mosMan=%d resOff/On=%g/%g pwrDb=%d priceC/db/hys=%g/%g/%g",
+        controlLog.gridFresh ? controlLog.gridW : NAN, controlLog.gridFresh,
+        controlLog.inverterFresh ? controlLog.inverterW : NAN, controlLog.inverterFresh,
+        inputs.priceValid ? inputs.price : NAN, inputs.priceValid, negativePriceActive);
+    lmg.logTag(LL::Info, "CTRL-CFG", "lim=%d inv=%d rs485=%d min/max=%d/%d offset=%d mosMan=%d",
         limiterSettings.enableController.get(), preparedSettings.inverterEnabled, rs485settings.enableRS485.get(),
-        configuredMin, configuredMax, offset, preparedSettings.mosManualMode,
+        controlLog.minW, controlLog.maxW, controlLog.offsetW, preparedSettings.mosManualMode);
+    lmg.logTag(LL::Info, "CTRL-CFG", "resOff/On=%g/%g pwrDb=%d priceC/db/hys=%g/%g/%g",
         preparedSettings.reserveOffSocPercent, preparedSettings.reserveOnSocPercent,
         preparedSettings.batteryPowerDeadbandW, preparedSettings.priceComfortEurPerKwh,
         preparedSettings.priceDeadbandEurPerKwh, preparedSettings.priceHysteresisEurPerKwh);
+    lmg.logTag(LL::Info, "CTRL-PRICE", "band=%s cheap<=%.4f expensive>=%.4f hyst=%.4f EUR/kWh",
+        currentDecision.priceBand, preparedSettings.priceComfortEurPerKwh - preparedSettings.priceDeadbandEurPerKwh,
+        preparedSettings.priceComfortEurPerKwh + preparedSettings.priceDeadbandEurPerKwh,
+        preparedSettings.priceHysteresisEurPerKwh);
     lmg.logTag(LL::Info, "CTRL-OUT", "strategy=%s reason=%s ceiling=%d chargeW=%.1f reserve=%s",
         currentDecision.strategy, currentDecision.reason, currentDecision.ceilingW,
         currentDecision.chargeTargetValid ? currentDecision.chargeTargetW : NAN,
         currentDecision.reserveKnown ? (currentDecision.reserveAllowed ? "allowed" : "blocked") : "unknown");
-    lmg.logTag(LL::Info, "CTRL-CMD", "demand=%.1f calc=%d set=%d lastAttempt=%.0f (not ACK) bmsValid=%d chargerValid=%d",
-        gridFresh && inverterFresh ? double(measuredInverterW) + measuredGridW + offset : NAN,
-        inverterCalculatedValue, inverterSetValue, lastIssuedCommandKnown ? double(lastIssuedCommandW) : NAN,
-        source.bmsValid, source.chargerValid);
+    lmg.logTag(LL::Info, "CTRL-CMD", "demand=%.1fW calc=%dW set=%dW lastAttempt=%.0fW (not ACK)",
+        inputs.metersValid ? double(controlLog.inverterW) + controlLog.gridW + controlLog.offsetW : NAN,
+        inverterCalculatedValue, inverterSetValue, lastIssuedCommandKnown ? double(lastIssuedCommandW) : NAN);
+    lmg.logTag(LL::Info, "CTRL-CMD", "mockDemand=%.0fW bmsValid=%d chargerValid=%d mqtt=%d",
+        kRs485MockTransport ? double(lastMockCommandW) : NAN,
+        inputs.bmsValid, inputs.chargerValid, mqtt.isConnected());
+    lmg.logTag(LL::Info, "BMS", "----------");
     lmg.logTag(LL::Info, "BMS", "fresh=%d seq=%lu why=%s soc=%.1f%% p=%+.1fW v=%.2fV i=%+.2fA",
         diagnostics.fresh[0], static_cast<unsigned long>(diagnostics.sequence[0]), diagnostics.reason[0],
         sample(2), sample(5), sample(3), sample(4));
@@ -1796,14 +1870,15 @@ static void processRS485Tick()
         sample(0), sample(1), sample(8), sample(9), sample(14), diagnostics.protectionValid ? diagnostics.protection : "NA");
     lmg.logTag(LL::Info, "BMS", "tempMin/Max=%.1f/%.1f cellMin/Max=%.3f/%.3f delta=%.3f remain/fullAh=%.1f/%.1f cells/sensors=%.0f/%.0f",
         sample(25), sample(10), sample(11), sample(12), sample(13), sample(6), sample(7), sample(26), sample(27));
+    lmg.logTag(LL::Info, "VICTRON", "----------");
     lmg.logTag(LL::Info, "VICTRON", "fresh=%d seq=%lu why=%s solar=%.1fW battV=%.2fV chargeI=%.2fA chargerDC=%.1fW",
         diagnostics.fresh[1], static_cast<unsigned long>(diagnostics.sequence[1]), diagnostics.reason[1],
-        sample(15), sample(18), sample(19), source.chargerValid ? source.chargerW : NAN);
+        sample(15), sample(18), sample(19), inputs.chargerValid ? inputs.chargerW : NAN);
     lmg.logTag(LL::Info, "VICTRON", "loadI=%.2fA state=%s err=%.0f yield=%.1fWh pvV/pvA/battW=UNSUPPORTED",
         sample(21), diagnostics.chargeStateValid ? diagnostics.chargeState : "NA", sample(23), sample(24));
-    lmg.logTag(LL::Info, "CTRL-IN", " ---------------------------------- \n\n");    
-#endif
+    lmg.logTag(LL::Info, "CTRL", "---------- end ----------");
 }
+#endif
 
 void testRS232()
 {
@@ -2175,4 +2250,3 @@ void EvaluateHeater(float currentTemperature)
     setHeaterRelay(heaterLatchedState);
 }
 #endif
-

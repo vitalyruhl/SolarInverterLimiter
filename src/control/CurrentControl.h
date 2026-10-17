@@ -32,6 +32,7 @@ struct CurrentDecision {
     float chargeTargetW = 0;
     const char *strategy = "hold";
     const char *reason = "startup";
+    const char *priceBand = "unknown";
 };
 
 class CurrentControl {
@@ -55,6 +56,8 @@ public:
         out.reserveKnown = reserveKnown_;
         out.reserveAllowed = reserveKnown_ && reserveAllowed_;
         classify(cfg, price, in.price);
+        out.priceBand = band_ == Expensive ? "expensive" :
+            (band_ == Cheap ? "cheap" : (band_ == Comfort ? "comfort" : "unknown"));
         if (!cfg.inverterEnabled) return stop(out, "inverter_off");
         if (!transportEnabled) return stop(out, "transport_off");
         if (price && in.price < 0) return stop(out, "negative_price");
