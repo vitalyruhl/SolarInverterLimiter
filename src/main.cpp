@@ -25,6 +25,7 @@
 #include "control/PreparedControl.h"
 #include "control/CurrentControl.h"
 #include "control/TelemetryAge.h"
+#include "control/FuturePrices.h"
 
 #include "RS485Module/RS485Module.h"
 #include "helpers/HelperModule.h"
@@ -210,8 +211,11 @@ struct LimiterSettings
     Config<float> priceComfort{ConfigOptions<float>{.key = "priceC", .name = "Price Comfort (EUR/kWh)", .category = "Limiter", .defaultValue = 0.25f, .sortOrder = 25}};
     Config<float> priceDeadband{ConfigOptions<float>{.key = "priceDb", .name = "Price Deadband (EUR/kWh)", .category = "Limiter", .defaultValue = 0.06f, .sortOrder = 26}};
 
+    Config<float> forecastPriceFactor{ConfigOptions<float>{.key = "fcPriceF", .name = "Forecast Price Factor", .category = "Limiter", .defaultValue = 0.93137255f, .sortOrder = 27}};
+
     void attachTo(ConfigManagerClass &cfg)
     {
+        cfg.addSetting(&forecastPriceFactor);
         cfg.addSetting(&enableController);
         cfg.addSetting(&maxOutput);
         cfg.addSetting(&minOutput);
@@ -470,6 +474,11 @@ static bool preparedSettingsLoaded = false;
 static control::CurrentControl currentControl;
 static control::CurrentDecision currentDecision;
 static control::TelemetryAge telemetryAge;
+static control::FuturePrices futurePrices;
+static control::FuturePlan futurePlan;
+static String priceScheduleTopic;
+static bool priceScheduleSubscribed = false;
+static float forecastPriceFactor = 0.93f;
 static bool currentDecisionAvailable = false;
 static int lastIssuedCommandW = 0;
 static int lastMockCommandW = 0;
@@ -675,7 +684,7 @@ void setupGUI()
     sensors.value("temp", []()
                   { return roundf(temperature * 10.0f) / 10.0f; })
         .label("Temperature")
-        .unit("°C")
+        .unit("\xC2\xB0" "C")
         .precision(1)
         .order(2);
 
@@ -689,7 +698,7 @@ void setupGUI()
     sensors.value("dew", []()
                   { return roundf(Dewpoint * 10.0f) / 10.0f; })
         .label("Dewpoint")
-        .unit("°C")
+        .unit("\xC2\xB0" "C")
         .precision(1)
         .order(12);
 
@@ -1027,8 +1036,16 @@ static void setupMqtt()
 
     telemetryAge.attach(ConfigManager);
     mqtt.onMessage([](const char *topic, const byte *payload, unsigned int length)
-                   { telemetryAge.receive(topic, payload, length, millis()); });
-    mqtt.onDisconnected([]() { telemetryAge.reset(); });
+                   {
+        if (topic && priceScheduleTopic == topic) {
+            const char *result = futurePrices.receive(payload, length, uint32_t(time(nullptr)), millis());
+            if (strcmp(result, "pending") && strcmp(result, "duplicate"))
+                lmg.logTag(!strcmp(result, "accepted") || !strcmp(result, "withdrawn") ? LL::Info : LL::Warn,
+                    "FORECAST", "rx=%s rev=%lu slots=%u", result,
+                    static_cast<unsigned long>(futurePrices.revision()), futurePrices.slots());
+        } else telemetryAge.receive(topic, payload, length, millis());
+    });
+    mqtt.onDisconnected([]() { telemetryAge.reset(); priceScheduleSubscribed = false; });
 
     // Optional: show receive topics in runtime UI
     // mqtt.addMqttTopicToLiveGroup(ConfigManager, "grid_import_w", "mqtt", "MQTT-Received", "MQTT-Received", 1);
@@ -1067,6 +1084,7 @@ static void registerProjectSettings()
 // Invalid combinations remain visible as entered; future modules must require valid.
 static void refreshPreparedSettings()
 {
+    forecastPriceFactor = limiterSettings.forecastPriceFactor.get();
     preparedSettings.reserveOffSocPercent = limiterSettings.reserveOffSoc.get();
     preparedSettings.reserveOnSocPercent = limiterSettings.reserveOnSoc.get();
     preparedSettings.batteryPowerDeadbandW = limiterSettings.batteryPowerDeadband.get();
@@ -1098,6 +1116,7 @@ static void configureLimiterSettingsBehavior()
     limiterSettings.inverterEnabled.setCallback([](bool) { refreshPreparedSettings(); });
     limiterSettings.priceComfort.setCallback([](float) { refreshPreparedSettings(); });
     limiterSettings.priceDeadband.setCallback([](float) { refreshPreparedSettings(); });
+    limiterSettings.forecastPriceFactor.setCallback([](float) { refreshPreparedSettings(); });
 
     limiterSettings.forceMinOnNegativePrice.setCallback([](bool enabled)
                                                         {
@@ -1397,6 +1416,13 @@ static void updateMqttTopics()
         return;
     }
 
+    if (priceScheduleSubscribed) {
+        if (!mqtt.unsubscribe(priceScheduleTopic.c_str()))
+            lmg.logTag(LL::Warn, "FORECAST", "old topic unsubscribe failed");
+    }
+    priceScheduleSubscribed = false;
+    futurePrices.clear();
+    priceScheduleTopic = base + "/PriceSchedule";
     mqttBaseTopic = base;
     topicPublishSetValueW = mqttBaseTopic + "/SetValue";
     topicPublishCalculatedValueW = mqttBaseTopic + "/CalculatedValue";
@@ -1428,7 +1454,7 @@ static String buildPlanningConfigPayload()
     char payload[224];
     snprintf(payload, sizeof(payload),
              "{\"v\":1,\"valid\":%s,\"resOff\":%s,\"resOn\":%s,\"pwrDb\":%d,\"mosMan\":%s,\"invEn\":%s,"
-             "\"priceC\":%s,\"priceDb\":%s,\"hystDb\":%s}",
+             "\"priceC\":%s,\"priceDb\":%s,\"hystDb\":%s,\"fcPriceF\":%s}",
              preparedSettings.valid ? "true" : "false",
              JsonNumberText(preparedSettings.reserveOffSocPercent, 4).text,
              JsonNumberText(preparedSettings.reserveOnSocPercent, 4).text,
@@ -1437,7 +1463,8 @@ static String buildPlanningConfigPayload()
              preparedSettings.inverterEnabled ? "true" : "false",
              JsonNumberText(preparedSettings.priceComfortEurPerKwh, 4).text,
              JsonNumberText(preparedSettings.priceDeadbandEurPerKwh, 4).text,
-             JsonNumberText(preparedSettings.priceHysteresisEurPerKwh, 4).text);
+             JsonNumberText(preparedSettings.priceHysteresisEurPerKwh, 4).text,
+             JsonNumberText(forecastPriceFactor, 6).text);
     return String(payload);
 }
 
@@ -1445,13 +1472,21 @@ static String buildPlanningStatePayload()
 {
     if (!currentDecisionAvailable)
         return "{\"v\":1,\"strategy\":null,\"reason\":null,\"limitW\":null,\"chargeW\":null,\"reserveOk\":null,\"allocWh\":null}";
-    char payload[224];
+    char payload[512];
     snprintf(payload, sizeof(payload),
-             "{\"v\":1,\"strategy\":\"%s\",\"reason\":\"%s\",\"limitW\":%d,\"chargeW\":%s,\"reserveOk\":%s%s,\"allocWh\":null}",
+             "{\"v\":1,\"strategy\":\"%s\",\"reason\":\"%s\",\"limitW\":%d,\"chargeW\":%s,\"reserveOk\":%s%s,"
+             "\"forecast\":%s,\"forecastReason\":\"%s\",\"revision\":%lu,\"allocWh\":%s,\"availableWh\":%s,"
+             "\"shortfallWh\":%s,\"batteryMaxW\":%d,\"targetUTC\":%lu}",
              currentDecision.strategy, currentDecision.reason, currentDecision.ceilingW,
              currentDecision.chargeTargetValid ? JsonNumberText(currentDecision.chargeTargetW, 1).text : "null",
              currentDecision.reserveKnown ? (currentDecision.reserveAllowed ? "true" : "false") : "null",
-             kRs485MockTransport ? ",\"mock\":true" : "");
+             kRs485MockTransport ? ",\"mock\":true" : "",
+             futurePlan.valid ? "true" : "false", futurePlan.reason,
+             static_cast<unsigned long>(futurePrices.revision()),
+             futurePlan.valid ? JsonNumberText(futurePlan.reservedWh, 1).text : "null",
+             futurePlan.valid ? JsonNumberText(futurePlan.availableWh, 1).text : "null",
+             futurePlan.valid ? JsonNumberText(futurePlan.shortfallWh, 1).text : "null",
+             futurePlan.batteryCeilingW, static_cast<unsigned long>(futurePlan.targetAt));
     return String(payload);
 }
 
@@ -1477,6 +1512,14 @@ static void publishMqttNow()
         updateMqttTopics();
     }
 
+    static uint32_t nextScheduleSubscribeMs = 0;
+    if (!priceScheduleSubscribed && (nextScheduleSubscribeMs == 0 ||
+        static_cast<int32_t>(nowMs - nextScheduleSubscribeMs) >= 0)) {
+        nextScheduleSubscribeMs = nowMs + 5000UL;
+        priceScheduleSubscribed = mqtt.subscribe(priceScheduleTopic.c_str(), 1);
+        lmg.logTag(priceScheduleSubscribed ? LL::Info : LL::Warn, "FORECAST", "subscribe=%d topic=%s",
+            priceScheduleSubscribed, priceScheduleTopic.c_str());
+    }
     mqtt.publishExtraTopicLazy("setvalue_w", topicPublishSetValueW.c_str(), []() { return String(inverterSetValue); }, false);
     mqtt.publishExtraTopicLazy("calculated_w", topicPublishCalculatedValueW.c_str(), []() { return String(inverterCalculatedValue); }, false);
     mqtt.publishExtraTopicLazy("grid_import_w", topicPublishGridImportW.c_str(), []() { return String(currentGridImportW); }, false);
@@ -1724,6 +1767,15 @@ static void processRS485Tick()
     inputs.price = measuredPrice;
     inputs.bmsSequence = source.bmsSequence;
     inputs.chargerSequence = source.chargerSequence;
+    futurePlan = futurePrices.plan(uint32_t(time(nullptr)), nowMs, preparedSettings,
+        source.bmsValid, source.soc, source.batteryW, source.fullCapacityAh,
+        source.bmsSequence, priceFresh, measuredPrice,
+        currentControl.expensivePrice(preparedSettings, priceFresh, measuredPrice),
+        forecastPriceFactor, configuredMax);
+    inputs.futureValid = futurePlan.valid;
+    inputs.futureBatteryCeilingW = futurePlan.batteryCeilingW;
+    inputs.futureChargeTargetW = futurePlan.chargeTargetW;
+    inputs.futureReason = futurePlan.reason;
     currentDecision = currentControl.update(preparedSettings, inputs,
         limiterSettings.enableController.get(), kRs485MockTransport || rs485settings.enableRS485.get(),
         configuredMax, kRs485MockTransport ? lastMockCommandW : lastIssuedCommandW, nowMs);
@@ -1858,6 +1910,13 @@ static void verboseLogging()
         currentDecision.priceBand, preparedSettings.priceComfortEurPerKwh - preparedSettings.priceDeadbandEurPerKwh,
         preparedSettings.priceComfortEurPerKwh + preparedSettings.priceDeadbandEurPerKwh,
         preparedSettings.priceHysteresisEurPerKwh);
+    lmg.logTag(LL::Info, "FORECAST", "valid=%d reason=%s factor=%.6f rev=%lu slots=%u nextPrice=%.4f",
+        futurePlan.valid, futurePlan.reason, forecastPriceFactor,
+        static_cast<unsigned long>(futurePrices.revision()), futurePrices.slots(),
+        futurePlan.valid ? futurePlan.nextPrice : NAN);
+    lmg.logTag(LL::Info, "FORECAST", "avail/reserve/shortfall=%.1f/%.1f/%.1fWh batteryMax=%dW charge=%.1fW targetUTC=%lu",
+        futurePlan.availableWh, futurePlan.reservedWh, futurePlan.shortfallWh,
+        futurePlan.batteryCeilingW, futurePlan.chargeTargetW, static_cast<unsigned long>(futurePlan.targetAt));
     lmg.logTag(LL::Info, "CTRL-OUT", "strategy=%s reason=%s ceiling=%d chargeW=%.1f reserve=%s",
         currentDecision.strategy, currentDecision.reason, currentDecision.ceilingW,
         currentDecision.chargeTargetValid ? currentDecision.chargeTargetW : NAN,

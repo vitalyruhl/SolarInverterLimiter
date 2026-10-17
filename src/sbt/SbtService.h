@@ -132,7 +132,7 @@ class Service {
 
     struct ControlSnapshot {
         bool bmsValid = false, chargerValid = false;
-        float soc = 0, batteryW = 0, chargerW = 0;
+        float soc = 0, batteryW = 0, chargerW = 0, fullCapacityAh = NAN;
         uint32_t bmsSequence = 0, chargerSequence = 0;
     };
     struct DiagnosticSnapshot {
@@ -179,6 +179,8 @@ class Service {
             s.chargerW = v * a;
             s.chargerValid = v > 0 && a >= 0 && std::isfinite(s.chargerW);
         }
+        if (receiver_.valid("bms/full_capacity_ah", now))
+            s.fullCapacityAh = receiver_.numeric("bms/full_capacity_ah");
         s.bmsSequence = receiver_.sequence(0);
         s.chargerSequence = receiver_.sequence(1);
         xSemaphoreGive(mutex_);

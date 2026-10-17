@@ -2,6 +2,7 @@
 
 #include "PreparedControl.h"
 #include <cmath>
+#include <algorithm>
 
 namespace control {
 
@@ -21,6 +22,10 @@ struct CurrentInputs {
     float price = 0;
     uint32_t bmsSequence = 0;
     uint32_t chargerSequence = 0;
+    bool futureValid = false;
+    int futureBatteryCeilingW = 0;
+    float futureChargeTargetW = 0;
+    const char *futureReason = "forecast_missing";
 };
 
 struct CurrentDecision {
@@ -37,6 +42,11 @@ struct CurrentDecision {
 
 class CurrentControl {
 public:
+    bool expensivePrice(const PreparedSettings &cfg, bool valid, float price) {
+        if (!cfg.valid) return false;
+        classify(cfg, valid, price);
+        return band_ == Expensive;
+    }
     // heldCommandW must describe the actual held output command, not a new demand.
     // The caller retains responsibility for transport and higher-priority protection.
     CurrentDecision update(const PreparedSettings &cfg, const CurrentInputs &in,
@@ -81,7 +91,11 @@ public:
             out.direct = true; out.reason = "recovery";
             return out;
         }
-        if (band_ == Expensive && out.reserveAllowed) {
+        if (out.reserveAllowed && (in.futureValid ? in.futureBatteryCeilingW > 0 : band_ == Expensive)) {
+            const float economicTarget = in.futureValid
+                ? clamp(float(in.futureBatteryCeilingW) +
+                    clamp(in.chargerW - cfg.batteryPowerDeadbandW, 0, maximum) * kDischargeEfficiency, 0, maximum)
+                : maximum;
             piActive_ = false; integral_ = 0;
             if (!economicActive_) {
                 economicActive_ = true;
@@ -90,17 +104,24 @@ public:
             }
             const float dt = clamp(float(uint32_t(now - economicAt_)) * 0.001f, 0, 10);
             economicAt_ = now;
-            economicCeiling_ = clamp(economicCeiling_ + kEconomicCeilingRampUpWPerSecond * dt, 0, maximum);
+            economicCeiling_ = economicTarget >= economicCeiling_
+                ? clamp(economicTarget, 0, economicCeiling_ + kEconomicCeilingRampUpWPerSecond * dt)
+                : clamp(economicTarget, economicCeiling_ - kEconomicCeilingRampDownWPerSecond * dt, maximum);
+            // Fresh PV loss and a shrinking available-energy ceiling remain restrictive immediately.
+            if (in.futureValid) economicCeiling_ = std::min(economicCeiling_, economicTarget);
             out.ceilingW = int(economicCeiling_);
-            out.strategy = "discharge"; out.reason = "expensive";
+            out.strategy = "discharge"; out.reason = in.futureValid ? in.futureReason : "expensive";
             return out;
         }
         economicActive_ = false;
         out.strategy = "preserve";
         out.reason = !out.reserveAllowed ? "reserve" :
-            (band_ == Unknown ? "price_missing" : (band_ == Cheap ? "cheap" : "comfort"));
+            (in.futureValid ? in.futureReason :
+             (band_ == Unknown ? "price_missing" : (band_ == Cheap ? "cheap" : "comfort")));
         out.chargeTargetValid = true;
-        out.chargeTargetW = float(cfg.batteryPowerDeadbandW);
+        out.chargeTargetW = in.futureValid
+            ? std::max(float(cfg.batteryPowerDeadbandW), in.futureChargeTargetW)
+            : float(cfg.batteryPowerDeadbandW);
         const float upper = clamp(in.chargerW * kDischargeEfficiency, 0, maximum);
         const float feedforward = clamp((in.chargerW - out.chargeTargetW) * kDischargeEfficiency, 0, upper);
         const float error = (in.batteryW - out.chargeTargetW) * kDischargeEfficiency;
