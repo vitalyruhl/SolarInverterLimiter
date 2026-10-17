@@ -469,6 +469,7 @@ static control::CurrentDecision currentDecision;
 static control::TelemetryAge telemetryAge;
 static bool currentDecisionAvailable = false;
 static int lastIssuedCommandW = 0;
+static int lastMockCommandW = 0;
 static bool lastIssuedCommandKnown = false;
 static int lastNegativePriceOverrideTarget = -1;
 static NegativePriceSettingPreference lastNegativePriceSettingPreference = NegativePriceSettingPreference::None;
@@ -513,11 +514,6 @@ void setup()
     syncStoredCodeVersion();
     delay(100);
     setupNetworkDefaults();
-#if defined(SIL_BENCH_TEST) && SIL_BENCH_TEST
-    // Keep bench firmware from driving the production inverter.
-    mqttSettings.enableMQTT.set(false);
-    rs485settings.enableRS485.set(false);
-#endif
     ioManager.begin();
 
     ConfigManager.startWebServer();
@@ -1446,6 +1442,7 @@ static String buildPlanningStatePayload()
     payload += currentDecision.chargeTargetValid ? String(currentDecision.chargeTargetW, 1) : String("null");
     payload += ",\"reserveOk\":";
     payload += currentDecision.reserveKnown ? (currentDecision.reserveAllowed ? "true" : "false") : "null";
+    if (kRs485MockTransport) payload += ",\"mock\":true";
     payload += ",\"allocWh\":null}";
     return payload;
 }
@@ -1635,6 +1632,22 @@ void cb_RS485Listener()
     rs485TickDue = true;
 }
 
+static void issueInverterCommand(int watts)
+{
+    if (kRs485MockTransport)
+    {
+        lastMockCommandW = watts;
+        lmg.logTag(LL::Info, "MOCK", "[MOCKED!] RS485 demand=%d W; no hardware TX", watts);
+        return;
+    }
+    sendToRS485(static_cast<uint16_t>(watts));
+    if (rs485settings.enableRS485.get())
+    {
+        lastIssuedCommandW = watts;
+        lastIssuedCommandKnown = true;
+    }
+}
+
 static void processRS485Tick()
 {
     int configuredMin = limiterSettings.minOutput.get();
@@ -1693,8 +1706,8 @@ static void processRS485Tick()
     inputs.bmsSequence = source.bmsSequence;
     inputs.chargerSequence = source.chargerSequence;
     currentDecision = currentControl.update(preparedSettings, inputs,
-        limiterSettings.enableController.get(), rs485settings.enableRS485.get(),
-        configuredMax, lastIssuedCommandW, nowMs);
+        limiterSettings.enableController.get(), kRs485MockTransport || rs485settings.enableRS485.get(),
+        configuredMax, kRs485MockTransport ? lastMockCommandW : lastIssuedCommandW, nowMs);
     currentDecisionAvailable = true;
 
     if (negativePriceOverrideTarget >= 0)
@@ -1723,15 +1736,13 @@ static void processRS485Tick()
     if (negativePriceOverrideTarget >= 0)
     {
         inverterSetValue = min(negativePriceOverrideTarget, currentDecision.ceilingW);
-        sendToRS485(static_cast<uint16_t>(inverterSetValue));
-        if (rs485settings.enableRS485.get()) { lastIssuedCommandW = inverterSetValue; lastIssuedCommandKnown = true; }
+        issueInverterCommand(inverterSetValue);
     }
     else if (currentDecision.direct)
     {
         inverterSetValue = constrain(currentDecision.ceilingW, 0, configuredMax);
         resetPidController();
-        sendToRS485(static_cast<uint16_t>(inverterSetValue));
-        if (rs485settings.enableRS485.get()) { lastIssuedCommandW = inverterSetValue; lastIssuedCommandKnown = true; }
+        issueInverterCommand(inverterSetValue);
     }
     else if (limiterSettings.enableController.get())
     {
@@ -1739,8 +1750,7 @@ static void processRS485Tick()
         const int ceiling = constrain(currentDecision.ceilingW, 0, configuredMax);
         const int effectiveMin = min(configuredMin, ceiling);
         inverterSetValue = constrain(correctedValue, effectiveMin, ceiling);
-        sendToRS485(static_cast<uint16_t>(inverterSetValue));
-        if (rs485settings.enableRS485.get()) { lastIssuedCommandW = inverterSetValue; lastIssuedCommandKnown = true; }
+        issueInverterCommand(inverterSetValue);
         lmg.logTag(LL::Trace, "RS485", "Controller enabled -> set inverter to %d W (calc=%d, corr=%d)", inverterSetValue, inverterCalculatedValue, correctedValue);
         lmg.logTag(LL::Trace, "PID", "inv=%d gridSigned=%d gridIn=%d gridOut=%d off=%d base=%d clamp=%d in=%d out=%d min=%d max=%d set=%d",
                    currentInverterOutputW, signedGridPowerW, gridImportW, gridExportW, offset, pidBaseTarget, pidClampedBaseTarget,
@@ -1751,8 +1761,7 @@ static void processRS485Tick()
         inverterSetValue = configuredMax;
         resetPidController();
         lmg.logTag(LL::Info, "RS485", "Controller disabled -> using MAX output");
-        sendToRS485(static_cast<uint16_t>(inverterSetValue));
-        if (rs485settings.enableRS485.get()) { lastIssuedCommandW = inverterSetValue; lastIssuedCommandKnown = true; }
+        issueInverterCommand(inverterSetValue);
     }
 
 #if CM_ENABLE_LOGGING && CM_ENABLE_VERBOSE_LOGGING
@@ -1792,6 +1801,7 @@ static void processRS485Tick()
         sample(15), sample(18), sample(19), source.chargerValid ? source.chargerW : NAN);
     lmg.logTag(LL::Info, "VICTRON", "loadI=%.2fA state=%s err=%.0f yield=%.1fWh pvV/pvA/battW=UNSUPPORTED",
         sample(21), diagnostics.chargeStateValid ? diagnostics.chargeState : "NA", sample(23), sample(24));
+    lmg.logTag(LL::Info, "CTRL-IN", " ---------------------------------- \n\n");    
 #endif
 }
 

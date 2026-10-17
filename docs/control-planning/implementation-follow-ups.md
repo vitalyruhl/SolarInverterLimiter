@@ -84,3 +84,12 @@ Retain `docs/sbt-receiver-validation-2026-10-16.md` and `docs/superpowers/plans/
 Diagnostics now emit once per RS485 control tick when both logging flags are enabled, through the existing visible Info sink (the separate SIL Trace sink is filtered by setupLogging). Short CTRL-IN/CFG/OUT/CMD, BMS and VICTRON lines avoid long-message truncation, including source freshness and validity, BMS/Victron readings, input values, decision, limit, and requested/last-attempted command. `GetValue` is the signed grid-import input; the user identified observed `GetValue=3533` and `CalculatedValue=0`, consistent with `transport_off` explaining the zero. PV voltage/current and Victron battery-power channels remain marked unsupported by the receiver. These diagnostics have not been built or flashed by the agent.
 
 The owner's current configuration uses resOff=2 and resOn=8; these runtime settings were not changed. Diagnostic snapshots are copied under the existing SBT mutex and formatted after release, and are omitted when either logging flag is disabled. Invalid readings are printed as nan/NA; lastAttempt is not an inverter acknowledgement. No control behavior or MQTT payload fields were changed for this diagnostic addition.
+
+
+### Test ESP: mocked transport with real telemetry
+
+`[env:testesp]` now defines `SIL_MOCK_TRANSPORT=1` instead of `SIL_BENCH_TEST` and explicitly enables both logging flags. The former startup code that disabled MQTT and RS485 settings was removed. Existing NVS/network settings are preserved; MQTT must already be enabled with the isolated test topic/client identity.
+
+Only transport availability is simulated for the controller. Source freshness, reserve, price logic, inverter enable and all other existing checks remain in effect. Commands update a separate mock-held value and emit `[MOCKED!]`; real issued-command state remains untouched. Planning/State carries `mock:true` for computed mock decisions, and CalculatedValue/SetValue describe simulated demand in this build. Every RS485 initialization, send and receive entry point returns without hardware access in a mock build, even if Enable RS485 is turned on.
+
+This is a live-input dry run, not a simulated battery/inverter plant: measured power and SOC still come from the real system, so calculated commands do not affect the feedback. It qualifies decisions and logs, not closed-loop response. The reported 95.2% flash build predates this change. No agent tests, builds, uploads or Git operations were run.

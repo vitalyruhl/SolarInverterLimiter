@@ -16,6 +16,8 @@ RS485Packet packet;
 
 void RS485begin()
 {
+    // [MOCKED!] Never initialize, write or read the hardware transport.
+    if (kRs485MockTransport) return;
     CM_LOG_VERBOSE("[RS485] starting RS485Module::RS485begin()");
     CM_LOG_VERBOSE("[RS485] enableRS485 = %d", rs485settings.enableRS485.get());
 
@@ -50,6 +52,8 @@ void RS485begin()
 
 void sendToRS485Packet(uint16_t demand)
 {
+    // [MOCKED!] Never initialize, write or read the hardware transport.
+    if (kRs485MockTransport) return;
     // todo:Fix it --> dont send the header, there is an logical error!!!
     // 21:00:FF:02:64:00 instead of
     // 24:56:00:21:02:FE:80:09
@@ -81,6 +85,8 @@ void sendToRS485Packet(uint16_t demand)
 
 void sendToRS485(uint16_t demand)
 {
+    // [MOCKED!] Never initialize, write or read the hardware transport.
+    if (kRs485MockTransport) return;
     // sl->Printf("RS485Module::sendToRS485: %d", demand).Info();
 
     if (!rs485settings.enableRS485.get())
@@ -136,6 +142,8 @@ void sendToRS485(uint16_t demand)
 
 String reciveFromRS485()
 {
+    // [MOCKED!] Never initialize, write or read the hardware transport.
+    if (kRs485MockTransport) return String();
     String recivedData;
     while (RS485serial->available())
     {
@@ -150,6 +158,8 @@ String reciveFromRS485()
 
 RS485Packet reciveFromRS485Packet()
 {
+    // [MOCKED!] Never initialize, write or read the hardware transport.
+    if (kRs485MockTransport) return RS485Packet{};
     RS485Packet incoming;
     if (RS485serial->available() >= sizeof(RS485Packet))
     {
