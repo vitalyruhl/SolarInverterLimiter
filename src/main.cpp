@@ -1410,56 +1410,49 @@ static void updateMqttTopics()
 #endif
 }
 
+struct JsonNumberText
+{
+    char text[16];
+    JsonNumberText(float value, int decimals)
+    {
+        if (std::isfinite(value))
+            snprintf(text, sizeof(text), "%.*f", decimals, value);
+        else
+            snprintf(text, sizeof(text), "null");
+    }
+};
+
+// Payloads are formatted on the stack so each publish needs one heap allocation.
 static String buildPlanningConfigPayload()
 {
-    const auto jsonNumber = [](float value)
-    {
-        return std::isfinite(value) ? String(value, 4) : String("null");
-    };
-
-    String payload;
-    payload.reserve(176);
-    payload = "{\"v\":1,\"valid\":";
-    payload += preparedSettings.valid ? "true" : "false";
-    payload += ",\"resOff\":";
-    payload += jsonNumber(preparedSettings.reserveOffSocPercent);
-    payload += ",\"resOn\":";
-    payload += jsonNumber(preparedSettings.reserveOnSocPercent);
-    payload += ",\"pwrDb\":";
-    payload += String(preparedSettings.batteryPowerDeadbandW);
-    payload += ",\"mosMan\":";
-    payload += preparedSettings.mosManualMode ? "true" : "false";
-    payload += ",\"invEn\":";
-    payload += preparedSettings.inverterEnabled ? "true" : "false";
-    payload += ",\"priceC\":";
-    payload += jsonNumber(preparedSettings.priceComfortEurPerKwh);
-    payload += ",\"priceDb\":";
-    payload += jsonNumber(preparedSettings.priceDeadbandEurPerKwh);
-    payload += ",\"hystDb\":";
-    payload += jsonNumber(preparedSettings.priceHysteresisEurPerKwh);
-    payload += "}";
-    return payload;
+    char payload[224];
+    snprintf(payload, sizeof(payload),
+             "{\"v\":1,\"valid\":%s,\"resOff\":%s,\"resOn\":%s,\"pwrDb\":%d,\"mosMan\":%s,\"invEn\":%s,"
+             "\"priceC\":%s,\"priceDb\":%s,\"hystDb\":%s}",
+             preparedSettings.valid ? "true" : "false",
+             JsonNumberText(preparedSettings.reserveOffSocPercent, 4).text,
+             JsonNumberText(preparedSettings.reserveOnSocPercent, 4).text,
+             preparedSettings.batteryPowerDeadbandW,
+             preparedSettings.mosManualMode ? "true" : "false",
+             preparedSettings.inverterEnabled ? "true" : "false",
+             JsonNumberText(preparedSettings.priceComfortEurPerKwh, 4).text,
+             JsonNumberText(preparedSettings.priceDeadbandEurPerKwh, 4).text,
+             JsonNumberText(preparedSettings.priceHysteresisEurPerKwh, 4).text);
+    return String(payload);
 }
 
 static String buildPlanningStatePayload()
 {
     if (!currentDecisionAvailable)
         return "{\"v\":1,\"strategy\":null,\"reason\":null,\"limitW\":null,\"chargeW\":null,\"reserveOk\":null,\"allocWh\":null}";
-    String payload;
-    payload.reserve(160);
-    payload = "{\"v\":1,\"strategy\":\"";
-    payload += currentDecision.strategy;
-    payload += "\",\"reason\":\"";
-    payload += currentDecision.reason;
-    payload += "\",\"limitW\":";
-    payload += String(currentDecision.ceilingW);
-    payload += ",\"chargeW\":";
-    payload += currentDecision.chargeTargetValid ? String(currentDecision.chargeTargetW, 1) : String("null");
-    payload += ",\"reserveOk\":";
-    payload += currentDecision.reserveKnown ? (currentDecision.reserveAllowed ? "true" : "false") : "null";
-    if (kRs485MockTransport) payload += ",\"mock\":true";
-    payload += ",\"allocWh\":null}";
-    return payload;
+    char payload[224];
+    snprintf(payload, sizeof(payload),
+             "{\"v\":1,\"strategy\":\"%s\",\"reason\":\"%s\",\"limitW\":%d,\"chargeW\":%s,\"reserveOk\":%s%s,\"allocWh\":null}",
+             currentDecision.strategy, currentDecision.reason, currentDecision.ceilingW,
+             currentDecision.chargeTargetValid ? JsonNumberText(currentDecision.chargeTargetW, 1).text : "null",
+             currentDecision.reserveKnown ? (currentDecision.reserveAllowed ? "true" : "false") : "null",
+             kRs485MockTransport ? ",\"mock\":true" : "");
+    return String(payload);
 }
 
 static void publishMqttNow()
@@ -1469,7 +1462,20 @@ static void publishMqttNow()
         return;
     }
 
-    updateMqttTopics();
+    // CM allocates a key String per lazy publish check; avoid doing that on every loop pass.
+    static uint32_t lastPublishCheckMs = 0;
+    static uint32_t lastTopicCheckMs = 0;
+    const uint32_t nowMs = millis();
+    if (uint32_t(nowMs - lastPublishCheckMs) < 250UL)
+    {
+        return;
+    }
+    lastPublishCheckMs = nowMs;
+    if (mqttBaseTopic.isEmpty() || uint32_t(nowMs - lastTopicCheckMs) >= 5000UL)
+    {
+        lastTopicCheckMs = nowMs;
+        updateMqttTopics();
+    }
 
     mqtt.publishExtraTopicLazy("setvalue_w", topicPublishSetValueW.c_str(), []() { return String(inverterSetValue); }, false);
     mqtt.publishExtraTopicLazy("calculated_w", topicPublishCalculatedValueW.c_str(), []() { return String(inverterCalculatedValue); }, false);
@@ -1808,10 +1814,10 @@ static void verboseLogging()
         lmg.logTag(LL::Info, "CTRL-STEP", "valid grid/inv/bms/charger/price=%d/%d/%d/%d/%d mqtt=%d neg=%d",
             controlLog.gridFresh, controlLog.inverterFresh, inputs.bmsValid, inputs.chargerValid,
             inputs.priceValid, mqtt.isConnected(), negativePriceActive);
-        lmg.logTag(LL::Info, "CTRL-STEP", "grid=%+.1fW invAC=%.1fW batt=%+.1fW charger=%.1fW calc=%dW",
+        lmg.logTag(LL::Info, "CTRL-STEP", "grid=%+.1fW invAC=%.1fW batt=%+.1fW charger=%.1fW calc=%dW maxAlloc=%lu",
             controlLog.gridFresh ? controlLog.gridW : NAN, controlLog.inverterFresh ? controlLog.inverterW : NAN,
             inputs.bmsValid ? inputs.batteryW : NAN, inputs.chargerValid ? inputs.chargerW : NAN,
-            inverterCalculatedValue);
+            inverterCalculatedValue, static_cast<unsigned long>(ESP.getMaxAllocHeap()));
     }
     lastReason = currentDecision.reason;
     lastBand = currentDecision.priceBand;
@@ -1862,6 +1868,10 @@ static void verboseLogging()
     lmg.logTag(LL::Info, "CTRL-CMD", "mockDemand=%.0fW bmsValid=%d chargerValid=%d mqtt=%d",
         kRs485MockTransport ? double(lastMockCommandW) : NAN,
         inputs.bmsValid, inputs.chargerValid, mqtt.isConnected());
+    // maxAlloc is the largest contiguous block; web responses fail when it drops.
+    lmg.logTag(LL::Info, "HEAP", "free=%lu min=%lu maxAlloc=%lu",
+        static_cast<unsigned long>(ESP.getFreeHeap()), static_cast<unsigned long>(ESP.getMinFreeHeap()),
+        static_cast<unsigned long>(ESP.getMaxAllocHeap()));
     lmg.logTag(LL::Info, "BMS", "----------");
     lmg.logTag(LL::Info, "BMS", "fresh=%d seq=%lu why=%s soc=%.1f%% p=%+.1fW v=%.2fV i=%+.2fA",
         diagnostics.fresh[0], static_cast<unsigned long>(diagnostics.sequence[0]), diagnostics.reason[0],

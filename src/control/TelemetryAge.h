@@ -3,8 +3,47 @@
 #include <ArduinoJson.h>
 #include <cmath>
 #include <cstdlib>
+#include <cstring>
+#include <strings.h>
 
 namespace control {
+// Fixed bump arena for short-lived JSON parsing; keeps MQTT receive off the heap.
+// Reset before each parse; exhaustion surfaces as NoMemory and marks the input invalid.
+class JsonArena final : public ArduinoJson::Allocator {
+public:
+    void reset() { used_ = 0; }
+    void *allocate(size_t size) override {
+        const size_t need = kHeader + align(size);
+        if (need > sizeof(buffer_) - used_) return nullptr;
+        uint8_t *block = buffer_ + used_;
+        *reinterpret_cast<uint32_t *>(block) = uint32_t(size);
+        used_ += need;
+        return block + kHeader;
+    }
+    void deallocate(void *) override {}
+    void *reallocate(void *ptr, size_t size) override {
+        if (!ptr) return allocate(size);
+        uint8_t *block = static_cast<uint8_t *>(ptr) - kHeader;
+        const uint32_t old = *reinterpret_cast<uint32_t *>(block);
+        const size_t start = size_t(block - buffer_);
+        if (start + kHeader + align(old) == used_) {
+            if (start + kHeader + align(size) > sizeof(buffer_)) return nullptr;
+            used_ = start + kHeader + align(size);
+            *reinterpret_cast<uint32_t *>(block) = uint32_t(size);
+            return ptr;
+        }
+        if (size <= old) return ptr;
+        void *fresh = allocate(size);
+        if (fresh) std::memcpy(fresh, ptr, old);
+        return fresh;
+    }
+private:
+    static constexpr size_t kHeader = 8;
+    static size_t align(size_t size) { return (size + 7u) & ~size_t(7u); }
+    alignas(8) uint8_t buffer_[4096];
+    size_t used_ = 0;
+};
+
 // Observe existing CM mappings without replacing the SBT message callback.
 class TelemetryAge {
 public:
@@ -41,43 +80,91 @@ public:
             stamps_[i].valid = false;
             portEXIT_CRITICAL(&mux_);
             if (!length || length > 1024) continue;
-            String raw;
-            raw.reserve(length);
-            for (unsigned n = 0; n < length; ++n) raw += char(payload[n]);
-            raw.trim();
-            String key = path_[i]->get(); key.trim();
-            if (raw.startsWith("{") || raw.startsWith("[")) {
-                JsonDocument doc;
-                if (deserializeJson(doc, raw)) continue;
-                JsonVariantConst value = doc.as<JsonVariantConst>();
-                unsigned start = 0;
-                while (start < key.length()) {
-                    int end = key.indexOf('.', start);
-                    if (end < 0) end = key.length();
-                    value = value[key.substring(start, end)];
-                    start = unsigned(end) + 1;
-                }
-                if (value.isNull() || value.is<bool>()) continue;
-                if (value.is<const char *>()) raw = value.as<const char *>();
-                else if (value.is<double>()) raw = String(value.as<double>(), 8);
-                else continue;
-            } else if (key.length() && !key.equalsIgnoreCase("none")) continue;
-            char *end = nullptr;
-            const double number = std::strtod(raw.c_str(), &end);
-            while (end && (*end == ' ' || *end == '\r' || *end == '\n' || *end == '\t')) ++end;
-            if (end == raw.c_str() || !end || *end || !std::isfinite(number)) continue;
-            // Match CM integer conversion (fractional input is truncated).
-            if (i != Price && (number < INT32_MIN || number > INT32_MAX)) continue;
+            float parsed = 0;
+            if (!parse(i, reinterpret_cast<const char *>(payload), length, parsed)) continue;
             portENTER_CRITICAL(&mux_);
-            stamps_[i].value = i == Price ? float(number) : float(raw.toInt());
+            stamps_[i].value = parsed;
             stamps_[i].at = now; stamps_[i].valid = true;
             portEXIT_CRITICAL(&mux_);
         }
     }
 private:
+    static bool isSpace(char c) { return c == ' ' || c == '\r' || c == '\n' || c == '\t'; }
+    static void trim(const char *&begin, const char *&end) {
+        while (begin < end && isSpace(*begin)) ++begin;
+        while (end > begin && isSpace(end[-1])) --end;
+    }
+    // Mirrors CM receive conversion: strict number, integers truncated like String::toInt.
+    static bool convertText(unsigned i, const char *text, float &out) {
+        char *end = nullptr;
+        const double number = std::strtod(text, &end);
+        while (end && isSpace(*end)) ++end;
+        if (end == text || !end || *end || !std::isfinite(number)) return false;
+        if (i == Price) { out = float(number); return std::isfinite(out); }
+        if (number < INT32_MIN || number > INT32_MAX) return false;
+        out = float(std::atol(text));
+        return true;
+    }
+    bool parse(unsigned i, const char *data, unsigned length, float &out) {
+        const char *begin = data, *end = data + length;
+        trim(begin, end);
+        const String &keySetting = path_[i]->get();
+        const char *keyBegin = keySetting.c_str(), *keyEnd = keyBegin + keySetting.length();
+        trim(keyBegin, keyEnd);
+        const size_t keyLength = size_t(keyEnd - keyBegin);
+        const bool json = begin < end && (*begin == '{' || *begin == '[');
+        if (!json) {
+            if (keyLength && !(keyLength == 4 && strncasecmp(keyBegin, "none", 4) == 0)) return false;
+            char text[48];
+            const size_t n = size_t(end - begin);
+            if (n >= sizeof(text)) return false;
+            std::memcpy(text, begin, n);
+            text[n] = 0;
+            return convertText(i, text, out);
+        }
+        // An empty path selects the whole object/array, which is never numeric.
+        if (!keyLength) return false;
+        char path[64];
+        if (keyLength >= sizeof(path)) return false;
+        std::memcpy(path, keyBegin, keyLength);
+        size_t pathLength = keyLength;
+        // CM ignores one trailing separator.
+        if (path[pathLength - 1] == '.') --pathLength;
+        path[pathLength] = 0;
+        const char *segments[16];
+        unsigned segmentCount = 0;
+        for (char *segment = path;;) {
+            if (segmentCount == 16) return false;
+            segments[segmentCount++] = segment;
+            char *dot = std::strchr(segment, '.');
+            if (!dot) break;
+            *dot = 0;
+            segment = dot + 1;
+        }
+        arena_.reset();
+        JsonDocument filter(&arena_);
+        JsonObject node = filter.to<JsonObject>();
+        for (unsigned s = 0; s + 1 < segmentCount; ++s) node = node[segments[s]].to<JsonObject>();
+        node[segments[segmentCount - 1]] = true;
+        if (filter.overflowed()) return false;
+        JsonDocument doc(&arena_);
+        if (deserializeJson(doc, begin, size_t(end - begin), DeserializationOption::Filter(filter))) return false;
+        JsonVariantConst value = doc.as<JsonVariantConst>();
+        for (unsigned s = 0; s < segmentCount; ++s) value = value[segments[s]];
+        if (value.isNull() || value.is<bool>()) return false;
+        if (value.is<const char *>()) return convertText(i, value.as<const char *>(), out);
+        if (!value.is<double>()) return false;
+        const double number = value.as<double>();
+        if (!std::isfinite(number)) return false;
+        if (i == Price) { out = float(number); return std::isfinite(out); }
+        if (number < INT32_MIN || number > INT32_MAX) return false;
+        out = float(long(number));
+        return true;
+    }
     struct Stamp { uint32_t at = 0; float value = 0; bool valid = false; };
     mutable portMUX_TYPE mux_ = portMUX_INITIALIZER_UNLOCKED;
     Stamp stamps_[Count];
     Config<String> *topic_[Count] = {}, *path_[Count] = {};
+    JsonArena arena_;
 };
 } // namespace control
