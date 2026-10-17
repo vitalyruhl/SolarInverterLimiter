@@ -2,7 +2,7 @@
 
 Current baseline: [Round 5 decisions and initial constants](round-5-decisions-and-defaults.md). Round 5 takes precedence over older proposals; no device settings have been changed.
 
-Owner-approved first design; planning closed on 2026-10-17. These English documents define the implementation baseline, not deployed behavior or operational/HITL acceptance. The current Round 5 baseline supersedes the historical Round 4 proposals and review. The canonical planning folder now belongs to SolarInverterLimiter. It was moved from SolarBatteryTelemetry commit `30e64271e92aa9baadbd687714ef412e8be7f78f` on 2026-10-17; source history remains in that repository. The accepted charge-target/PV-ceiling addendum below completes the first-design baseline.
+Owner-approved first design; planning closed on 2026-10-17. These English documents define the implementation baseline, not deployed behavior or operational/HITL acceptance. The current Round 5 baseline supersedes the historical Round 4 proposals and review. The canonical planning folder is `SolarInverterLimiter/docs/control-planning/`. It was moved from SolarBatteryTelemetry commit `30e64271e92aa9baadbd687714ef412e8be7f78f` on 2026-10-17; source history remains in that repository. The accepted charge-target/PV-ceiling addendum below completes the first-design baseline.
 
 ## Main flow
 
@@ -23,6 +23,7 @@ Owner-approved first design; planning closed on 2026-10-17. These English docume
 - [Round 4 decisions (historical)](round-4-decisions.md)
 - [Round 5 decisions and initial constants (current)](round-5-decisions-and-defaults.md)
 - [Independent Round 4 review (historical findings)](round-4-independent-review.md)
+- [Implementation follow-ups and consolidated legacy requirements](implementation-follow-ups.md)
 
 
 ## Final accepted refinements

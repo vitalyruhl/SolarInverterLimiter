@@ -31,3 +31,7 @@ flowchart TD
 Reuse the existing grid PID. Ramp the normal economic ceiling using separate upward and downward constants, initially 50 W/s each; optionally expose both as settings if resources permit. Track the final transmitted/held actuator command for anti-windup in both the grid loop and the charge-loop correction, including output clipping and the RS485 publication interval. A sudden household-load drop or falling charge/PV ceiling may immediately reduce the request. Reserve, protection, inverter OFF and valid negative-price restrictions bypass the economic ramp. An economic target decrease alone uses the downward ramp. The 650 W value is a planning load, not a fixed PID target. Align signs and units with the existing SIL controller. Inverter OFF, MAX bypass, and protection mode require suitable integrator handling; smooth recovery remains to be checked.
 
 See the accepted [charge-target and dynamic PV-ceiling addendum](10-ladeziel-und-pv-begrenzung.md) for storage control, shared actuator arbitration, ramp exceptions, and the accepted transient-discharge limitation.
+
+## Legacy smoother removal
+
+Owner decision: retain the existing proven grid PID; remove the old alternative smoother and its exclusive configuration/UI/state during implementation. Preserve shared utilities still used by PID or other features. The planned economic ceiling ramps remain required and are not the obsolete smoother. Verify unchanged PID operation and measure resource savings after removal.
