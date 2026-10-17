@@ -5,7 +5,6 @@
 #include <Ticker.h>
 #include <WiFi.h>
 #include <time.h>
-#include <new>
 #include <cmath>
 
 #include <AsyncTCP.h>
@@ -27,7 +26,6 @@
 
 #include "RS485Module/RS485Module.h"
 #include "helpers/HelperModule.h"
-#include "Smoother/Smoother.h"
 
 // Feature flags
 #ifndef FEATURE_BME280_ENABLED
@@ -98,7 +96,7 @@
 #endif
 
 #ifndef VERSION
-#define VERSION "4.4.1"
+#define VERSION "5.0.0"
 #endif
 
 enum class NegativePriceSettingPreference : uint8_t
@@ -152,7 +150,6 @@ void testRS232();
 static void resetPidController();
 static int computePidStabilizedTarget(int baseTarget, int configuredMin, int configuredMax);
 static void processRS485Tick();
-static bool ensurePowerSmoother(int initialValue);
 
 // Display helpers
 #if FEATURE_OLED_DISPLAY_ENABLED
@@ -193,8 +190,6 @@ struct LimiterSettings
     Config<int> maxOutput{ConfigOptions<int>{.key = "LimiterMaxW", .name = "Max Output (W)", .category = "Limiter", .defaultValue = 1100, .sortOrder = 2}};
     Config<int> minOutput{ConfigOptions<int>{.key = "LimiterMinW", .name = "Min Output (W)", .category = "Limiter", .defaultValue = 500, .sortOrder = 3}};
     Config<int> inputCorrectionOffset{ConfigOptions<int>{.key = "LimiterCorrW", .name = "Input Correction Offset (W)", .category = "Limiter", .defaultValue = 50, .sortOrder = 4}};
-    Config<int> smoothingSize{ConfigOptions<int>{.key = "LimiterSmooth", .name = "Smoothing Level", .category = "Limiter", .defaultValue = 10, .sortOrder = 5}};
-    Config<bool> usePidSmoothing{ConfigOptions<bool>{.key = "LimiterUsePID", .name = "Use PID Smoothing", .category = "Limiter", .defaultValue = false, .sortOrder = 6}};
     Config<float> pidKp{ConfigOptions<float>{.key = "LimiterPIDKp", .name = "PID Kp", .category = "Limiter", .defaultValue = 0.35f, .sortOrder = 7}};
     Config<float> pidKi{ConfigOptions<float>{.key = "LimiterPIDKi", .name = "PID Ki", .category = "Limiter", .defaultValue = 0.05f, .sortOrder = 8}};
     Config<float> pidKd{ConfigOptions<float>{.key = "LimiterPIDKd", .name = "PID Kd", .category = "Limiter", .defaultValue = 0.02f, .sortOrder = 9}};
@@ -216,8 +211,6 @@ struct LimiterSettings
         cfg.addSetting(&maxOutput);
         cfg.addSetting(&minOutput);
         cfg.addSetting(&inputCorrectionOffset);
-        cfg.addSetting(&smoothingSize);
-        cfg.addSetting(&usePidSmoothing);
         cfg.addSetting(&pidKp);
         cfg.addSetting(&pidKi);
         cfg.addSetting(&pidKd);
@@ -371,7 +364,6 @@ static constexpr int OLED_RESET_PIN = 4; // keep legacy wiring default
 Adafruit_SSD1306 display(OLED_WIDTH, OLED_HEIGHT, &Wire, OLED_RESET_PIN);
 #endif
 
-Smoother *powerSmoother = nullptr; // there is a memory allocation in setup, better use a pointer here
 
 // MQTT and runtime state
 int currentGridImportW = 0;        // signed grid power: positive import, negative export
@@ -465,8 +457,6 @@ struct PidControllerState
 };
 
 static PidControllerState pidController;
-static bool lastLimiterModeWasPid = false;
-static int lastSmootherRequestedSize = -1;
 static control::PreparedSettings preparedSettings;
 static control::RuntimeState preparedState;
 static int lastNegativePriceOverrideTarget = -1;
@@ -535,11 +525,6 @@ void setup()
 #endif
 
     cm::helpers::pulseWait(LED_BUILTIN, cm::helpers::PulseOutput::ActiveLevel::ActiveHigh, 3, 100);
-
-    if (!limiterSettings.usePidSmoothing.get())
-    {
-        ensurePowerSmoother(currentGridImportW);
-    }
 
     RS485begin();
 #if FEATURE_BME280_ENABLED
@@ -1086,9 +1071,6 @@ static void configureLimiterSettingsBehavior()
     limiterSettings.priceComfort.setCallback([](float) { refreshPreparedSettings(); });
     limiterSettings.priceDeadband.setCallback([](float) { refreshPreparedSettings(); });
 
-    limiterSettings.smoothingSize.showIfFunc = []()
-    { return !limiterSettings.usePidSmoothing.get(); };
-
     limiterSettings.forceMinOnNegativePrice.setCallback([](bool enabled)
                                                         {
         if (normalizingNegativePriceSettings || !enabled)
@@ -1508,61 +1490,6 @@ static bool timeReached(unsigned long now, unsigned long target)
     return target == 0 || static_cast<long>(now - target) >= 0;
 }
 
-static bool ensurePowerSmoother(int initialValue)
-{
-    if (powerSmoother != nullptr)
-    {
-        if (!powerSmoother->isReady())
-        {
-            delete powerSmoother;
-            powerSmoother = nullptr;
-        }
-        else
-        {
-            return true;
-        }
-    }
-
-    const int requestedSize = limiterSettings.smoothingSize.get();
-    powerSmoother = new (std::nothrow) Smoother(requestedSize);
-    if (powerSmoother == nullptr || !powerSmoother->isReady())
-    {
-        delete powerSmoother;
-        powerSmoother = nullptr;
-        lastSmootherRequestedSize = -1;
-        lmg.logTag(LL::Warn, "SMOOTH", "Buffer allocation failed");
-        return false;
-    }
-
-    lastSmootherRequestedSize = requestedSize;
-    powerSmoother->fillBufferOnStart(initialValue);
-    return true;
-}
-
-static bool updatePowerSmootherSizeIfNeeded(int initialValue)
-{
-    if (!ensurePowerSmoother(initialValue) || powerSmoother == nullptr)
-    {
-        return false;
-    }
-
-    const int requestedSize = limiterSettings.smoothingSize.get();
-    if (requestedSize == lastSmootherRequestedSize)
-    {
-        return powerSmoother->isReady();
-    }
-
-    const int previousSize = powerSmoother->size();
-    powerSmoother->setBufferSize(requestedSize);
-    lastSmootherRequestedSize = requestedSize;
-    if (powerSmoother->size() != previousSize)
-    {
-        powerSmoother->fillBufferOnStart(initialValue);
-    }
-
-    return powerSmoother->isReady();
-}
-
 static void handleRS485Scheduler()
 {
     if (!rs485TickDue)
@@ -1644,22 +1571,6 @@ static void processRS485Tick()
         configuredMax = tmp;
     }
 
-    const bool usePidSmoothing = limiterSettings.usePidSmoothing.get();
-    if (usePidSmoothing != lastLimiterModeWasPid)
-    {
-        resetPidController();
-        if (!usePidSmoothing && ensurePowerSmoother(currentGridImportW))
-        {
-            powerSmoother->fillBufferOnStart(currentGridImportW);
-        }
-        lastLimiterModeWasPid = usePidSmoothing;
-    }
-
-    if (!usePidSmoothing)
-    {
-        updatePowerSmootherSizeIfNeeded(currentGridImportW);
-    }
-
     const int offset = limiterSettings.inputCorrectionOffset.get();
     const int currentInverterOutputW = solarPowerW;
     const int signedGridPowerW = currentGridImportW;
@@ -1691,23 +1602,13 @@ static void processRS485Tick()
         resetPidController();
         inverterCalculatedValue = negativePriceOverrideTarget;
     }
-    else if (usePidSmoothing)
+    else
     {
         pidBaseTarget = currentInverterOutputW + signedGridPowerW + offset;
         pidClampedBaseTarget = constrain(pidBaseTarget, configuredMin, configuredMax);
         pidInput = pidController.initialized ? static_cast<int>(roundf(pidController.output)) : pidClampedBaseTarget;
         inverterCalculatedValue = computePidStabilizedTarget(pidBaseTarget, configuredMin, configuredMax);
     }
-    else if (powerSmoother != nullptr && powerSmoother->isReady())
-    {
-        inverterCalculatedValue = powerSmoother->smooth(currentGridImportW);
-    }
-    else
-    {
-        inverterCalculatedValue = configuredMax;
-        lmg.logTag(LL::Warn, "RS485", "Smoother not initialized -> fallback to MAX");
-    }
-
     if (negativePriceOverrideTarget >= 0)
     {
         inverterSetValue = negativePriceOverrideTarget;
@@ -1715,16 +1616,13 @@ static void processRS485Tick()
     }
     else if (limiterSettings.enableController.get())
     {
-        const int correctedValue = usePidSmoothing ? inverterCalculatedValue : inverterCalculatedValue + offset;
+        const int correctedValue = inverterCalculatedValue;
         inverterSetValue = constrain(correctedValue, configuredMin, configuredMax);
         sendToRS485(static_cast<uint16_t>(inverterSetValue));
         lmg.logTag(LL::Trace, "RS485", "Controller enabled -> set inverter to %d W (calc=%d, corr=%d)", inverterSetValue, inverterCalculatedValue, correctedValue);
-        if (usePidSmoothing)
-        {
-            lmg.logTag(LL::Trace, "PID", "inv=%d gridSigned=%d gridIn=%d gridOut=%d off=%d base=%d clamp=%d in=%d out=%d min=%d max=%d set=%d",
-                       currentInverterOutputW, signedGridPowerW, gridImportW, gridExportW, offset, pidBaseTarget, pidClampedBaseTarget,
-                       pidInput, inverterCalculatedValue, configuredMin, configuredMax, inverterSetValue);
-        }
+        lmg.logTag(LL::Trace, "PID", "inv=%d gridSigned=%d gridIn=%d gridOut=%d off=%d base=%d clamp=%d in=%d out=%d min=%d max=%d set=%d",
+                   currentInverterOutputW, signedGridPowerW, gridImportW, gridExportW, offset, pidBaseTarget, pidClampedBaseTarget,
+                   pidInput, inverterCalculatedValue, configuredMin, configuredMax, inverterSetValue);
     }
     else
     {

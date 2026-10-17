@@ -12,3 +12,4 @@ src/secret/wifiSecret.h
 src/salt.h
 
 secrets.h
+.codegraphy/*
