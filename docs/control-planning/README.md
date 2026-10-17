@@ -6,20 +6,20 @@ Owner-approved first design; planning closed on 2026-10-17. These English docume
 
 ## Main flow
 
-[Main discussion flow](<SIL - Ablaufdiagramm für die gemeinsame Diskussion.md>)
+[Main discussion flow](<00-main-control-flow.md>)
 
 ## Subprograms
 
-- [Measurement freshness and plausibility](01-messwerte.md)
-- [Fan demand](02-luefter.md)
-- [Directional protection](03-schutzpruefung.md)
-- [Protection response](04-schutzreaktion.md)
-- [Energy planning](05-energieplanung.md)
-- [Energy budget](06-energiebudget.md)
-- [Grid PID](07-netz-pid.md)
-- [Setpoint sending and feedback](08-senden-ruecklesen.md)
-- [Settings and callbacks](09-einstellungen-callback.md)
-- [Charge target and dynamic PV ceiling](10-ladeziel-und-pv-begrenzung.md)
+- [Measurement freshness and plausibility](01-measurement-validation.md)
+- [Fan demand](02-fan-control.md)
+- [Directional protection](03-protection-check.md)
+- [Protection response](04-protection-response.md)
+- [Energy planning](05-energy-planning.md)
+- [Energy budget](06-energy-budget.md)
+- [Grid PID](07-grid-pid.md)
+- [Setpoint sending and feedback](08-command-and-feedback.md)
+- [Settings and callbacks](09-settings-callbacks.md)
+- [Charge target and dynamic PV ceiling](10-charge-target-and-pv-ceiling.md)
 - [Round 4 decisions (historical)](round-4-decisions.md)
 - [Round 5 decisions and initial constants (current)](round-5-decisions-and-defaults.md)
 - [Independent Round 4 review (historical findings)](round-4-independent-review.md)
@@ -39,4 +39,4 @@ Owner-approved first design; planning closed on 2026-10-17. These English docume
 
 ## Export to PDF
 
-The source documents retain their existing print frontmatter, including the portrait layout in `05-energieplanung.md`. In VS Code, use Markdown Preview Enhanced (`shd101wyy.markdown-preview-enhanced`), open its side preview, then select **Chrome (Puppeteer) -> PDF**. Review page breaks before printing and re-export after Markdown changes. See the [extension and Mermaid support](https://github.com/shd101wyy/vscode-markdown-preview-enhanced) and [PDF export guide](https://github.com/shd101wyy/markdown-preview-enhanced/blob/master/docs/puppeteer.md).
+The source documents retain their existing print frontmatter, including the portrait layout in `05-energy-planning.md`. In VS Code, use Markdown Preview Enhanced (`shd101wyy.markdown-preview-enhanced`), open its side preview, then select **Chrome (Puppeteer) -> PDF**. Review page breaks before printing and re-export after Markdown changes. See the [extension and Mermaid support](https://github.com/shd101wyy/vscode-markdown-preview-enhanced) and [PDF export guide](https://github.com/shd101wyy/markdown-preview-enhanced/blob/master/docs/puppeteer.md).

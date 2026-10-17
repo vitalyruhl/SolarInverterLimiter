@@ -1,6 +1,6 @@
 # Implementation follow-ups and consolidated legacy requirements
 
-Date: 2026-10-17. Planning only; no firmware or device setting changed. The [Round 5 baseline](round-5-decisions-and-defaults.md) and [charge-target/PV-ceiling addendum](10-ladeziel-und-pv-begrenzung.md) govern implementation. This document preserves useful details from the superseded 2026-10-16 strategy draft and TODO entries without reopening accepted decisions.
+Date: 2026-10-17. Planning only; no firmware or device setting changed. The [Round 5 baseline](round-5-decisions-and-defaults.md) and [charge-target/PV-ceiling addendum](10-charge-target-and-pv-ceiling.md) govern implementation. This document preserves useful details from the superseded 2026-10-16 strategy draft and TODO entries without reopening accepted decisions.
 
 ## Remove the legacy smoother, preserve the PID
 

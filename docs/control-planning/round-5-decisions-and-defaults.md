@@ -125,7 +125,7 @@ Hysteresis, ramps, and timing have different roles: use SOC thresholds, price db
 
 ## Accepted addendum: charge target and dynamic PV ceiling
 
-The owner accepted the additional [charge-target and PV-ceiling subprogram](10-ladeziel-und-pv-begrenzung.md). Zero economic discharge allocation alone is insufficient when household demand remains high and PV falls. Distinguish preserving the battery from actively building an energy allocation for a later expensive window.
+The owner accepted the additional [charge-target and PV-ceiling subprogram](10-charge-target-and-pv-ceiling.md). Zero economic discharge allocation alone is insufficient when household demand remains high and PV falls. Distinguish preserving the battery from actively building an energy allocation for a later expensive window.
 
 Use measured Victron charger DC output as feed-forward and signed BMS battery power as feedback for a small charge-loop PI correction. This loop supplies an inverter ceiling, not a second independent actuator command. Combine applicable ceilings with household demand in one arbiter. Falling available PV bypasses the normal economic downward ramp; upward recovery remains bounded. Both controllers need anti-windup/tracking against the selected and actually transmitted/held command.
 

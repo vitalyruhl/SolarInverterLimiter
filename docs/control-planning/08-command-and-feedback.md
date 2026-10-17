@@ -40,4 +40,4 @@ Distinguish request, acknowledgement, and observed MOS state. A transport acknow
 
 Use one active target revision per actuator. Urgent protective restrictions supersede older requests; late replies must not confirm a newer target. Reuse the SBT request identity and expiry contract. Recheck the overall gate and the separate Hand/Auto ownership before transmission. A one-second nonblocking feedback tick does not delay event-driven fault handling. See [Round 5](round-5-decisions-and-defaults.md).
 
-See the accepted [charge-target and dynamic PV-ceiling addendum](10-ladeziel-und-pv-begrenzung.md) for storage control, shared actuator arbitration, ramp exceptions, and the accepted transient-discharge limitation.
+See the accepted [charge-target and dynamic PV-ceiling addendum](10-charge-target-and-pv-ceiling.md) for storage control, shared actuator arbitration, ramp exceptions, and the accepted transient-discharge limitation.

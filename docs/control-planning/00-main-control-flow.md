@@ -68,4 +68,4 @@ At 15% SOC, 1,358 W household demand, 27 W PV, and prices of €0.39/kWh and lat
 
 See [Round 5 decisions](round-5-decisions-and-defaults.md) and the [README](README.md) for subprogram links and PDF export instructions. Round 5 defines the reserve default, separate mode selector, price fallback and recovery direction. Hardware-path qualification, CM behavior and total-controller-failure behavior remain verification work.
 
-See the accepted [charge-target and dynamic PV-ceiling addendum](10-ladeziel-und-pv-begrenzung.md) for storage control, shared actuator arbitration, ramp exceptions, and the accepted transient-discharge limitation.
+See the accepted [charge-target and dynamic PV-ceiling addendum](10-charge-target-and-pv-ceiling.md) for storage control, shared actuator arbitration, ramp exceptions, and the accepted transient-discharge limitation.

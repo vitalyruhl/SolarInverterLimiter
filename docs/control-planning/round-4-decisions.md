@@ -2,7 +2,7 @@
 
 Historical Round 4 snapshot. See [Round 5 decisions and defaults](round-5-decisions-and-defaults.md) for later resolutions and current policy.
 
-Status: 2026-10-17. These are planning drafts only. Nothing here claims implementation, hardware qualification, or approval to operate devices. See [README](README.md) and the [main flow](<SIL - Ablaufdiagramm für die gemeinsame Diskussion.md>).
+Status: 2026-10-17. These are planning drafts only. Nothing here claims implementation, hardware qualification, or approval to operate devices. See [README](README.md) and the [main flow](<00-main-control-flow.md>).
 
 ## Decisions and unresolved points
 

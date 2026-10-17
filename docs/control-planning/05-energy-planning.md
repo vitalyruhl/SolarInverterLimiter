@@ -37,4 +37,4 @@ The owner selected two adjustable reserve thresholds: discharge OFF at 2% and ON
 
 Use separate code constants for discharge efficiency, round-trip efficiency, wear, and minimum advantage, with optional settings later if resources permit. Replanning replaces energy allocations in one common ledger; it must not add old carried energy to fresh SOC energy. The earlier separate 0.35 hold threshold is not an additional active setting; later-window holding and in-window release must remain distinct.
 
-See the accepted [charge-target and dynamic PV-ceiling addendum](10-ladeziel-und-pv-begrenzung.md) for storage control, shared actuator arbitration, ramp exceptions, and the accepted transient-discharge limitation.
+See the accepted [charge-target and dynamic PV-ceiling addendum](10-charge-target-and-pv-ceiling.md) for storage control, shared actuator arbitration, ramp exceptions, and the accepted transient-discharge limitation.
