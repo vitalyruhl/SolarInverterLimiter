@@ -135,6 +135,31 @@ class Service {
         float soc = 0, batteryW = 0, chargerW = 0;
         uint32_t bmsSequence = 0, chargerSequence = 0;
     };
+    struct DiagnosticSnapshot {
+        bool online = false, fresh[2] = {}, chargeStateValid = false, protectionValid = false;
+        uint32_t sequence[2] = {}, validMask = 0;
+        double values[channelCount] = {};
+        char reason[2][64] = {{0}, {0}};
+        char chargeState[32] = {}, protection[128] = {};
+    };
+    DiagnosticSnapshot diagnosticSnapshot(uint32_t now) {
+        DiagnosticSnapshot s;
+        if (!mutex_) return s;
+        xSemaphoreTake(mutex_, portMAX_DELAY);
+        const auto bms = receiver_.sourceHealth(0);
+        const auto victron = receiver_.sourceHealth(1);
+        s.online = bms.online || victron.online;
+        s.fresh[0] = receiver_.fresh(0, now);
+        s.fresh[1] = receiver_.fresh(1, now);
+        s.sequence[0] = bms.sequence; s.sequence[1] = victron.sequence;
+        std::snprintf(s.reason[0], sizeof(s.reason[0]), "%s", bms.reason);
+        std::snprintf(s.reason[1], sizeof(s.reason[1]), "%s", victron.reason);
+        receiver_.diagnosticValues(now, s.values, s.validMask);
+        s.chargeStateValid = receiver_.copyDiagnosticText("victron/charge_state", now, s.chargeState, sizeof(s.chargeState));
+        s.protectionValid = receiver_.copyDiagnosticText("bms/protection", now, s.protection, sizeof(s.protection));
+        xSemaphoreGive(mutex_);
+        return s;
+    }
     ControlSnapshot controlSnapshot(uint32_t now) {
         ControlSnapshot s;
         if (!mutex_ || !mqtt_ || !mqtt_->isConnected()) return s;

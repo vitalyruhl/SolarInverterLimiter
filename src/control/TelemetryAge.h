@@ -21,16 +21,25 @@ public:
             path_[i] = static_cast<Config<String> *>(cfg.findSettingByKeyHint("MQTT-Topics", key));
         }
     }
-    void reset() { for (auto &s : stamps_) s = Stamp{}; }
-    bool fresh(Input i, uint32_t now, uint32_t timeout) const {
-        return stamps_[i].valid && uint32_t(now - stamps_[i].at) < timeout;
+    void reset() {
+        portENTER_CRITICAL(&mux_);
+        for (auto &s : stamps_) s = Stamp{};
+        portEXIT_CRITICAL(&mux_);
+    }
+    bool read(Input i, uint32_t now, uint32_t timeout, float &value) const {
+        portENTER_CRITICAL(&mux_);
+        const Stamp stamp = stamps_[i];
+        portEXIT_CRITICAL(&mux_);
+        value = stamp.value;
+        return stamp.valid && uint32_t(now - stamp.at) < timeout;
     }
     void receive(const char *topic, const uint8_t *payload, unsigned length, uint32_t now) {
         if (!topic || !payload) return;
         for (unsigned i = 0; i < Count; ++i) {
             if (!topic_[i] || !path_[i] || topic_[i]->get() != topic) continue;
-            auto &stamp = stamps_[i];
-            stamp.valid = false;
+            portENTER_CRITICAL(&mux_);
+            stamps_[i].valid = false;
+            portEXIT_CRITICAL(&mux_);
             if (!length || length > 1024) continue;
             String raw;
             raw.reserve(length);
@@ -57,13 +66,17 @@ public:
             const double number = std::strtod(raw.c_str(), &end);
             while (end && (*end == ' ' || *end == '\r' || *end == '\n' || *end == '\t')) ++end;
             if (end == raw.c_str() || !end || *end || !std::isfinite(number)) continue;
-            // Existing CM integer mappings reject fractional/out-of-range values.
-            if (i != Price && (std::floor(number) != number || number < INT32_MIN || number > INT32_MAX)) continue;
-            stamp.at = now; stamp.valid = true;
+            // Match CM integer conversion (fractional input is truncated).
+            if (i != Price && (number < INT32_MIN || number > INT32_MAX)) continue;
+            portENTER_CRITICAL(&mux_);
+            stamps_[i].value = i == Price ? float(number) : float(raw.toInt());
+            stamps_[i].at = now; stamps_[i].valid = true;
+            portEXIT_CRITICAL(&mux_);
         }
     }
 private:
-    struct Stamp { uint32_t at = 0; bool valid = false; };
+    struct Stamp { uint32_t at = 0; float value = 0; bool valid = false; };
+    mutable portMUX_TYPE mux_ = portMUX_INITIALIZER_UNLOCKED;
     Stamp stamps_[Count];
     Config<String> *topic_[Count] = {}, *path_[Count] = {};
 };

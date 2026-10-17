@@ -72,6 +72,26 @@ public:
   uint32_t sequence(unsigned source) const {
     return source < 2 ? health_[source].sequence : 0;
   }
+  Health sourceHealth(unsigned source) const {
+    return source < 2 ? health_[source] : Health{};
+  }
+  void diagnosticValues(uint32_t now, double *values, uint32_t &validMask) const {
+    validMask = 0;
+    for (size_t i = 0; i < channelCount; ++i) {
+      values[i] = 0;
+      if (channels[i].kind == Kind::Text || channels[i].kind == Kind::Unsupported ||
+          !valid(channels[i].topic, now)) continue;
+      values[i] = values_[i].number;
+      validMask |= uint32_t(1) << i;
+    }
+  }
+  bool copyDiagnosticText(const char *topic, uint32_t now, char *out, size_t capacity) const {
+    const int i = index(topic);
+    if (i < 0 || !out || !capacity || !valid(topic, now) || channels[i].kind != Kind::Text) return false;
+    const char *value = i == 28 ? protection_ : chargeState_;
+    const int n = std::snprintf(out, capacity, "%s", value);
+    return n >= 0 && size_t(n) < capacity;
+  }
   double numeric(const char *topic) const {
     int i = index(topic);
     return i >= 0 ? values_[i].number : 0;

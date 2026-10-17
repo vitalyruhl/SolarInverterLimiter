@@ -80,10 +80,19 @@ public:
         }
         if (band_ == Expensive && out.reserveAllowed) {
             piActive_ = false; integral_ = 0;
-            out.ceilingW = int(maximum);
+            if (!economicActive_) {
+                economicActive_ = true;
+                economicCeiling_ = clamp(float(heldCommandW), 0, maximum);
+                economicAt_ = now;
+            }
+            const float dt = clamp(float(uint32_t(now - economicAt_)) * 0.001f, 0, 10);
+            economicAt_ = now;
+            economicCeiling_ = clamp(economicCeiling_ + kEconomicCeilingRampUpWPerSecond * dt, 0, maximum);
+            out.ceilingW = int(economicCeiling_);
             out.strategy = "discharge"; out.reason = "expensive";
             return out;
         }
+        economicActive_ = false;
         out.strategy = "preserve";
         out.reason = !out.reserveAllowed ? "reserve" :
             (band_ == Unknown ? "price_missing" : (band_ == Cheap ? "cheap" : "comfort"));
@@ -125,7 +134,9 @@ private:
     uint8_t pairs_ = 0;
     uint32_t recoveryAt_ = 0, bmsSequence_ = 0, chargerSequence_ = 0;
     uint32_t lastTick_ = 0, lastSampleAt_ = 0, lastPiSequence_ = 0;
-    float integral_ = 0, ceiling_ = 0;
+    float integral_ = 0, ceiling_ = 0, economicCeiling_ = 0;
+    bool economicActive_ = false;
+    uint32_t economicAt_ = 0;
 
     static float clamp(float value, float low, float high) {
         return value < low ? low : (value > high ? high : value);
@@ -153,7 +164,7 @@ private:
     }
     void resetDynamics() {
         qualifying_ = qualified_ = piActive_ = false;
-        pairs_ = 0; integral_ = ceiling_ = 0;
+        pairs_ = 0; integral_ = ceiling_ = 0; economicActive_ = false;
     }
     CurrentDecision stop(CurrentDecision out, const char *reason) {
         resetDynamics(); out.direct = true; out.reason = reason;
