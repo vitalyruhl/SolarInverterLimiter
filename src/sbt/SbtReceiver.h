@@ -69,6 +69,9 @@ public:
     int i = index(topic);
     return i >= 0 && values_[i].seen && fresh(channels[i].source, now);
   }
+  uint32_t sequence(unsigned source) const {
+    return source < 2 ? health_[source].sequence : 0;
+  }
   double numeric(const char *topic) const {
     int i = index(topic);
     return i >= 0 ? values_[i].number : 0;

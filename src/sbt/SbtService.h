@@ -130,6 +130,35 @@ class Service {
         }
     }
 
+    struct ControlSnapshot {
+        bool bmsValid = false, chargerValid = false;
+        float soc = 0, batteryW = 0, chargerW = 0;
+        uint32_t bmsSequence = 0, chargerSequence = 0;
+    };
+    ControlSnapshot controlSnapshot(uint32_t now) {
+        ControlSnapshot s;
+        if (!mutex_ || !mqtt_ || !mqtt_->isConnected()) return s;
+        xSemaphoreTake(mutex_, portMAX_DELAY);
+        s.bmsValid = receiver_.valid("bms/state_of_charge_pct", now) &&
+                     receiver_.valid("bms/power_w", now);
+        s.chargerValid = receiver_.valid("victron/battery_voltage_v", now) &&
+                         receiver_.valid("victron/charge_current_a", now);
+        if (s.bmsValid) {
+            s.soc = receiver_.numeric("bms/state_of_charge_pct");
+            s.batteryW = receiver_.numeric("bms/power_w");
+            s.bmsValid = s.soc >= 0 && s.soc <= 100 && std::isfinite(s.batteryW);
+        }
+        if (s.chargerValid) {
+            const double v = receiver_.numeric("victron/battery_voltage_v");
+            const double a = receiver_.numeric("victron/charge_current_a");
+            s.chargerW = v * a;
+            s.chargerValid = v > 0 && a >= 0 && std::isfinite(s.chargerW);
+        }
+        s.bmsSequence = receiver_.sequence(0);
+        s.chargerSequence = receiver_.sequence(1);
+        xSemaphoreGive(mutex_);
+        return s;
+    }
   private:
     Config<String> inputRoot_{
         ConfigOptions<String>{.key = "SBTInputRoot",

@@ -197,13 +197,13 @@ struct LimiterSettings
     Config<bool> setZeroOnNegativePrice{ConfigOptions<bool>{.key = "LimNegZero", .name = "Set 0 On Negative Price", .category = "Limiter", .defaultValue = false, .sortOrder = 11}};
     Config<float> RS232PublishPeriod{ConfigOptions<float>{.key = "LimiterRS485P", .name = "RS485 Publish Period (s)", .category = "Limiter", .defaultValue = 2.0f, .sortOrder = 12}};
 
-    Config<float> reserveOffSoc{ConfigOptions<float>{.key = "resOff", .name = "Reserve OFF SOC (inactive, %)", .category = "Limiter", .defaultValue = 2.0f, .sortOrder = 20}};
-    Config<float> reserveOnSoc{ConfigOptions<float>{.key = "resOn", .name = "Reserve ON SOC (inactive, %)", .category = "Limiter", .defaultValue = 10.0f, .sortOrder = 21}};
-    Config<int> batteryPowerDeadband{ConfigOptions<int>{.key = "pwrDb", .name = "Battery Power Deadband (inactive, W)", .category = "Limiter", .defaultValue = 50, .sortOrder = 22}};
-    Config<bool> mosManualMode{ConfigOptions<bool>{.key = "mosMan", .name = "MOS Hand Mode (inactive)", .category = "Limiter", .defaultValue = true, .sortOrder = 23}};
-    Config<bool> inverterEnabled{ConfigOptions<bool>{.key = "invEn", .name = "Inverter Enabled (inactive)", .category = "Limiter", .defaultValue = true, .sortOrder = 24}};
-    Config<float> priceComfort{ConfigOptions<float>{.key = "priceC", .name = "Price Comfort (inactive, EUR/kWh)", .category = "Limiter", .defaultValue = 0.25f, .sortOrder = 25}};
-    Config<float> priceDeadband{ConfigOptions<float>{.key = "priceDb", .name = "Price Deadband (inactive, EUR/kWh)", .category = "Limiter", .defaultValue = 0.06f, .sortOrder = 26}};
+    Config<float> reserveOffSoc{ConfigOptions<float>{.key = "resOff", .name = "Reserve OFF SOC (%)", .category = "Limiter", .defaultValue = 2.0f, .sortOrder = 20}};
+    Config<float> reserveOnSoc{ConfigOptions<float>{.key = "resOn", .name = "Reserve ON SOC (%)", .category = "Limiter", .defaultValue = 10.0f, .sortOrder = 21}};
+    Config<int> batteryPowerDeadband{ConfigOptions<int>{.key = "pwrDb", .name = "Battery Power Deadband (W)", .category = "Limiter", .defaultValue = 50, .sortOrder = 22}};
+    Config<bool> mosManualMode{ConfigOptions<bool>{.key = "mosMan", .name = "MOS Hand Mode", .category = "Limiter", .defaultValue = true, .sortOrder = 23}};
+    Config<bool> inverterEnabled{ConfigOptions<bool>{.key = "invEn", .name = "Inverter Enabled", .category = "Limiter", .defaultValue = true, .sortOrder = 24}};
+    Config<float> priceComfort{ConfigOptions<float>{.key = "priceC", .name = "Price Comfort (EUR/kWh)", .category = "Limiter", .defaultValue = 0.25f, .sortOrder = 25}};
+    Config<float> priceDeadband{ConfigOptions<float>{.key = "priceDb", .name = "Price Deadband (EUR/kWh)", .category = "Limiter", .defaultValue = 0.06f, .sortOrder = 26}};
 
     void attachTo(ConfigManagerClass &cfg)
     {
@@ -383,6 +383,8 @@ static String mqttBaseTopic;
 static String topicPublishSetValueW;
 static String topicPublishCalculatedValueW;
 static String topicPublishGridImportW;
+static String topicPublishPlanningConfig;
+static String topicPublishPlanningState;
 #if FEATURE_BME280_ENABLED
 static String topicPublishTempC;
 static String topicPublishHumidityPct;
@@ -459,6 +461,7 @@ struct PidControllerState
 static PidControllerState pidController;
 static control::PreparedSettings preparedSettings;
 static control::RuntimeState preparedState;
+static bool preparedSettingsLoaded = false;
 static int lastNegativePriceOverrideTarget = -1;
 static NegativePriceSettingPreference lastNegativePriceSettingPreference = NegativePriceSettingPreference::None;
 static bool normalizingNegativePriceSettings = false;
@@ -1058,6 +1061,7 @@ static void refreshPreparedSettings()
         std::isfinite(preparedSettings.priceDeadbandEurPerKwh) &&
         preparedSettings.priceDeadbandEurPerKwh >= 0.0f;
     preparedState.recalculationDirty = true;
+    preparedSettingsLoaded = true;
 }
 
 static void configureLimiterSettingsBehavior()
@@ -1373,11 +1377,49 @@ static void updateMqttTopics()
     topicPublishSetValueW = mqttBaseTopic + "/SetValue";
     topicPublishCalculatedValueW = mqttBaseTopic + "/CalculatedValue";
     topicPublishGridImportW = mqttBaseTopic + "/GetValue";
+    topicPublishPlanningConfig = mqttBaseTopic + "/Planning/Config";
+    topicPublishPlanningState = mqttBaseTopic + "/Planning/State";
 #if FEATURE_BME280_ENABLED
     topicPublishTempC = mqttBaseTopic + "/Temperature";
     topicPublishHumidityPct = mqttBaseTopic + "/Humidity";
     topicPublishDewpointC = mqttBaseTopic + "/Dewpoint";
 #endif
+}
+
+static String buildPlanningConfigPayload()
+{
+    const auto jsonNumber = [](float value)
+    {
+        return std::isfinite(value) ? String(value, 4) : String("null");
+    };
+
+    String payload;
+    payload.reserve(176);
+    payload = "{\"v\":1,\"valid\":";
+    payload += preparedSettings.valid ? "true" : "false";
+    payload += ",\"resOff\":";
+    payload += jsonNumber(preparedSettings.reserveOffSocPercent);
+    payload += ",\"resOn\":";
+    payload += jsonNumber(preparedSettings.reserveOnSocPercent);
+    payload += ",\"pwrDb\":";
+    payload += String(preparedSettings.batteryPowerDeadbandW);
+    payload += ",\"mosMan\":";
+    payload += preparedSettings.mosManualMode ? "true" : "false";
+    payload += ",\"invEn\":";
+    payload += preparedSettings.inverterEnabled ? "true" : "false";
+    payload += ",\"priceC\":";
+    payload += jsonNumber(preparedSettings.priceComfortEurPerKwh);
+    payload += ",\"priceDb\":";
+    payload += jsonNumber(preparedSettings.priceDeadbandEurPerKwh);
+    payload += ",\"hystDb\":";
+    payload += jsonNumber(preparedSettings.priceHysteresisEurPerKwh);
+    payload += "}";
+    return payload;
+}
+
+static String buildPlanningStatePayload()
+{
+    return "{\"v\":1,\"strategy\":null,\"reason\":null,\"limitW\":null,\"chargeW\":null,\"reserveOk\":null,\"allocWh\":null}";
 }
 
 static void publishMqttNow()
@@ -1392,6 +1434,11 @@ static void publishMqttNow()
     mqtt.publishExtraTopicLazy("setvalue_w", topicPublishSetValueW.c_str(), []() { return String(inverterSetValue); }, false);
     mqtt.publishExtraTopicLazy("calculated_w", topicPublishCalculatedValueW.c_str(), []() { return String(inverterCalculatedValue); }, false);
     mqtt.publishExtraTopicLazy("grid_import_w", topicPublishGridImportW.c_str(), []() { return String(currentGridImportW); }, false);
+    if (preparedSettingsLoaded)
+    {
+        mqtt.publishExtraTopicLazy("planning_config", topicPublishPlanningConfig.c_str(), []() { return buildPlanningConfigPayload(); }, false);
+        mqtt.publishExtraTopicLazy("planning_state", topicPublishPlanningState.c_str(), []() { return buildPlanningStatePayload(); }, false);
+    }
 #if FEATURE_BME280_ENABLED
     mqtt.publishExtraTopicLazy("temperature_c", topicPublishTempC.c_str(), []() { return String(temperature); }, false);
     mqtt.publishExtraTopicLazy("humidity_pct", topicPublishHumidityPct.c_str(), []() { return String(Humidity); }, false);

@@ -1,6 +1,6 @@
 # Implementation follow-ups and consolidated legacy requirements
 
-Date: 2026-10-17. Planning only; no firmware or device setting changed. The [Round 5 baseline](round-5-decisions-and-defaults.md) and [charge-target/PV-ceiling addendum](10-charge-target-and-pv-ceiling.md) govern implementation. This document preserves useful details from the superseded 2026-10-16 strategy draft and TODO entries without reopening accepted decisions.
+Date: 2026-10-17. Planning baseline. Read-only MQTT publication preparation is implemented; no device setting or control behavior changed. The [Round 5 baseline](round-5-decisions-and-defaults.md) and [charge-target/PV-ceiling addendum](10-charge-target-and-pv-ceiling.md) govern implementation. This document preserves useful details from the superseded 2026-10-16 strategy draft and TODO entries without reopening accepted decisions.
 
 ## Remove the legacy smoother, preserve the PID
 
@@ -36,6 +36,26 @@ No external optimizer, price PID, per-slot dynamic object tree or direct ESP clo
 - Combine independent battery and BME280 fan demand as planned. The current relay stays fan-only. Battery updates/freshness must trigger cooling evaluation independently of ambient updates. Qualify fan power while the inverter is off and summer intake temperatures of 35-40 C; airflow cannot cool below intake temperature.
 - Keep a separate future grid-charger capability absent/disabled with no guessed GPIO. Later qualification covers boot-OFF, polarity, rated charger/contactor, power/current, target SOC, temperature inhibition, feedback/timeouts, failed-contact behavior and charge/discharge interlocks. Avoid routine charger-inverter circulation. Add grid-charge energy metering and revise today's PV-only HA savings/provenance assumptions when installed.
 
+## Current HA MQTT publication contract
+
+The firmware publishes the cached planning settings through the existing `MQTTManager::publishExtraTopicLazy()` path at the configured `MQTTPubPer` interval. The non-retained JSON message is sent to `<resolved MQTT publish base>/Planning/Config` with this compact schema:
+
+| Key | Meaning | Unit / values |
+| --- | --- | --- |
+| `v` | Payload schema version | `1` |
+| `valid` | Cached settings pass basic range checks | Boolean |
+| `resOff`, `resOn` | Discharge reserve thresholds | % SOC |
+| `pwrDb` | Signed battery-power direction band | W |
+| `mosMan` | MOS mode setting | `true` = Hand, `false` = Auto; does not change MOS ownership or send commands |
+| `invEn` | Independent inverter enable setting | Boolean; does not stop or enable the inverter |
+| `priceC`, `priceDb`, `hystDb` | Price comfort, deadband, and derived deadband / 3 | EUR/kWh |
+
+Existing `<base>/SetValue` (sent inverter target), `<base>/CalculatedValue` (calculated controller output), and `<base>/GetValue` (signed grid input) publications keep their current meanings.
+A second non-retained payload at `<resolved MQTT publish base>/Planning/State` uses this initial state:
+
+`{"v":1,"strategy":null,"reason":null,"limitW":null,"chargeW":null,"reserveOk":null,"allocWh":null}`
+
+Uncomputed strategy, reason, ceiling, charge target, reserve permission, and allocation are explicitly `null`, never synthetic zero or healthy defaults. This preparation does not republish SBT measurements or publish computed strategy, reserve state, control reasons, charge targets, energy allocations, active limits, or protection/fan results; the State fields are placeholders because those runtime decisions are not implemented. MQTTManager's existing `<base>/System-Info/status` retained `online` / `offline` last-will remains the availability signal.
 ## Implementation acceptance sequence
 
 1. Finish/review the existing bounded SBT receiver increment using its own acceptance evidence. Do not confuse its mock tests with live BMS/Victron or automatic MOS acceptance.
@@ -48,3 +68,12 @@ No external optimizer, price PID, per-slot dynamic object tree or direct ESP clo
 The old `energy-strategy-options-2026-10-16.md` discussion text was removed after consolidation. Its tentative 5% reserve plus 3-point hysteresis, `mosAuto`, derived-economic-db-only policy, unresolved fallback matrix and generic configurable post-PID asymmetric ramp are superseded. Current settings remain 2%/10%, Hand/Auto, price db/3 hysteresis, adjustable battery power band, and separate 50 W/s economic ceiling constants with the accepted bypasses. Historical Round 4 records stay explicitly historical.
 
 Retain `docs/sbt-receiver-validation-2026-10-16.md` and `docs/superpowers/plans/2026-10-16-sbt-telemetry-inputs.md`: they document a distinct receiver implementation/test scope, including limitations. Retain `docs/cm-runtime-validation-2026-10-16.md` as dependency-upgrade evidence. Historical branch names in these evidence records describe the work at that time. This consolidation does not stage or accept their associated unfinished product code.
+
+## Current-price and PV-following implementation slice (2026-10-17)
+
+- `src/control/CurrentControl.h` contains standalone decision logic: current-price cheap/comfort/expensive classification with db/3 hysteresis, reserve OFF/ON latch using the existing settings (defaults 2%/10%), charger DC feedforward and a battery-power PI ceiling. There is no future-price planning or MOS switching.
+- Initial PI candidates are Kp = 0.20 and Ki = 0.03/s. Positive battery power means charging; the configured power deadband is used as a positive charging margin. Integral updates use new BMS sequences, include output saturation handling and suppress positive accumulation while demand limits output. Ceiling increases are limited to 50 W/s; PV-driven decreases are immediate.
+- The SBT service exposes a locked measurement snapshot with existing freshness checks. `TelemetryAge.h` is an unconnected observer for the existing CM grid, inverter and price mappings. Neither new header is attached to the active loop.
+- Active integration is outstanding: observe the existing mappings, qualify recovery, apply the ceiling as the existing house PID upper bound, let the effective minimum fall below configured MIN when necessary, preserve negative-price and protection priority, and publish actual decisions using the existing MQTT state path. Track commands without claiming transport acknowledgement.
+- Automatic approval review rejected direct insertion into the active RS485/PID path without validation. The standalone logic was saved instead; `src/main.cpp` remains byte-identical to the snapshot taken before this slice. Runtime state publication therefore remains unchanged.
+- No tests, builds, uploads or Git operations were performed for this slice. Gains, compilation, callback integration and plant behavior remain unverified. This module does not provide physical zero-discharge guarantees or implement the full protection coordinator.
