@@ -43,6 +43,16 @@ Open follow-up:
 - PID tuning may still require further live observation.
 - Negative-price handling should be verified during an actual negative-price period or with a controlled MQTT test payload.
 
+## SBT receiver preparation (4.4.0, test branch)
+
+The `sbt` runtime group receives the 29 documented SBT channels and separate source-health/control feedback. Set **SBT MQTT Input Root** to the collector root (default `SolarBatteryTelemetry`). Values remain unavailable until root/source availability and a fresh advancing heartbeat agree. Unchanged numeric values remain valid while health advances; unsupported, malformed, absent or stale values appear as `null`.
+
+MOS shutdown envelopes are prepared as pure previews only. `commands_locked` is always true; this version has no command publishing path, control action or activation setting. The new inputs do not feed the inverter limiter or price logic.
+
+For the COM7 receiver test, MQTT uses a unique client ID, publish root `SILTest/COM7`, and a 50 ms listen interval; RS485 stays disabled. The previous 500 ms interval processes bursts too slowly for a 15-second health deadline. Any future deployment needs an explicit receiving-throughput review. The extension has not been deployed to the production SIL.
+
+See [receiver plan](docs/superpowers/plans/2026-10-16-sbt-telemetry-inputs.md) and [acceptance evidence](docs/sbt-receiver-validation-2026-10-16.md). Focused host tests: `./tools/test/run-sbt-receiver-tests.ps1` after the USB dependencies have been resolved; the script requires LLVM Clang on Windows. Add `-SbtRepository ../SolarBatteryTelemetry` to verify the actual sibling publisher-to-receiver contract. Corrected hardware MQTT acceptance passed on COM7. The later UI check also received real BMS/Victron samples after the collector returned to its normal site; long-term source/network stability remains separate. See the evidence document for exact results and limits.
+
 ## Hardware Requirements
 
 - ESP32 microcontroller
@@ -120,3 +130,17 @@ mqtt:
       unit_of_measurement: "°C"
 
 ```
+
+
+### Live telemetry pages
+
+The application Live views are Temperature Sensor (BME280 temperature, humidity,
+dewpoint and pressure), Limiter, and BMS / MPPT 150/35. The collector view includes
+source freshness/reasons, received BMS/MPPT channels and read-only MOS status;
+SIL command transmission remains locked. Unavailable measurements remain empty.
+The core System page is retained. BMS/MPPT measurements use two decimal places;
+counts and bit fields use integers.
+
+SBT MQTT Input Root is under Settings > MQTT Topics > MQTT-Received. The explicit
+storage key is unchanged; its Settings API category is now MQTT-Topics. I2C settings
+remain visible because the existing BME280 uses SDA/SCL (default GPIO21/GPIO22).

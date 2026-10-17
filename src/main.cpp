@@ -6,6 +6,7 @@
 #include <WiFi.h>
 #include <time.h>
 #include <new>
+#include <cmath>
 
 #include <AsyncTCP.h>
 #include <ESPAsyncWebServer.h>
@@ -21,6 +22,8 @@
 
 #define CM_MQTT_NO_DEFAULT_HOOKS
 #include "mqtt/MQTTManager.h"
+#include "sbt/SbtService.h"
+#include "control/PreparedControl.h"
 
 #include "RS485Module/RS485Module.h"
 #include "helpers/HelperModule.h"
@@ -95,7 +98,7 @@
 #endif
 
 #ifndef VERSION
-#define VERSION "4.3.2"
+#define VERSION "4.4.1"
 #endif
 
 enum class NegativePriceSettingPreference : uint8_t
@@ -127,6 +130,7 @@ static void attachSystemSettings();
 static void syncStoredCodeVersion();
 static void registerProjectSettings();
 static void configureLimiterSettingsBehavior();
+static void refreshPreparedSettings();
 static void normalizeNegativePriceSettings(NegativePriceSettingPreference preferred, bool persist, bool logCorrection);
 static void registerIOBindings();
 static bool ensureNvsReady();
@@ -198,6 +202,14 @@ struct LimiterSettings
     Config<bool> setZeroOnNegativePrice{ConfigOptions<bool>{.key = "LimNegZero", .name = "Set 0 On Negative Price", .category = "Limiter", .defaultValue = false, .sortOrder = 11}};
     Config<float> RS232PublishPeriod{ConfigOptions<float>{.key = "LimiterRS485P", .name = "RS485 Publish Period (s)", .category = "Limiter", .defaultValue = 2.0f, .sortOrder = 12}};
 
+    Config<float> reserveOffSoc{ConfigOptions<float>{.key = "resOff", .name = "Reserve OFF SOC (inactive, %)", .category = "Limiter", .defaultValue = 2.0f, .sortOrder = 20}};
+    Config<float> reserveOnSoc{ConfigOptions<float>{.key = "resOn", .name = "Reserve ON SOC (inactive, %)", .category = "Limiter", .defaultValue = 10.0f, .sortOrder = 21}};
+    Config<int> batteryPowerDeadband{ConfigOptions<int>{.key = "pwrDb", .name = "Battery Power Deadband (inactive, W)", .category = "Limiter", .defaultValue = 50, .sortOrder = 22}};
+    Config<bool> mosManualMode{ConfigOptions<bool>{.key = "mosMan", .name = "MOS Hand Mode (inactive)", .category = "Limiter", .defaultValue = true, .sortOrder = 23}};
+    Config<bool> inverterEnabled{ConfigOptions<bool>{.key = "invEn", .name = "Inverter Enabled (inactive)", .category = "Limiter", .defaultValue = true, .sortOrder = 24}};
+    Config<float> priceComfort{ConfigOptions<float>{.key = "priceC", .name = "Price Comfort (inactive, EUR/kWh)", .category = "Limiter", .defaultValue = 0.25f, .sortOrder = 25}};
+    Config<float> priceDeadband{ConfigOptions<float>{.key = "priceDb", .name = "Price Deadband (inactive, EUR/kWh)", .category = "Limiter", .defaultValue = 0.06f, .sortOrder = 26}};
+
     void attachTo(ConfigManagerClass &cfg)
     {
         cfg.addSetting(&enableController);
@@ -212,6 +224,13 @@ struct LimiterSettings
         cfg.addSetting(&forceMinOnNegativePrice);
         cfg.addSetting(&setZeroOnNegativePrice);
         cfg.addSetting(&RS232PublishPeriod);
+        cfg.addSetting(&reserveOffSoc);
+        cfg.addSetting(&reserveOnSoc);
+        cfg.addSetting(&batteryPowerDeadband);
+        cfg.addSetting(&mosManualMode);
+        cfg.addSetting(&inverterEnabled);
+        cfg.addSetting(&priceComfort);
+        cfg.addSetting(&priceDeadband);
     }
 };
 
@@ -425,6 +444,7 @@ static cm::MQTTManager &mqtt = cm::MQTTManager::instance();
 static cm::MQTTManager::Settings &mqttSettings = mqtt.settings();
 static cm::IOManager ioManager;
 static cm::AlarmManager alarmManager;
+static sbt::Service sbtInputs;
 
 #if FEATURE_FAN_ENABLED
 static constexpr char IO_FAN_ID[] = "fan_relay";
@@ -447,6 +467,8 @@ struct PidControllerState
 static PidControllerState pidController;
 static bool lastLimiterModeWasPid = false;
 static int lastSmootherRequestedSize = -1;
+static control::PreparedSettings preparedSettings;
+static control::RuntimeState preparedState;
 static int lastNegativePriceOverrideTarget = -1;
 static NegativePriceSettingPreference lastNegativePriceSettingPreference = NegativePriceSettingPreference::None;
 static bool normalizingNegativePriceSettings = false;
@@ -485,6 +507,7 @@ void setup()
 
     ConfigManager.checkSettingsForErrors();
     ConfigManager.loadAll();
+    refreshPreparedSettings();
     normalizeNegativePriceSettings(NegativePriceSettingPreference::None, true, true);
     syncStoredCodeVersion();
     delay(100);
@@ -567,6 +590,7 @@ void loop()
 {
     ConfigManager.getWiFiManager().update();
     mqtt.loop();
+    sbtInputs.loop();
     publishMqttNow();
     handleRS485Scheduler();
 #if FEATURE_BME280_ENABLED
@@ -637,7 +661,7 @@ void setupGUI()
     // region sensor fields BME280
 #if FEATURE_BME280_ENABLED
     auto sensors = ConfigManager.liveGroup("sensors")
-                       .page("Limiter", 10)
+                       .page("Temperature Sensor", 10)
                        .card("Sensors", 10)
                        .group("Sensor Readings", 10);
 
@@ -954,6 +978,7 @@ static void setupMqtt()
     mqtt.attach(ConfigManager);
     mqtt.addMQTTRuntimeProviderToGUI(ConfigManager, "mqtt");
     mqtt.addMqttSettingsToSettingsGroup(ConfigManager, "MQTT", "MQTT Settings", 40);
+    sbtInputs.attach(ConfigManager, mqtt);
 
     // Receive: signed grid power W (positive import, negative export)
     mqtt.addTopicReceiveInt(
@@ -1026,8 +1051,41 @@ static void registerProjectSettings()
     rs485settings.attachTo(ConfigManager);
 }
 
+// Called once after load and on setting changes, never from the control cycle.
+// Invalid combinations remain visible as entered; future modules must require valid.
+static void refreshPreparedSettings()
+{
+    preparedSettings.reserveOffSocPercent = limiterSettings.reserveOffSoc.get();
+    preparedSettings.reserveOnSocPercent = limiterSettings.reserveOnSoc.get();
+    preparedSettings.batteryPowerDeadbandW = limiterSettings.batteryPowerDeadband.get();
+    preparedSettings.mosManualMode = limiterSettings.mosManualMode.get();
+    preparedSettings.inverterEnabled = limiterSettings.inverterEnabled.get();
+    preparedSettings.priceComfortEurPerKwh = limiterSettings.priceComfort.get();
+    preparedSettings.priceDeadbandEurPerKwh = limiterSettings.priceDeadband.get();
+    preparedSettings.priceHysteresisEurPerKwh = preparedSettings.priceDeadbandEurPerKwh / 3.0f;
+    preparedSettings.valid = std::isfinite(preparedSettings.reserveOffSocPercent) &&
+        std::isfinite(preparedSettings.reserveOnSocPercent) &&
+        preparedSettings.reserveOffSocPercent >= 0.0f &&
+        preparedSettings.reserveOffSocPercent < preparedSettings.reserveOnSocPercent &&
+        preparedSettings.reserveOnSocPercent <= 100.0f &&
+        preparedSettings.batteryPowerDeadbandW > 0 &&
+        std::isfinite(preparedSettings.priceComfortEurPerKwh) &&
+        std::isfinite(preparedSettings.priceDeadbandEurPerKwh) &&
+        preparedSettings.priceDeadbandEurPerKwh >= 0.0f;
+    preparedState.recalculationDirty = true;
+}
+
 static void configureLimiterSettingsBehavior()
 {
+    // Preparation only: callbacks cache settings; no planner or actuator is enabled.
+    limiterSettings.reserveOffSoc.setCallback([](float) { refreshPreparedSettings(); });
+    limiterSettings.reserveOnSoc.setCallback([](float) { refreshPreparedSettings(); });
+    limiterSettings.batteryPowerDeadband.setCallback([](int) { refreshPreparedSettings(); });
+    limiterSettings.mosManualMode.setCallback([](bool) { refreshPreparedSettings(); });
+    limiterSettings.inverterEnabled.setCallback([](bool) { refreshPreparedSettings(); });
+    limiterSettings.priceComfort.setCallback([](float) { refreshPreparedSettings(); });
+    limiterSettings.priceDeadband.setCallback([](float) { refreshPreparedSettings(); });
+
     limiterSettings.smoothingSize.showIfFunc = []()
     { return !limiterSettings.usePidSmoothing.get(); };
 
