@@ -11,14 +11,58 @@ This project is an ESP32-based solar inverter limiter that can be used to limit 
 - Web-based settings UI (ConfigManager)
 - BME280 sensor support; OLED and GUI/MQTT logging are disabled in the production profiles
 
+## Compact metadata development candidate (5.0.2)
+
+The active development code requires CM >=4.7.0: 19 enabled GUI descriptors and
+40 SBT receiver descriptors use compact Float/Int/Bool/Text storage. Keys,
+placement, getters, individual provider order, units, precision and control
+algorithms remain unchanged. Optional fan/heater controls retain their existing
+builders; those features are disabled in the COM7 comparison profile.
+
+The normal profiles now use `symlink://../ConfigurationsManager`: the adjacent
+local CM >=4.7.0 checkout is required, including any uncommitted development
+changes. No stale Git pin or unpublished release reference is used. This is an
+explicit development binding, not a reproducible released dependency; pin a
+published compatible CM commit when this coordinated work is released.
+
+All existing profiles disable OLED. Their unused SSD1306, GFX and BusIO package
+declarations have been removed. Re-enabling OLED also requires declaring its
+display dependencies; BME280 support is retained.
+
+The explicitly authorized COM7 comparison uses the ignored local configuration
+`.pio/compact-runtime-metadata/platformio-test.ini`, binding
+`C:/Daten/_Codding/ESP32/ConfigurationsManager` via symlink and a read-only asset
+preflight. Build it with:
+
+```powershell
+pio run -e testesp -c .pio/compact-runtime-metadata/platformio-test.ini
+./tools/test/run-compact-runtime-metadata-tests.ps1
+```
+
+This local profile retains BME280 and mocked RS485 output, omits BLE/NimBLE,
+disables CM logging like the SBT comparison, and preserves the test ESP's existing
+OTA password. Production-profile provisioning behavior is unchanged. Parent
+uploads only the application to COM7; the repository partition table must not be
+written to the test device. The [portable plan and evidence](docs/superpowers/plans/2026-10-18-compact-runtime-metadata.md)
+records the unresolved HTTP crash context and hardware acceptance boundary.
+
+Common always-used PlatformIO settings now live in `[env]`; the five existing
+profiles initially resolved to exactly the same option values after that
+organization-only change. Following owner feedback, the common dependency was
+then switched to local CM >=4.7.0 and unused OLED packages were removed. These
+are intentional dependency changes. The ignored comparison configuration still
+selects its own logging and build-partition choices.
+
 ## ConfigManager v4 note
 
-- This project is aligned to `ESP32 Configuration Manager` `4.6.0`, pinned to commit `554869da7efc98e0c1874e74bf0c78d4bcd1664a` in `platformio.ini`.
+- Current development dependency: adjacent local `ConfigurationsManager` >=4.7.0 via symlink. The earlier published 4.6.0 pin is historical.
 - The pre-build step uses `tools/precompile_wrapper.py`.
-- The wrapper delegates to the library script inside `.pio/libdeps/<env>/ESP32 Configuration Manager/tools/preCompile_script.py`.
+- The wrapper resolves the declared local symlink, checks CM version mirrors and
+  the existing WebUI asset, and never modifies the shared checkout.
 - Link-time optimization preserves OTA slot headroom without changing the partition layout. Normal UART logging at Info level and ESP32 ROM/panic diagnostics remain available.
-- The wrapper builds only the resolved dependency; it no longer replaces backend or WebUI files from a local checkout.
-- SIL firmware version `4.3.2` adopts this pinned dependency without changing the inverter control algorithm.
+- Prepare changed WebUI assets in ConfigurationsManager itself before consuming
+  them; SIL builds use the reviewed generated asset without rebuilding it.
+- Historical SIL firmware `4.3.2` adopted this pinned dependency without changing the inverter control algorithm.
 - Memory decision (2026-10-16): remove OLED and GUI/MQTT logging now, retain normal UART Info logging and BME280 support. If a future build reaches a demonstrated memory limit, the maintainer has authorized removing BME280 support as a fallback; it is not removed preemptively.
 
 Build and hardware acceptance evidence: [CM runtime validation](docs/cm-runtime-validation-2026-10-16.md).

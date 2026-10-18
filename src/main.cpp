@@ -12,6 +12,7 @@
 // AsyncWebServer instance is provided by ConfigManager library (extern AsyncWebServer server)
 
 #include "ConfigManager.h"
+#include "runtime/CompactLiveMetadata.h"
 
 #include "core/CoreSettings.h"
 #include "core/CoreWiFiServices.h"
@@ -99,7 +100,7 @@
 #endif
 
 #ifndef VERSION
-#define VERSION "5.0.1"
+#define VERSION "5.0.2"
 #endif
 
 enum class NegativePriceSettingPreference : uint8_t
@@ -678,138 +679,101 @@ void setupGUI()
 
     // region sensor fields BME280
 #if FEATURE_BME280_ENABLED
-    auto sensors = ConfigManager.liveGroup("sensors")
-                       .page("Temperature Sensor", 10)
-                       .card("Sensors", 10)
-                       .group("Sensor Readings", 10);
+    ConfigManager.addLivePage("Temperature Sensor", 10);
+    ConfigManager.addLiveCard("Temperature Sensor", "Sensors", 10);
+    ConfigManager.addLiveGroup("Temperature Sensor", "Sensors", "Sensor Readings", 10);
+    sil::CompactLiveGroup sensors(ConfigManager.getRuntime(), "sensors", "Temperature Sensor", "Sensors", "Sensor Readings");
 
-    sensors.value("temp", []()
-                  { return roundf(temperature * 10.0f) / 10.0f; })
-        .label("Temperature")
-        .unit("\xC2\xB0" "C")
-        .precision(1)
-        .order(2);
+    sensors.value<RuntimeFloatMeta>("temp", []()
+                  { return roundf(temperature * 10.0f) / 10.0f; },
+        "Temperature", "\xC2\xB0" "C", 1, 2);
 
-    sensors.value("hum", []()
-                  { return roundf(Humidity * 10.0f) / 10.0f; })
-        .label("Humidity")
-        .unit("%")
-        .precision(1)
-        .order(11);
+    sensors.value<RuntimeFloatMeta>("hum", []()
+                  { return roundf(Humidity * 10.0f) / 10.0f; },
+        "Humidity", "%", 1, 11);
 
-    sensors.value("dew", []()
-                  { return roundf(Dewpoint * 10.0f) / 10.0f; })
-        .label("Dewpoint")
-        .unit("\xC2\xB0" "C")
-        .precision(1)
-        .order(12);
+    sensors.value<RuntimeFloatMeta>("dew", []()
+                  { return roundf(Dewpoint * 10.0f) / 10.0f; },
+        "Dewpoint", "\xC2\xB0" "C", 1, 12);
 
-    sensors.value("pressure", []()
-                  { return roundf(Pressure * 10.0f) / 10.0f; })
-        .label("Pressure")
-        .unit("hPa")
-        .precision(1)
-        .order(13);
+    sensors.value<RuntimeFloatMeta>("pressure", []()
+                  { return roundf(Pressure * 10.0f) / 10.0f; },
+        "Pressure", "hPa", 1, 13);
+#endif
+#if FEATURE_BME280_ENABLED
+    if(!sensors.valid()) lmg.logTag(LL::Error, "GUI", "Sensor fields unavailable");
 #endif
     // endregion sensor fields
 
     // region Limiter
-    auto limiter = ConfigManager.liveGroup("Limiter")
-                       .page("Limiter", 20)
-                       .card("Limiter", 20)
-                       .group("Limiter Status", 20);
+    ConfigManager.addLivePage("Limiter", 20);
+    ConfigManager.addLiveCard("Limiter", "Limiter", 20);
+    ConfigManager.addLiveGroup("Limiter", "Limiter", "Limiter Status", 20);
+    sil::CompactLiveGroup limiter(ConfigManager.getRuntime(), "Limiter", "Limiter", "Limiter", "Limiter Status");
 
-    limiter.value("enabled", []()
-                  { return limiterSettings.enableController.get(); })
-        .label("Limiter Enabled")
-        .order(1);
+    limiter.value<RuntimeBoolMeta>("enabled", []()
+                  { return limiterSettings.enableController.get(); },
+        "Limiter Enabled", "", 2, 1);
 
-    limiter.value("gridIn", []()
-                  { return currentGridImportW; })
-        .label("Grid Import")
-        .unit("W")
-        .precision(0)
-        .order(2);
+    limiter.value<RuntimeFloatMeta>("gridIn", []()
+                  { return currentGridImportW; },
+        "Grid Import", "W", 0, 2);
 
-    limiter.value("invSet", []()
-                  { return inverterSetValue; })
-        .label(kRs485MockTransport ? "Mock Inverter Demand (no TX)" : "Requested Inverter Output (not ACK)")
-        .unit("W")
-        .precision(0)
-        .order(3);
+    limiter.value<RuntimeIntMeta>("invSet", []()
+                  { return inverterSetValue; },
+        kRs485MockTransport ? "Mock Inverter Demand (no TX)" : "Requested Inverter Output (not ACK)", "W", 0, 3);
 
-    limiter.value("invCalc", []()
-                  { return inverterCalculatedValue; })
-        .label("Calculated Setpoint")
-        .unit("W")
-        .precision(0)
-        .order(4);
+    limiter.value<RuntimeIntMeta>("invCalc", []()
+                  { return inverterCalculatedValue; },
+        "Calculated Setpoint", "W", 0, 4);
 
-    limiter.value("solar", []()
+    limiter.value<RuntimeFloatMeta>("solar", []()
                   {
         float watts = 0;
         return telemetryAge.read(control::TelemetryAge::Inverter, millis(), control::kGridAcStaleMs, watts)
             ? double(watts) : NAN;
-    })
-        .label("Measured Inverter AC Output")
-        .unit("W")
-        .precision(0)
-        .order(5);
+    },
+        "Measured Inverter AC Output", "W", 0, 5);
 
-    limiter.value("negPrice", []()
-                  { return negativePriceActive; })
-        .label("Negative Price")
-        .order(6);
+    limiter.value<RuntimeBoolMeta>("negPrice", []()
+                  { return negativePriceActive; },
+        "Negative Price", "", 2, 6);
 
-    limiter.value("price", []()
-                  { return electricityPriceEurKwh; })
-        .label("Electricity Price")
-        .unit("EUR/kWh")
-        .precision(3)
-        .order(7);
-    limiter.value("pvPower", []()
-                  { return sbtInputs.liveMeasurement("victron/solar_power_w", millis()); })
-        .label("PV Solar Power (Victron)")
-        .unit("W")
-        .precision(0)
-        .order(8);
+    limiter.value<RuntimeFloatMeta>("price", []()
+                  { return electricityPriceEurKwh; },
+        "Electricity Price", "EUR/kWh", 3, 7);
+    limiter.value<RuntimeFloatMeta>("pvPower", []()
+                  { return sbtInputs.liveMeasurement("victron/solar_power_w", millis()); },
+        "PV Solar Power (Victron)", "W", 0, 8);
 
-    limiter.value("batteryPower", []()
-                  { return sbtInputs.liveMeasurement("bms/power_w", millis()); })
-        .label("Battery Power (+charge / -discharge)")
-        .unit("W")
-        .precision(0)
-        .order(9);
+    limiter.value<RuntimeFloatMeta>("batteryPower", []()
+                  { return sbtInputs.liveMeasurement("bms/power_w", millis()); },
+        "Battery Power (+charge / -discharge)", "W", 0, 9);
 
-    limiter.value("priceBand", []()
-                  { return String(currentDecisionAvailable ? currentDecision.priceBand : "unknown"); })
-        .label("Current Price Band")
-        .order(10);
+    limiter.value<RuntimeTextMeta>("priceBand", []()
+                  { return String(currentDecisionAvailable ? currentDecision.priceBand : "unknown"); },
+        "Current Price Band", "", 2, 10);
 
-    limiter.value("forecastValid", []()
-                  { return currentDecisionAvailable && futurePlan.valid; })
-        .label("Future Price Plan Valid")
-        .order(11);
+    limiter.value<RuntimeBoolMeta>("forecastValid", []()
+                  { return currentDecisionAvailable && futurePlan.valid; },
+        "Future Price Plan Valid", "", 2, 11);
 
-    limiter.value("forecastStatus", []()
-                  { return String(currentDecisionAvailable ? futurePlan.reason : "startup"); })
-        .label("Future Price Plan Status")
-        .order(12);
+    limiter.value<RuntimeTextMeta>("forecastStatus", []()
+                  { return String(currentDecisionAvailable ? futurePlan.reason : "startup"); },
+        "Future Price Plan Status", "", 2, 12);
 
-    limiter.value("forecastSlots", []()
-                  { return futurePrices.slots(); })
-        .label("Received Price Slots (15 min)")
-        .order(13);
+    limiter.value<RuntimeIntMeta>("forecastSlots", []()
+                  { return futurePrices.slots(); },
+        "Received Price Slots (15 min)", "", 0, 13);
 
-    limiter.value("controlReason", []()
-                  { return String(currentDecisionAvailable ? currentDecision.reason : "startup"); })
-        .label("Output Decision Reason")
-        .order(14);
+    limiter.value<RuntimeTextMeta>("controlReason", []()
+                  { return String(currentDecisionAvailable ? currentDecision.reason : "startup"); },
+        "Output Decision Reason", "", 2, 14);
 
-    limiter.value("mockTransport", []()
-                  { return kRs485MockTransport; })
-        .label("Mock Transport (no hardware TX)")
-        .order(15);
+    limiter.value<RuntimeBoolMeta>("mockTransport", []()
+                  { return kRs485MockTransport; },
+        "Mock Transport (no hardware TX)", "", 2, 15);
+    if(!limiter.valid()) lmg.logTag(LL::Error, "GUI", "Runtime fields unavailable");
     // endregion Limiter
 
     // region relay outputs
@@ -1322,10 +1286,13 @@ static void setupNetworkDefaults()
 #endif
     }
 
+    // Test firmware keeps the existing device OTA credential.
+#if !defined(SIL_MOCK_TRANSPORT) || !SIL_MOCK_TRANSPORT
     if (systemSettings.otaPassword.get() != OTA_PASSWORD)
     {
         systemSettings.otaPassword.save(OTA_PASSWORD);
     }
+#endif
 
 #if defined(WIFI_FILTER_MAC_PRIORITY)
     if (wifiRoamingSettings.preferredApMac.get().isEmpty())
