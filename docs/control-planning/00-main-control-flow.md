@@ -1,71 +1,69 @@
 ---
 puppeteer:
   landscape: true
-  format: "A4"
+  format: A4
   printBackground: true
 ---
 
-# SIL - Main discussion flow
+# SIL - Actual integration and approved next increment
 
-Current baseline: [Round 5 decisions and initial constants](round-5-decisions-and-defaults.md). Round 5 takes precedence over older proposals; no device settings have been changed.
+Updated2026-10-20. [Active plan](../superpowers/plans/2026-10-20-sil-sbt-ha-integration.md) and [specification](2026-10-20-integration-spec.md) are authoritative for the new increment. Diagrams below deliberately distinguish current source from target behavior; no firmware was changed by this documentation update.
 
-Status: 2026-10-17, Round 5. Owner-approved first design; not implemented or approved for device operation. This Markdown file is the source; any earlier PDF is stale and must be exported again after edits.
-
-Settings are loaded once at startup. Callbacks update internal variables used by the control cycle; settings are not reread each cycle.
-
-**Shapes:** Rectangle = action; double-sided rectangle = subprogram; diamond = decision; rounded shape = start/end.
+## Current source: implemented path
 
 ```mermaid
 flowchart TD
- A([Startup or control cycle]) --> B[Read current measurements and retained state]
- B --> C[[Validate freshness and shared recovery state]]
- C --> D[[Evaluate both protection directions]]
- D --> F[[Evaluate fan demand and alarm events]]
- F --> REC{Initial qualification complete?}
- REC -- No --> ZERO[Propose inverter 0 W; no MOS replay]
- REC -- Yes --> E{Protection demand?}
- E -- Yes --> P[[Determine directional protection response]]
- E -- No --> G{Inverter enabled?}
- G -- No --> ZERO
- G -- Yes --> H{Valid negative-price stop?}
- H -- Yes --> ZERO
- H -- No --> I{Grid or AC unavailable?}
- I -- Yes --> STORE[Propose 0 W; storage only if healthy BMS allows it]
- I -- No --> K{BMS or Victron unavailable?}
- K -- Yes --> MAX[Propose configured MAX unless retained restriction applies]
- K -- No --> L{Limiter enabled?}
- L -- No --> MAX
- L -- Yes --> M{Replan due or material change?}
- M -- Yes --> N[[Recalculate plan or current-price fallback]]
- M -- No --> O[Use current valid plan or fallback]
- N --> Q[[Calculate permitted power ceiling]]
- O --> Q
- Q --> VALID{Usable ceiling available?}
- VALID -- No --> INVALID[Report invalid budget; request qualified fallback]
- VALID -- Yes --> CHG[[Calculate charge target and dynamic PV ceiling]]
- CHG --> R[[Grid PID bounded by all applicable ceilings]]
- ZERO --> ARB
- P --> ARB
- STORE --> ARB
- MAX --> ARB
- INVALID --> ARB
- R --> ARB
- ARB[Combine directional limits, recovery, measurement policy,<br/>Hand or Auto ownership, OFF and negative-price zero]
- ARB --> SEND[[Send permitted request and check effect asynchronously]]
- SEND --> VIEW[Show mode, SIL request, actual state, strategy and reason]
- VIEW --> END([Next cycle])
+  START([Arduino loop]) --> MQTT["MQTT callbacks: price chunks / SBT scalars and health"]
+  MQTT --> CACHE["SBT mutex-protected cache; current receiver age limit15s"]
+  CACHE --> TICK{RS485 control tick due?}
+  TICK -- No --> OTHER["Other loop work; next cycle"]
+  TICK -- Yes --> SNAP["Read grid/AC/current price and SBT snapshot"]
+  SNAP --> FUT["FuturePrices.plan each control tick;36h bounded price allocation"]
+  FUT --> DEC["CurrentControl: reserve and price band"]
+  DEC --> STOP{Settings/OFF/transport/negative-price stop?}
+  STOP -- Yes --> ZERO["Direct zero request"]
+  STOP -- No --> BYPASS{Limiter disabled?}
+  BYPASS -- Yes --> MAX["Direct configured MAX bypass"]
+  BYPASS -- No --> METER{Grid or inverter AC missing?}
+  METER -- Yes --> ZERO
+  METER -- No --> SRC{BMS or charger invalid?}
+  SRC -- Yes --> FALL["Direct source_loss MAX; latched blocked reserve gives0"]
+  SRC -- No --> REC{Normal recovery qualified?}
+  REC -- No --> ZERO
+  REC -- Yes --> CEIL["Economic ceiling or measured-PV charge PI ceiling"]
+  CEIL --> PID["Existing grid PID within ceiling; normal MIN may reduce"]
+  ZERO --> FINAL["Recheck final limits and negative-price override"]
+  MAX --> FINAL
+  FALL --> FINAL
+  PID --> FINAL
+  FINAL --> MODE{Mock transport?}
+  MODE -- Yes --> MOCK["Record mock demand; no UART/RS485 hardware I/O"]
+  MODE -- No --> TX["Issue RS485 request at configured cadence"]
+  MOCK --> VIEW["Planning state / Live / MQTT; request is not acknowledgement"]
+  TX --> VIEW
 ```
 
-The protection subprogram must still enforce inverter OFF and the valid negative-price zero request; a protection branch must not leave an earlier positive inverter request active. Fan demand is evaluated on both normal and protection paths.
+Source anchors: main.cpp processRS485Tick/FuturePrices.plan; CurrentControl.h update. Full ProtectionCoordinator and several PreparedControl boundaries remain stubs; SIL MOS commands remain locked. Do not interpret the older protection diagrams as already wired into this path.
 
-Protection remains active when inverter is disabled and during the Limiter OFF economics bypass. A fan ON request and Home Assistant alarm cannot prove that charging has physically stopped. MOS automation is restricted to fault handling and remains subject to the whole-control write gate. A positive MAX or inverter setpoint is a request, not a guarantee of physical power.
+## Approved next integration: target, not yet implemented
 
-## Illustrative example
+```mermaid
+flowchart TD
+  IN([New event or control cycle]) --> PARSE["Validate incoming candidate; preserve last-good cache on malformed update"]
+  PARSE --> ALARM{Valid real alarm received?}
+  ALARM -- Yes --> URGENT["Apply existing alarm restriction immediately; no new waiting period"]
+  ALARM -- No --> AGE{Last valid source evidence within configured1..9999s?}
+  AGE -- Yes --> HOLD["Use valid/held strategy; no added stale-data permission"]
+  AGE -- No --> OLD["Keep numeric values marked Old; bounded Idle fallback default500W"]
+  HOLD --> EVENT{Snapshot/slot/settings/material event or30min replan due?}
+  EVENT -- Yes --> PLAN["Replan qualified prices/PV, usable energy and charge target"]
+  EVENT -- No --> USE["Reuse valid allocations; update energy debit/time cheaply"]
+  PLAN --> FAST["Fast PID + charge PI; combine all stronger stops/ceilings"]
+  USE --> FAST
+  OLD --> FAST
+  URGENT --> FAST
+  FAST --> SEND["Single bounded request; test mock or existing RS485 transport"]
+  SEND --> UI["Compact Limiter + NTC1 Top / NTC2 Bottom; existing raw MQTT channels preserved"]
+```
 
-At 15% SOC, 1,358 W household demand, 27 W PV, and prices of €0.39/kWh and later €0.42/kWh, a prior illustration estimated about 430 W inverter output using 6.74 kWh nominal capacity, 5% reserve, 90% discharge efficiency, and a 1.5-hour window. These are historical assumptions, not a runtime guarantee. The current reserve default is 2%; the old numerical example must not be interpreted as recalculated for that default.
-
-## Review and export
-
-See [Round 5 decisions](round-5-decisions-and-defaults.md) and the [README](README.md) for subprogram links and PDF export instructions. Round 5 defines the reserve default, separate mode selector, price fallback and recovery direction. Hardware-path qualification, CM behavior and total-controller-failure behavior remain verification work.
-
-See the accepted [charge-target and dynamic PV-ceiling addendum](10-charge-target-and-pv-ceiling.md) for storage control, shared actuator arbitration, ramp exceptions, and the accepted transient-discharge limitation.
+Missing telemetry never creates an alarm. A known restriction is not cleared by silence. Plan validity and measurement tolerance are separate clocks. No second alarm delay or unapproved MOS actuator is introduced. Inverter command loss may leave the last setpoint active: independent hardware behavior remains unqualified.

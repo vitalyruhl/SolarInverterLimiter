@@ -7,6 +7,10 @@ puppeteer:
 
 # SIL - Charge target and dynamic PV ceiling
 
+> Current execution: [single active integration plan](../superpowers/plans/2026-10-20-sil-sbt-ha-integration.md). This file is a preserved design reference; it does not prove full runtime integration. The [October20 specification](2026-10-20-integration-spec.md) supersedes conflicting timeout/fallback/UI defaults. Do not delay received alarms or infer an alarm from missing data.
+
+
+
 Status: 2026-10-17. Owner-approved addition to the [Round 5 baseline](round-5-decisions-and-defaults.md); not implemented or hardware-qualified.
 
 **Inputs and outputs:** Planned charging allocation, time to target window, fresh time-aligned charger DC output and signed BMS battery power -> dynamic inverter AC ceiling and charging-target status.

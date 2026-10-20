@@ -1,34 +1,33 @@
 ---
 puppeteer:
   landscape: true
-  format: "A4"
+  format: A4
   printBackground: true
 ---
 
-# SIL - Load settings once and apply callback updates
+# SIL - Settings and build-time visualization
 
-Current baseline: [Round 5 decisions and initial constants](round-5-decisions-and-defaults.md). Round 5 takes precedence over older proposals; no device settings have been changed.
-
-Status: 2026-10-17, Round 5. Owner-approved first design; not implemented or hardware-qualified.
-
-**Inputs and outputs:** Startup or setting change -> validated internal variables and, when needed, a planning request.
-
-**Shapes:** Rectangle = action; double-sided rectangle = subprogram; diamond = decision; rounded shape = start/end.
+[Active plan](../superpowers/plans/2026-10-20-sil-sbt-ha-integration.md) / [specification](2026-10-20-integration-spec.md). The new settings and PIO switch are planned, not implemented by this documentation update.
 
 ```mermaid
 flowchart TD
- A([Startup]) --> B[Load and validate settings once]
- B --> C[Initialize internal variables]
- C --> D([Control ready])
- E([Setting callback]) --> F[Receive changed value]
- F --> G{Value and combination valid?}
- G -- No --> H[Reject change and report]
- G -- Yes --> I[Update internal variables consistently]
- I --> J{Planning relevant?}
- J -- Yes --> K[Queue replanning]
- J -- No --> L([Apply change])
- K --> L
- H --> M([Keep previous value])
+  BOOT([Startup]) --> LOAD["Load existing persisted settings without erasing NVS"]
+  LOAD --> CHECK["Validate bounds and combinations; cache effective values"]
+  EDIT([Settings callback]) --> CHECK
+  CHECK --> BAD{Invalid persisted or edited value?}
+  BAD -- Yes --> SAFE["Use safe validated value; report rejection without silent truncation"]
+  BAD -- No --> CACHE["Publish consistent small settings snapshot"]
+  SAFE --> CACHE
+  CACHE --> REPLAN{Relevant planning change?}
+  REPLAN -- Yes --> DIRTY["Invalidate slow-plan cache"]
+  REPLAN -- No --> FAST["Apply fast limits/deadline at next control evaluation"]
+  DIRTY --> FAST
+  BUILD([Build flags/constants]) --> CARD{SIL_DEACTIVATE_BME280_CARD?}
+  CARD -- 1 --> HIDE["Omit BME280 live registration; measurement and MQTT remain"]
+  CARD -- 0 --> SHOW["Register existing BME280 live card"]
+  BUILD --> I2C["I2C constants SDA21 / SCL22 /400000Hz"]
 ```
 
-Load settings once at startup. Callbacks update internal variables; the control cycle uses them without rereading NVS or JSON. Recheck permissions immediately before any write. Callbacks should remain brief and queue expensive replanning. If callbacks can run concurrently, provide a consistent handoff. On boot, read actual MOS state, do not replay MOS commands, update internal variables from callbacks, and recheck state before a write. Use the shared startup/recovery routine from Round 5: retain fault and mode ownership, qualify source data, select price policy, recalculate, then enable the bounded controller path. Never treat restart as clearing a known fault. Physical inverter behavior on total SIL failure still needs qualification.
+Limiter order: Max Output, Idle Output default500W, Min Output. `SBT Data Timeout (s)` accepts1..9999, default180; this is not an alarm-delay setting. The same effective deadline drives Old/recovery policy without a doubled wait. Intentional Limiter-OFF bypass remains distinct from source-loss fallback.
+
+Remove editable I2C Config objects while preserving verified wiring and leaving old NVS keys inert. `SIL_DEACTIVATE_BME280_CARD=1` is separate from actual BME280 feature enablement. Source/thermal functions and existing MQTT stay present even when the card is hidden. Settings/callbacks must not block the fast control path or rebuild JSON/NVS each cycle.

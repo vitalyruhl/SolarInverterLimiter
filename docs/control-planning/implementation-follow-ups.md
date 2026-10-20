@@ -1,5 +1,9 @@
 # Implementation follow-ups and consolidated legacy requirements
 
+> Current execution: [single active integration plan](../superpowers/plans/2026-10-20-sil-sbt-ha-integration.md). This file is a preserved design reference; it does not prove full runtime integration. The [October20 specification](2026-10-20-integration-spec.md) supersedes conflicting timeout/fallback/UI defaults. Do not delay received alarms or infer an alarm from missing data.
+
+
+
 Date: 2026-10-17. Current-price reserve and PV-following ceiling are connected to the existing PID/output path. A first future-price transport and price-ranked energy ceiling are now connected; MOS actuation remains unimplemented. The [Round 5 baseline](round-5-decisions-and-defaults.md) and [charge-target/PV-ceiling addendum](10-charge-target-and-pv-ceiling.md) govern implementation. This document preserves useful details from the superseded 2026-10-16 strategy draft and TODO entries without reopening accepted decisions.
 
 ## Remove the legacy smoother, preserve the PID
@@ -67,7 +71,7 @@ Uncomputed strategy, reason, ceiling, charge target, reserve permission, and all
 
 The old `energy-strategy-options-2026-10-16.md` discussion text was removed after consolidation. Its tentative 5% reserve plus 3-point hysteresis, `mosAuto`, derived-economic-db-only policy, unresolved fallback matrix and generic configurable post-PID asymmetric ramp are superseded. Current settings remain 2%/10%, Hand/Auto, price db/3 hysteresis, adjustable battery power band, and separate 50 W/s economic ceiling constants with the accepted bypasses. Historical Round 4 records stay explicitly historical.
 
-Retain `docs/sbt-receiver-validation-2026-10-16.md` and `docs/superpowers/plans/2026-10-16-sbt-telemetry-inputs.md`: they document a distinct receiver implementation/test scope, including limitations. Retain `docs/cm-runtime-validation-2026-10-16.md` as dependency-upgrade evidence. Historical branch names in these evidence records describe the work at that time. This consolidation does not stage or accept their associated unfinished product code.
+Retain `docs/sbt-receiver-validation-2026-10-16.md` and `docs/acceptance/2026-10-16-sbt-telemetry-inputs-evidence.md`: they document a distinct receiver implementation/test scope, including limitations. Retain `docs/cm-runtime-validation-2026-10-16.md` as dependency-upgrade evidence. Historical branch names in these evidence records describe the work at that time. This consolidation does not stage or accept their associated unfinished product code.
 
 ## Current-price and PV-following implementation slice (2026-10-17)
 

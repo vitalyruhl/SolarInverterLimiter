@@ -1,5 +1,10 @@
 # ESP32 RS485 Solar Inverter Limiter
 
+## Current integration handoff
+
+Read the [single SIL / SBT / HA implementation plan](docs/superpowers/plans/2026-10-20-sil-sbt-ha-integration.md) and its [owner-approved specification](docs/control-planning/2026-10-20-integration-spec.md). This checkpoint consolidates documentation only; implementation and the authorized test-ESP acceptance run start after the owner's review/continuation. Production firmware upload is reserved to the owner. Historical work plans are preserved under docs/acceptance, not active queues.
+
+
 This project is an ESP32-based solar inverter limiter that can be used to limit the power output of a solar inverter to a specific value. The project uses an ESP32 microcontroller and an RS485 module to communicate with the inverter.
 
 ## Features
@@ -43,7 +48,7 @@ This local profile retains BME280 and mocked RS485 output, omits BLE/NimBLE,
 disables CM logging like the SBT comparison, and preserves the test ESP's existing
 OTA password. Production-profile provisioning behavior is unchanged. Parent
 uploads only the application to COM7; the repository partition table must not be
-written to the test device. The [portable plan and evidence](docs/superpowers/plans/2026-10-18-compact-runtime-metadata.md)
+written to the test device. The [portable plan and evidence](docs/acceptance/2026-10-18-compact-runtime-metadata-evidence.md)
 records the unresolved HTTP crash context and hardware acceptance boundary.
 
 Common always-used PlatformIO settings now live in `[env]`; the five existing
@@ -95,7 +100,7 @@ MOS shutdown envelopes are prepared as pure previews only. `commands_locked` is 
 
 For the COM7 receiver test, MQTT uses a unique client ID, publish root `SILTest/COM7`, and a 50 ms listen interval; RS485 stays disabled. The previous 500 ms interval processes bursts too slowly for a 15-second health deadline. Any future deployment needs an explicit receiving-throughput review. The extension has not been deployed to the production SIL.
 
-See [receiver plan](docs/superpowers/plans/2026-10-16-sbt-telemetry-inputs.md) and [acceptance evidence](docs/sbt-receiver-validation-2026-10-16.md). Focused host tests: `./tools/test/run-sbt-receiver-tests.ps1` after the USB dependencies have been resolved; the script requires LLVM Clang on Windows. Add `-SbtRepository ../SolarBatteryTelemetry` to verify the actual sibling publisher-to-receiver contract. Corrected hardware MQTT acceptance passed on COM7. The later UI check also received real BMS/Victron samples after the collector returned to its normal site; long-term source/network stability remains separate. See the evidence document for exact results and limits.
+See [receiver plan](docs/acceptance/2026-10-16-sbt-telemetry-inputs-evidence.md) and [acceptance evidence](docs/sbt-receiver-validation-2026-10-16.md). Focused host tests: `./tools/test/run-sbt-receiver-tests.ps1` after the USB dependencies have been resolved; the script requires LLVM Clang on Windows. Add `-SbtRepository ../SolarBatteryTelemetry` to verify the actual sibling publisher-to-receiver contract. Corrected hardware MQTT acceptance passed on COM7. The later UI check also received real BMS/Victron samples after the collector returned to its normal site; long-term source/network stability remains separate. See the evidence document for exact results and limits.
 
 ## Hardware Requirements
 

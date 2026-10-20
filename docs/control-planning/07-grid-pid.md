@@ -7,6 +7,10 @@ puppeteer:
 
 # SIL - Use grid PID to calculate power for household demand
 
+> Current execution: [single active integration plan](../superpowers/plans/2026-10-20-sil-sbt-ha-integration.md). This file is a preserved design reference; it does not prove full runtime integration. The [October20 specification](2026-10-20-integration-spec.md) supersedes conflicting timeout/fallback/UI defaults. Do not delay received alarms or infer an alarm from missing data.
+
+
+
 Current baseline: [Round 5 decisions and initial constants](round-5-decisions-and-defaults.md). Round 5 takes precedence over older proposals; no device settings have been changed.
 
 Status: 2026-10-17, Round 5. Owner-approved first design; not implemented or hardware-qualified.

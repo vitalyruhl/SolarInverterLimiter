@@ -1,5 +1,9 @@
 # SIL control planning - Round 5 decisions and initial constants
 
+> Current execution: [single active integration plan](../superpowers/plans/2026-10-20-sil-sbt-ha-integration.md). This file is a preserved design reference; it does not prove full runtime integration. The [October20 specification](2026-10-20-integration-spec.md) supersedes conflicting timeout/fallback/UI defaults. Do not delay received alarms or infer an alarm from missing data.
+
+
+
 Date: 2026-10-17. Owner-approved first-design baseline; planning closed. This incorporates the owner's Round 5 replies and the latest clarification. It supersedes conflicting Round 4 proposals; the Round 4 ledger and independent review remain historical evidence. This is documentation, not firmware, device configuration, or a passed HITL test.
 
 ## Confirmed control ownership

@@ -1,3 +1,9 @@
+# Historical implementation evidence
+
+This is a preserved completed/historical plan and acceptance ledger, not active work instructions. The only current work queue is the [SIL / SBT / HA integration plan](../superpowers/plans/2026-10-20-sil-sbt-ha-integration.md). Historical permissions and pending checkboxes below do not override its latest owner instructions.
+
+---
+
 # SBT telemetry receiver and locked MOS preparation
 
 Status: implementation authorized by the owner request on 2026-10-16 after publishing the completed CM upgrade. Branch `feature/sbt-telemetry-inputs`, baseline `97f4fdc45550bd2dff264731d22acee88fe09602`.
