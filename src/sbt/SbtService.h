@@ -22,8 +22,10 @@ class Service {
             reset();
             subscribed_ = false;
         });
+        cfg.getRuntime().registerRuntimeAlarm("SBT charge protection");
+        cfg.getRuntime().registerRuntimeAlarm("SBT discharge protection");
         mqtt.onNewMQTTMessage(
-            [this](const cm::MQTTManager::MqttMessageView &m) {
+            [this, &cfg](const cm::MQTTManager::MqttMessageView &m) {
                 if (!mutex_ || !m.topic)
                     return;
                 const size_t n = root_.length();
@@ -34,7 +36,11 @@ class Service {
                 receiver_.receive(m.topic + n + 1,
                                   reinterpret_cast<const char *>(m.payload),
                                   m.length, millis());
+                const bool chargeAlarm = receiver_.chargeRestricted();
+                const bool dischargeAlarm = receiver_.alarmRestricted();
                 xSemaphoreGive(mutex_);
+                cfg.getRuntime().setRuntimeAlarmActive("SBT charge protection", chargeAlarm);
+                cfg.getRuntime().setRuntimeAlarmActive("SBT discharge protection", dischargeAlarm);
             });
         cfg.getRuntime().addRuntimeProvider(
             "sbt",
@@ -55,6 +61,12 @@ class Service {
         if(!registerRuntimeMetadata(cfg.getRuntime())) return;
 
     }
+    void configureTimeout(unsigned seconds) {
+        if (!mutex_) return;
+        xSemaphoreTake(mutex_, portMAX_DELAY);
+        receiver_.setTimeoutSeconds(seconds);
+        xSemaphoreGive(mutex_);
+    }
     void loop() {
         if (!mqtt_ || !mutex_)
             return;
@@ -64,7 +76,7 @@ class Service {
                 mqtt_->unsubscribe((root_ + "/#").c_str());
             root_ = next;
             subscribed_ = false;
-            reset();
+            reset(true);
         }
         if (!mqtt_->isConnected()) {
             if (subscribed_) {
@@ -81,16 +93,17 @@ class Service {
     }
 
     double liveMeasurement(const char *topic, uint32_t now) {
-        if (!mutex_ || !mqtt_ || !mqtt_->isConnected()) return NAN;
+        (void)now;
+        if (!mutex_) return NAN;
         xSemaphoreTake(mutex_, portMAX_DELAY);
-        const double value = receiver_.valid(topic, now) ? receiver_.numeric(topic) : NAN;
+        const double value = receiver_.cachedNumeric(topic);
         xSemaphoreGive(mutex_);
         return value;
     }
 
     struct ControlSnapshot {
-        bool bmsValid = false, chargerValid = false;
-        float soc = 0, batteryW = 0, chargerW = 0, fullCapacityAh = NAN;
+        bool bmsValid = false, chargerValid = false, sourcesWithinGrace = false, alarmRestricted = false;
+        float soc = 0, batteryW = 0, chargerW = 0, chargerVoltageV = 0, fullCapacityAh = NAN;
         uint32_t bmsSequence = 0, chargerSequence = 0;
     };
     struct DiagnosticSnapshot {
@@ -120,8 +133,11 @@ class Service {
     }
     ControlSnapshot controlSnapshot(uint32_t now) {
         ControlSnapshot s;
-        if (!mutex_ || !mqtt_ || !mqtt_->isConnected()) return s;
+        if (!mutex_) return s;
         xSemaphoreTake(mutex_, portMAX_DELAY);
+        now = millis(); // Never compare a concurrently received sample with an older loop timestamp.
+        s.sourcesWithinGrace = receiver_.withinGrace(0, now) && receiver_.withinGrace(1, now);
+        s.alarmRestricted = receiver_.alarmRestricted();
         s.bmsValid = receiver_.valid("bms/state_of_charge_pct", now) &&
                      receiver_.valid("bms/power_w", now);
         s.chargerValid = receiver_.valid("victron/battery_voltage_v", now) &&
@@ -134,6 +150,7 @@ class Service {
         if (s.chargerValid) {
             const double v = receiver_.numeric("victron/battery_voltage_v");
             const double a = receiver_.numeric("victron/charge_current_a");
+            s.chargerVoltageV = v;
             s.chargerW = v * a;
             s.chargerValid = v > 0 && a >= 0 && std::isfinite(s.chargerW);
         }
@@ -161,10 +178,11 @@ class Service {
     String root_;
     bool subscribed_ = false;
     uint32_t lastSubscribe_ = 0;
-    void reset() {
+    void reset(bool rootChanged = false) {
         if (mutex_) {
             xSemaphoreTake(mutex_, portMAX_DELAY);
-            receiver_.reset();
+            if (rootChanged) receiver_.reset();
+            else receiver_.disconnect();
             xSemaphoreGive(mutex_);
         }
     }

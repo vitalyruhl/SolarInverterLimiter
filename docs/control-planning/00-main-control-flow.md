@@ -5,65 +5,47 @@ puppeteer:
   printBackground: true
 ---
 
-# SIL - Actual integration and approved next increment
+# SIL - Implemented integration
 
-Updated2026-10-20. [Active plan](../superpowers/plans/2026-10-20-sil-sbt-ha-integration.md) and [specification](2026-10-20-integration-spec.md) are authoritative for the new increment. Diagrams below deliberately distinguish current source from target behavior; no firmware was changed by this documentation update.
-
-## Current source: implemented path
+Updated 2026-10-20. [Active plan](../superpowers/plans/2026-10-20-sil-sbt-ha-integration.md) / [specification](2026-10-20-integration-spec.md). This describes source behavior, not completed plant acceptance.
 
 ```mermaid
 flowchart TD
-  START([Arduino loop]) --> MQTT["MQTT callbacks: price chunks / SBT scalars and health"]
-  MQTT --> CACHE["SBT mutex-protected cache; current receiver age limit15s"]
-  CACHE --> TICK{RS485 control tick due?}
-  TICK -- No --> OTHER["Other loop work; next cycle"]
-  TICK -- Yes --> SNAP["Read grid/AC/current price and SBT snapshot"]
-  SNAP --> FUT["FuturePrices.plan each control tick;36h bounded price allocation"]
-  FUT --> DEC["CurrentControl: reserve and price band"]
-  DEC --> STOP{Settings/OFF/transport/negative-price stop?}
+  START([Arduino loop]) --> MQTT["Receive SBT scalars and health; stage price and PV chunks"]
+  MQTT --> CACHE["Preserve last-good cache; fence sessions; latch directional JBD faults"]
+  CACHE --> TICK{"Control tick due?"}
+  TICK -- No --> OTHER["Other loop work"]
+  TICK -- Yes --> SNAP["Snapshot grid, inverter AC, current price and SBT quality"]
+  SNAP --> PLAN["Update measured energy and slot time; reuse or rebuild bounded planning cache"]
+  PLAN --> STOP{"Invalid settings, discharge alarm, inverter OFF, transport OFF or valid negative price?"}
   STOP -- Yes --> ZERO["Direct zero request"]
-  STOP -- No --> BYPASS{Limiter disabled?}
-  BYPASS -- Yes --> MAX["Direct configured MAX bypass"]
-  BYPASS -- No --> METER{Grid or inverter AC missing?}
-  METER -- Yes --> ZERO
-  METER -- No --> SRC{BMS or charger invalid?}
-  SRC -- Yes --> FALL["Direct source_loss MAX; latched blocked reserve gives0"]
-  SRC -- No --> REC{Normal recovery qualified?}
-  REC -- No --> ZERO
-  REC -- Yes --> CEIL["Economic ceiling or measured-PV charge PI ceiling"]
-  CEIL --> PID["Existing grid PID within ceiling; normal MIN may reduce"]
-  ZERO --> FINAL["Recheck final limits and negative-price override"]
+  STOP -- No --> BYPASS{"Limiter disabled?"}
+  BYPASS -- Yes --> MAX["Intentional configured MAX bypass"]
+  BYPASS -- No --> METERS{"Grid and inverter AC current?"}
+  METERS -- No --> ZERO
+  METERS -- Yes --> SRC{"BMS and charger usable?"}
+  SRC -- No --> GRACE{"Prior approval and both sources within grace; reserve not blocked?"}
+  GRACE -- Yes --> HOLD["Hold ceiling no higher than actual held command; valid grid may reduce"]
+  GRACE -- No --> IDLE["Direct bounded Idle; blocked reserve remains zero"]
+  SRC -- Yes --> QUAL{"Five seconds and two new sample pairs qualified?"}
+  QUAL -- No --> REC["Pause controller dynamics"]
+  REC --> RECOK{"Prior approval with grace and reserve not blocked?"}
+  RECOK -- Yes --> HOLD
+  RECOK -- No --> ZERO
+  QUAL -- Yes --> CEIL["Economic or measured-PV PI ceiling; restart paused dynamics from held command"]
+  HOLD --> PID["Existing grid PID bounded by ceiling"]
+  PID --> FINAL["Final bounds and existing negative-price override"]
+  CEIL --> PID
+  IDLE --> FINAL
+  ZERO --> FINAL
   MAX --> FINAL
-  FALL --> FINAL
-  PID --> FINAL
-  FINAL --> MODE{Mock transport?}
-  MODE -- Yes --> MOCK["Record mock demand; no UART/RS485 hardware I/O"]
-  MODE -- No --> TX["Issue RS485 request at configured cadence"]
-  MOCK --> VIEW["Planning state / Live / MQTT; request is not acknowledgement"]
+  FINAL --> MODE{"Mock transport?"}
+  MODE -- Yes --> MOCK["Record simulated demand; no RS485 hardware I/O"]
+  MODE -- No --> TX["Issue existing RS485 request"]
+  MOCK --> VIEW["Live / MQTT diagnostics; request is not acknowledgement"]
   TX --> VIEW
 ```
 
-Source anchors: main.cpp processRS485Tick/FuturePrices.plan; CurrentControl.h update. Full ProtectionCoordinator and several PreparedControl boundaries remain stubs; SIL MOS commands remain locked. Do not interpret the older protection diagrams as already wired into this path.
+`main.cpp::processRS485Tick`, `CurrentControl::update`, `FuturePrices::plan` and `sbt::Service::controlSnapshot` own these boundaries. A held or recovering regulated decision still passes through the grid PID; a zero recovery decision is direct. The selected timeout is 1..9999 seconds, default 180. Collector/control acquisition freshness remains bounded separately at 30 seconds. Source loss no longer selects MAX; the intentional Limiter-OFF bypass remains distinct.
 
-## Approved next integration: target, not yet implemented
-
-```mermaid
-flowchart TD
-  IN([New event or control cycle]) --> PARSE["Validate incoming candidate; preserve last-good cache on malformed update"]
-  PARSE --> ALARM{Valid real alarm received?}
-  ALARM -- Yes --> URGENT["Apply existing alarm restriction immediately; no new waiting period"]
-  ALARM -- No --> AGE{Last valid source evidence within configured1..9999s?}
-  AGE -- Yes --> HOLD["Use valid/held strategy; no added stale-data permission"]
-  AGE -- No --> OLD["Keep numeric values marked Old; bounded Idle fallback default500W"]
-  HOLD --> EVENT{Snapshot/slot/settings/material event or30min replan due?}
-  EVENT -- Yes --> PLAN["Replan qualified prices/PV, usable energy and charge target"]
-  EVENT -- No --> USE["Reuse valid allocations; update energy debit/time cheaply"]
-  PLAN --> FAST["Fast PID + charge PI; combine all stronger stops/ceilings"]
-  USE --> FAST
-  OLD --> FAST
-  URGENT --> FAST
-  FAST --> SEND["Single bounded request; test mock or existing RS485 transport"]
-  SEND --> UI["Compact Limiter + NTC1 Top / NTC2 Bottom; existing raw MQTT channels preserved"]
-```
-
-Missing telemetry never creates an alarm. A known restriction is not cleared by silence. Plan validity and measurement tolerance are separate clocks. No second alarm delay or unapproved MOS actuator is introduced. Inverter command loss may leave the last setpoint active: independent hardware behavior remains unqualified.
+Missing telemetry creates no alarm and never clears a known restriction. A received JBD discharge restriction bypasses normal recovery qualification at the next control evaluation. Charge-only restrictions remain direction-specific diagnostics; this increment adds no MOS actuator. Inverter loss-of-command behavior and actual plant response remain separate hardware qualifications.

@@ -12,6 +12,8 @@ constexpr float kPvKp = 0.20f;
 constexpr float kPvKiPerSecond = 0.03f;
 
 struct CurrentInputs {
+    bool sourcesWithinGrace = false;
+    bool alarmRestricted = false;
     bool bmsValid = false;
     bool chargerValid = false;
     bool metersValid = false;
@@ -68,6 +70,7 @@ public:
         classify(cfg, price, in.price);
         out.priceBand = band_ == Expensive ? "expensive" :
             (band_ == Cheap ? "cheap" : (band_ == Comfort ? "comfort" : "unknown"));
+        if (in.alarmRestricted) return stop(out, "source_alarm");
         if (!cfg.inverterEnabled) return stop(out, "inverter_off");
         if (!transportEnabled) return stop(out, "transport_off");
         if (price && in.price < 0) return stop(out, "negative_price");
@@ -79,15 +82,32 @@ public:
         }
         if (!in.metersValid) return stop(out, "meters_missing");
         if (!bms || !charger) {
+            if (approved_ && in.sourcesWithinGrace && !(reserveKnown_ && !reserveAllowed_)) {
+                qualified_ = qualifying_ = false; pairs_ = 0;
+                pauseDynamics();
+                out = lastApproved_;
+                out.direct = false;
+                out.ceilingW = std::max(0, std::min({out.ceilingW, int(maximum), heldCommandW}));
+                out.chargeTargetValid = false;
+                out.reason = "source_grace";
+                return out;
+            }
             resetDynamics();
             out.direct = true;
             // Missing-source fallback must not clear an already latched restriction.
-            out.ceilingW = reserveKnown_ && !reserveAllowed_ ? 0 : int(maximum);
+            out.ceilingW = reserveKnown_ && !reserveAllowed_ ? 0 : std::max(0, std::min(cfg.idleOutputW, int(maximum)));
             out.strategy = "fallback";
             out.reason = reserveKnown_ && !reserveAllowed_ ? "reserve_source_loss" : "source_loss";
             return out;
         }
         if (!qualify(in, now)) {
+            pauseDynamics();
+            if (approved_ && in.sourcesWithinGrace && !(reserveKnown_ && !reserveAllowed_)) {
+                out = lastApproved_; out.direct = false;
+                out.ceilingW = std::max(0, std::min({out.ceilingW, int(maximum), heldCommandW}));
+                out.chargeTargetValid = false; out.reason = "source_recovery";
+                return out;
+            }
             out.direct = true; out.reason = "recovery";
             return out;
         }
@@ -111,7 +131,7 @@ public:
             if (in.futureValid) economicCeiling_ = std::min(economicCeiling_, economicTarget);
             out.ceilingW = int(economicCeiling_);
             out.strategy = "discharge"; out.reason = in.futureValid ? in.futureReason : "expensive";
-            return out;
+            return approve(out);
         }
         economicActive_ = false;
         out.strategy = "preserve";
@@ -147,10 +167,15 @@ public:
         // A falling PV ceiling takes effect immediately; increases remain bounded.
         ceiling_ = target < ceiling_ ? target : clamp(target, 0, ceiling_ + kEconomicCeilingRampUpWPerSecond * dt);
         out.ceilingW = int(clamp(ceiling_, 0, maximum));
-        return out;
+        return approve(out);
     }
 
 private:
+    CurrentDecision lastApproved_;
+    bool approved_ = false;
+    CurrentDecision approve(CurrentDecision out) {
+        lastApproved_ = out; approved_ = true; return out;
+    }
     enum Band { Unknown, Cheap, Comfort, Expensive };
     Band band_ = Unknown;
     bool reserveKnown_ = false, reserveAllowed_ = false;
@@ -186,9 +211,17 @@ private:
         qualified_ = pairs_ >= kRecoveryNewSamples && uint32_t(now - recoveryAt_) >= kRecoveryQualificationMs;
         return qualified_;
     }
+    // Keep the prior bounded permission/reserve latch while restarting dynamics from live held output.
+    void pauseDynamics() {
+        piActive_ = economicActive_ = false;
+        integral_ = ceiling_ = economicCeiling_ = 0;
+        lastTick_ = lastSampleAt_ = economicAt_ = 0;
+        lastPiSequence_ = 0;
+    }
     void resetDynamics() {
-        qualifying_ = qualified_ = piActive_ = false;
-        pairs_ = 0; integral_ = ceiling_ = 0; economicActive_ = false;
+        approved_ = false;
+        qualifying_ = qualified_ = false; pairs_ = 0;
+        pauseDynamics();
     }
     CurrentDecision stop(CurrentDecision out, const char *reason) {
         resetDynamics(); out.direct = true; out.reason = reason;

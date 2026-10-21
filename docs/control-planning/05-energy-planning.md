@@ -5,30 +5,43 @@ puppeteer:
   printBackground: true
 ---
 
-# SIL - Slow planning connected to fast regulation
+# SIL - Cached planning and fast regulation
 
-[Active plan](../superpowers/plans/2026-10-20-sil-sbt-ha-integration.md) / [specification](2026-10-20-integration-spec.md).
-
-Current source already uses a bounded price schedule and nominal battery pool in FuturePrices, recomputing/sorting each control tick. PV forecast ingestion, frozen-snapshot calibration and event-cached planning below are target changes. Existing current-price fallback is not the complete earlier three-hour budget implementation.
+[Active plan](../superpowers/plans/2026-10-20-sil-sbt-ha-integration.md) / [wire contract](mqtt-schedule-contract.md). `FuturePrices::plan` consumes independent validated price and PV snapshots; the planner does not command an actuator.
 
 ```mermaid
 flowchart TD
-  EVT([New data, slot or material event]) --> VALID["Read independent price/PV snapshot revisions and UTC coverage"]
-  VALID --> DUE{Replan needed or30min maximum elapsed?}
-  DUE -- No --> CACHE["Reuse allocation; still debit signed energy and remaining time"]
-  DUE -- Yes --> INPUT{Qualified prices, energy and forecast available?}
-  INPUT -- Partial --> FALL["Explicit current-price/measured-PV fallback; no invented future data"]
-  INPUT -- Yes --> OFFER["Separate solar offer from usable MPPT/battery energy"]
-  OFFER --> ECON["Compare direct use and storage after applicable losses/wear/margin"]
-  ECON --> ALLOC["Allocate one reconciled pool to eligible expensive windows"]
-  ALLOC --> TARGET["Derive feasible charge target; retain unmet shortfall"]
-  TARGET --> SAVE["Cache revision/validity/assumptions; fixed UTC window ends"]
-  SAVE --> CAP["Return battery ceiling and charging target"]
-  FALL --> CAP
-  CACHE --> CAP
-  CAP --> FAST["Fast grid PID + battery PI; existing stronger restrictions remain"]
+  TICK([Control tick]) --> ENERGY["Debit or credit the measured battery pool using qualified signed power"]
+  ENERGY --> VALID{"Energy, settings, UTC, current price and price coverage usable?"}
+  VALID -- No --> FALL["Explicit current-price / measured-PV control fallback"]
+  VALID -- Yes --> DUE{"Snapshot, slot, relevant setting, PV validity, charge cap or 30-minute replan due?"}
+  DUE -- Yes --> BUILD["Cache price priority order and bounded PV storage prefix"]
+  DUE -- No --> REUSE["Reuse order and prefix"]
+  BUILD --> BUDGET["Recompute remaining slot time, measured pool and storage headroom"]
+  REUSE --> BUDGET
+  BUDGET --> PV["Credit only known usable PV before the earliest eligible future target"]
+  PV --> ALLOC["Allocate shared PV credit once and actual stored energy by price priority"]
+  ALLOC --> OUT["Battery ceiling, charge target, reserved energy and remaining shortfall"]
+  OUT --> FAST["CurrentControl and grid PID; restrictions override planning"]
+  FALL --> FAST
 ```
 
-Slots900s, initial horizon36h and planning load650W are planning assumptions, not a15-minute control loop or forced output. Valid schedules survive publisher absence until expiry/coverage end; never treat a valid price plan as fresh BMS data. Missing intervals remain missing, hourly energy disaggregation conserves energy and declares lower source resolution. Use explicit source quality; EPEX distant values may be estimates.
+## Actual energy and forecast credit
 
-Already-stored energy incurs discharge conversion once, not a second acquisition roundtrip. New storage compares forgone current value with future delivered value including roundtrip/wear/required margin. Fresh SOC reconciles the same pool; never add carried allocations to fresh capacity. Negative-price/OFF/reserve and immediate alarms override economics.
+The measured pool is initialized once from usable SOC above the reserve floor, full capacity and the existing nominal 51.38 V conversion. Subsequent calls integrate signed BMS power: charging is positive, discharge negative. Repeated calls with the same sample sequence debit/credit held power; new sequences update the endpoint. Fresh SOC caps the same pool. Missing energy inputs or excessive gaps suspend integration without refilling the pool from SOC or crediting unknown outage charging. Clearing a schedule does not reset this pool.
+
+Available stored energy receives the discharge conversion once. Forecast PV is a separate offer, never added to the measured pool. The planner bounds potential storage by the qualified MPPT charge-power cap, the 650 W planning load and battery headroom. The current installed planning cap is 35 A times fresh measured charger battery voltage, based on the accepted MPPT 150/35 hardware maximum and the owner's confirmation of no additional configured current limit. An unknown/zero cap grants no PV storage credit; this does not program a device limit.
+
+Only continuous known PV **before the earliest eligible reserved future slot** can reduce future stored-energy demand. The resulting single credit is allocated once across eligible future loads; later sunshine is deliberately unused in this conservative increment. Current-slot discharge allocation always comes from actual available energy. Offered PV, assigned usable PV, reserved stored energy and unresolved shortfall are reported separately. Forecast calibration is applied once by `PvForecast::wattsAt`.
+
+## Cache and timing
+
+The price receiver can hold 288 quarter-hour slots; planning uses at most 144 slots / 36 hours. Slot length is 900 seconds, not the control period. The cached price order uses 288 bytes and the PV prefix uses 580 bytes. Rebuild conditions include price/PV revisions, UTC slot, PV validity, effective whole-watt charge cap, current price/band, price factor, maximum output, comfort/deadband and reserve settings, or the 30-minute replan maximum. Every control call still performs bounded O(144) allocation arithmetic using current remaining time and energy; expensive sorting/prefix construction is cached.
+
+Schedules survive publisher absence while their actual UTC coverage remains usable. A price-plan clock rollback greater than five seconds invalidates that schedule. Missing current price or insufficient price coverage returns an explicit fallback, not a fabricated forecast. Negative price, OFF, blocked reserve and applicable alarm restrictions override economic release. Current-price fallback is not a claim that the older complete three-hour-budget reference is implemented.
+
+## Home Assistant boundary
+
+The Shed producer requests raw provider END timestamps, validates each previous-to-end energy interval, and assigns it to its actual containing UTC hour before producing four quarter-hour powers. Integer hourly Wh is conserved and fractional totals are quantized to the nearest 0.25 Wh. HA's built-in hour-floor aggregation is deliberately bypassed; see the [provider timing evidence](../home-assistant/shed-migration.md). Quality remains `hourly_disaggregated`; absent intervals, including absent night entries, remain missing rather than invented zero generation.
+
+Calibration uses original forecasts frozen before the day starts, with hourly totals checked against the independent native day total. Actual daily yield must have complete, reset-free, outage-free and non-curtailed qualification, including applicable current-limit evidence. At least 14 eligible completed days within a 30-day lookback are required; until then the factor is neutral 1.0 and quality is `uncalibrated`. The qualified median ratio is bounded to 0.5..1.2. EPEX future-price provenance remains provider-unknown; distant values are not asserted to be confirmed market prices. Physical daily energy reconciliation and plant acceptance remain separate from parser/planner behavior.

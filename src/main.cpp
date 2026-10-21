@@ -27,9 +27,22 @@
 #include "control/CurrentControl.h"
 #include "control/TelemetryAge.h"
 #include "control/FuturePrices.h"
+#include "control/PvForecast.h"
 
 #include "RS485Module/RS485Module.h"
 #include "helpers/HelperModule.h"
+
+// Card visibility is independent from sensor acquisition and MQTT.
+#ifndef SIL_DEACTIVATE_BME280_CARD
+#define SIL_DEACTIVATE_BME280_CARD 1
+#endif
+// Installed MPPT 150/35 hardware ceiling; owner confirmed no additional current limit.
+#ifndef SIL_QUALIFIED_MPPT_MAX_CHARGE_A
+#define SIL_QUALIFIED_MPPT_MAX_CHARGE_A 35.0f
+#endif
+static_assert(SIL_QUALIFIED_MPPT_MAX_CHARGE_A >= 0, "MPPT charge limit cannot be negative");
+static constexpr int kI2cSda = 21, kI2cScl = 22;
+static constexpr uint32_t kI2cHz = 400000;
 
 // Feature flags
 #ifndef FEATURE_BME280_ENABLED
@@ -100,7 +113,7 @@
 #endif
 
 #ifndef VERSION
-#define VERSION "5.0.2"
+#define VERSION "5.1.0"
 #endif
 
 enum class NegativePriceSettingPreference : uint8_t
@@ -195,8 +208,10 @@ struct LimiterSettings
 {
     Config<bool> enableController{ConfigOptions<bool>{.key = "LimiterEnable", .name = "Limiter Enabled", .category = "Limiter", .defaultValue = true, .sortOrder = 1}};
     Config<int> maxOutput{ConfigOptions<int>{.key = "LimiterMaxW", .name = "Max Output (W)", .category = "Limiter", .defaultValue = 1100, .sortOrder = 2}};
-    Config<int> minOutput{ConfigOptions<int>{.key = "LimiterMinW", .name = "Min Output (W)", .category = "Limiter", .defaultValue = 500, .sortOrder = 3}};
-    Config<int> inputCorrectionOffset{ConfigOptions<int>{.key = "LimiterCorrW", .name = "Input Correction Offset (W)", .category = "Limiter", .defaultValue = 50, .sortOrder = 4}};
+    Config<int> idleOutput{ConfigOptions<int>{.key = "LimiterIdleW", .name = "Idle Output (W)", .category = "Limiter", .defaultValue = 500, .sortOrder = 3}};
+    Config<int> sbtTimeout{ConfigOptions<int>{.key = "sbtAgeS", .name = "SBT Data Timeout (s)", .category = "Limiter", .defaultValue = 180, .sortOrder = 19}};
+    Config<int> minOutput{ConfigOptions<int>{.key = "LimiterMinW", .name = "Min Output (W)", .category = "Limiter", .defaultValue = 500, .sortOrder = 4}};
+    Config<int> inputCorrectionOffset{ConfigOptions<int>{.key = "LimiterCorrW", .name = "Input Correction Offset (W)", .category = "Limiter", .defaultValue = 50, .sortOrder = 5}};
     Config<float> pidKp{ConfigOptions<float>{.key = "LimiterPIDKp", .name = "PID Kp", .category = "Limiter", .defaultValue = 0.35f, .sortOrder = 7}};
     Config<float> pidKi{ConfigOptions<float>{.key = "LimiterPIDKi", .name = "PID Ki", .category = "Limiter", .defaultValue = 0.05f, .sortOrder = 8}};
     Config<float> pidKd{ConfigOptions<float>{.key = "LimiterPIDKd", .name = "PID Kd", .category = "Limiter", .defaultValue = 0.02f, .sortOrder = 9}};
@@ -213,14 +228,18 @@ struct LimiterSettings
     Config<float> priceDeadband{ConfigOptions<float>{.key = "priceDb", .name = "Price Deadband (EUR/kWh)", .category = "Limiter", .defaultValue = 0.06f, .sortOrder = 26}};
 
     Config<String> priceScheduleInputTopic{ConfigOptions<String>{.key = "fcTopic", .name = "Price Schedule Topic", .category = "MQTT-Topics", .defaultValue = String("homeassistant/sensor/electricity_price/schedule"), .sortOrder = 54}};
+    Config<String> pvScheduleInputTopic{ConfigOptions<String>{.key = "pvTopic", .name = "PV Forecast Topic", .category = "MQTT-Topics", .defaultValue = String("homeassistant/sensor/solar_forecast/shed/schedule"), .sortOrder = 55}};
     Config<float> forecastPriceFactor{ConfigOptions<float>{.key = "fcPriceF", .name = "Forecast Price Factor", .category = "Limiter", .defaultValue = 0.93137255f, .sortOrder = 27}};
 
     void attachTo(ConfigManagerClass &cfg)
     {
         cfg.addSetting(&forecastPriceFactor);
         cfg.addSetting(&priceScheduleInputTopic);
+        cfg.addSetting(&pvScheduleInputTopic);
         cfg.addSetting(&enableController);
         cfg.addSetting(&maxOutput);
+        cfg.addSetting(&idleOutput);
+        cfg.addSetting(&sbtTimeout);
         cfg.addSetting(&minOutput);
         cfg.addSetting(&inputCorrectionOffset);
         cfg.addSetting(&pidKp);
@@ -259,21 +278,15 @@ struct TempSettings
 };
 #endif
 
-#if FEATURE_ANY_I2C
+#if FEATURE_OLED_DISPLAY_ENABLED
 struct I2CSettings
 {
-    Config<int> sdaPin{ConfigOptions<int>{.key = "I2CSDA", .name = "SDA Pin", .category = "I2C", .defaultValue = 21, .sortOrder = 1}};
-    Config<int> sclPin{ConfigOptions<int>{.key = "I2CSCL", .name = "SCL Pin", .category = "I2C", .defaultValue = 22, .sortOrder = 2}};
-    Config<int> busFreq{ConfigOptions<int>{.key = "I2CFreq", .name = "Bus Frequency (Hz)", .category = "I2C", .defaultValue = 400000, .sortOrder = 3}};
 #if FEATURE_OLED_DISPLAY_ENABLED
     Config<int> displayAddr{ConfigOptions<int>{.key = "I2CDisp", .name = "Display Address", .category = "I2C", .defaultValue = 0x3C, .sortOrder = 4}};
 #endif
 
     void attachTo(ConfigManagerClass &cfg)
     {
-        cfg.addSetting(&sdaPin);
-        cfg.addSetting(&sclPin);
-        cfg.addSetting(&busFreq);
 #if FEATURE_OLED_DISPLAY_ENABLED
         cfg.addSetting(&displayAddr);
 #endif
@@ -342,7 +355,7 @@ LimiterSettings limiterSettings;
 #if FEATURE_BME280_ENABLED
 TempSettings tempSettings;
 #endif
-#if FEATURE_ANY_I2C
+#if FEATURE_OLED_DISPLAY_ENABLED
 I2CSettings i2cSettings;
 #endif
 #if FEATURE_FAN_ENABLED
@@ -478,6 +491,9 @@ static control::CurrentControl currentControl;
 static control::CurrentDecision currentDecision;
 static control::TelemetryAge telemetryAge;
 static control::FuturePrices futurePrices;
+static control::PvForecast pvForecast;
+static String pvScheduleTopic;
+static bool pvScheduleSubscribed = false;
 static control::FuturePlan futurePlan;
 static String priceScheduleTopic;
 static bool priceScheduleSubscribed = false;
@@ -523,7 +539,33 @@ void setup()
     ConfigManager.setVersion(VERSION);
     ConfigManager.setSettingsPassword(SETTINGS_PASSWORD);
     ConfigManager.setCustomCss(GLOBAL_THEME_OVERRIDE, sizeof(GLOBAL_THEME_OVERRIDE) - 1);
-    ConfigManager.enableBuiltinSystemProvider();
+    // Preserve system consumers without registering the former System live card.
+    ConfigManager.getRuntime().addRuntimeProvider("system", [](JsonObject &data) {
+        const uint32_t total = ESP.getHeapSize(), free = ESP.getFreeHeap(), largest = ESP.getMaxAllocHeap();
+        const auto heap = sil::heapSnapshot(total, free, largest);
+        data["freeHeap"] = heap.free; data["usedHeap"] = heap.used;
+        data["totalHeap"] = total; data["heapFragmentation"] = heap.fragmentation;
+        data["minFreeHeap"] = ESP.getMinFreeHeap(); data["largestBlock"] = largest;
+        data["resetReason"] = static_cast<int>(esp_reset_reason());
+        const bool connected = WiFi.status() == WL_CONNECTED;
+        data["wifiConnected"] = connected;
+        data["rssi"] = connected ? WiFi.RSSI() : 0;
+        data["localIP"] = connected ? WiFi.localIP().toString() : String("0.0.0.0");
+        data["gateway"] = connected ? WiFi.gatewayIP().toString() : String("0.0.0.0");
+        data["routerMAC"] = connected ? WiFi.BSSIDstr() : String("00:00:00:00:00:00");
+        data["channel"] = connected ? WiFi.channel() : 0;
+        data["cpuFreqMHz"] = ESP.getCpuFreqMHz(); data["flashSize"] = ESP.getFlashChipSize();
+        data["otaActive"] = ConfigManager.getOTAManager().isActive();
+        data["otaHasPassword"] = ConfigManager.getOTAManager().hasPassword();
+        data["mqttEnabled"] = mqttSettings.enableMQTT.get(); data["mqttConnected"] = mqtt.isConnected();
+        data["mqttReconnects"] = mqtt.getReconnectCount();
+        const time_t now = time(nullptr);
+        if (now > 1600000000) {
+            tm local; localtime_r(&now, &local); char text[24];
+            strftime(text, sizeof(text), "%Y-%m-%d %H:%M:%S", &local);
+            data["dateTime"] = text;
+        }
+    }, 0);
 
     coreSettings.attachWiFi(ConfigManager);
     attachSystemSettings();
@@ -656,7 +698,7 @@ void setupGUI()
     ConfigManager.addSettingsPage("Temp", 70);
     ConfigManager.addSettingsGroup("Temp", "Temp", "Temp Settings", 70);
 #endif
-#if FEATURE_ANY_I2C
+#if FEATURE_OLED_DISPLAY_ENABLED
     ConfigManager.addSettingsPage("I2C", 80);
     ConfigManager.addSettingsGroup("I2C", "I2C", "I2C Settings", 80);
 #endif
@@ -678,7 +720,7 @@ void setupGUI()
     ConfigManager.addSettingsGroup("I/O", "I/O", "I/O Settings", 130);
 
     // region sensor fields BME280
-#if FEATURE_BME280_ENABLED
+#if FEATURE_BME280_ENABLED && !SIL_DEACTIVATE_BME280_CARD
     ConfigManager.addLivePage("Temperature Sensor", 10);
     ConfigManager.addLiveCard("Temperature Sensor", "Sensors", 10);
     ConfigManager.addLiveGroup("Temperature Sensor", "Sensors", "Sensor Readings", 10);
@@ -700,7 +742,7 @@ void setupGUI()
                   { return roundf(Pressure * 10.0f) / 10.0f; },
         "Pressure", "hPa", 1, 13);
 #endif
-#if FEATURE_BME280_ENABLED
+#if FEATURE_BME280_ENABLED && !SIL_DEACTIVATE_BME280_CARD
     if(!sensors.valid()) lmg.logTag(LL::Error, "GUI", "Sensor fields unavailable");
 #endif
     // endregion sensor fields
@@ -710,6 +752,25 @@ void setupGUI()
     ConfigManager.addLiveCard("Limiter", "Limiter", 20);
     ConfigManager.addLiveGroup("Limiter", "Limiter", "Limiter Status", 20);
     sil::CompactLiveGroup limiter(ConfigManager.getRuntime(), "Limiter", "Limiter", "Limiter", "Limiter Status");
+
+    if (!sil::registerHeapMetadata(ConfigManager.getRuntime()))
+        lmg.logTag(LL::Error, "GUI", "Heap fields unavailable");
+    ConfigManager.getRuntime().addRuntimeProvider("Limiter", [](JsonObject &data) {
+        const uint32_t total = ESP.getHeapSize(), free = ESP.getFreeHeap(), largest = ESP.getMaxAllocHeap();
+        const auto heap = sil::heapSnapshot(total, free, largest);
+        data["usedHeap"] = heap.used; data["freeHeap"] = heap.free;
+        data["heapFragmentation"] = heap.fragmentation;
+    }, 40);
+
+    ConfigManager.getRuntime().addRuntimeProvider("planning", [](JsonObject &data) {
+        data["pv_revision"] = pvForecast.revision();
+        data["pv_slots"] = pvForecast.slots();
+        data["pv_valid"] = pvForecast.valid(uint32_t(time(nullptr)));
+        data["pv_calibrated"] = pvForecast.calibrated();
+        data["pv_charge_limit_qualified"] = SIL_QUALIFIED_MPPT_MAX_CHARGE_A > 0;
+        data["pv_offered_wh"] = futurePlan.offeredPvWh;
+        data["pv_usable_wh"] = futurePlan.usablePvWh;
+    }, 50);
 
     limiter.value<RuntimeBoolMeta>("enabled", []()
                   { return limiterSettings.enableController.get(); },
@@ -1005,7 +1066,17 @@ static void setupMqtt()
     mqtt.setBufferSize(1024);
 
     mqtt.attach(ConfigManager);
-    mqtt.addMQTTRuntimeProviderToGUI(ConfigManager, "mqtt");
+    // Keep MQTT settings/diagnostic values without the helper's implicit System card.
+    ConfigManager.getRuntime().addRuntimeProvider("mqtt", [](JsonObject &data) {
+        data["enabled"] = mqttSettings.enableMQTT.get();
+        data["wifi"] = WiFi.isConnected(); data["connected"] = mqtt.isConnected();
+        data["state"] = static_cast<int>(mqtt.getState());
+        data["reconnects"] = mqtt.getReconnectCount(); data["retry"] = mqtt.getCurrentRetry();
+        data["uptimeMs"] = mqtt.getUptime(); data["lastTopic"] = mqtt.getLastTopic();
+        data["lastPayload"] = mqtt.getLastPayload(); data["lastMsgAgeMs"] = mqtt.getLastMessageAgeMs();
+        data["grid_import_w"] = currentGridImportW; data["solar_power_w"] = solarPowerW;
+        data["negative_price"] = negativePriceActive; data["electricity_price"] = electricityPriceEurKwh;
+    }, 0);
     mqtt.addMqttSettingsToSettingsGroup(ConfigManager, "MQTT", "MQTT Settings", 40);
     sbtInputs.attach(ConfigManager, mqtt);
 
@@ -1056,9 +1127,15 @@ static void setupMqtt()
                 lmg.logTag(!strcmp(result, "accepted") || !strcmp(result, "withdrawn") ? LL::Info : LL::Warn,
                     "FORECAST", "rx=%s rev=%lu slots=%u", result,
                     static_cast<unsigned long>(futurePrices.revision()), futurePrices.slots());
+        } else if (topic && pvScheduleTopic == topic) {
+            const char *result = pvForecast.receive(payload, length, uint32_t(time(nullptr)), millis());
+            if (strcmp(result, "pending") && strcmp(result, "duplicate"))
+                lmg.logTag(!strcmp(result, "accepted") ? LL::Info : LL::Warn,
+                    "PV", "rx=%s rev=%lu slots=%u", result,
+                    static_cast<unsigned long>(pvForecast.revision()), pvForecast.slots());
         } else telemetryAge.receive(topic, payload, length, millis());
     });
-    mqtt.onDisconnected([]() { telemetryAge.reset(); priceScheduleSubscribed = false; });
+    mqtt.onDisconnected([]() { telemetryAge.reset(); priceScheduleSubscribed = false; pvScheduleSubscribed = false; });
 
     // Optional: show receive topics in runtime UI
     // mqtt.addMqttTopicToLiveGroup(ConfigManager, "grid_import_w", "mqtt", "MQTT-Received", "MQTT-Received", 1);
@@ -1077,7 +1154,7 @@ static void registerProjectSettings()
 #if FEATURE_BME280_ENABLED
     tempSettings.attachTo(ConfigManager);
 #endif
-#if FEATURE_ANY_I2C
+#if FEATURE_OLED_DISPLAY_ENABLED
     i2cSettings.attachTo(ConfigManager);
 #endif
 #if FEATURE_FAN_ENABLED
@@ -1098,6 +1175,10 @@ static void registerProjectSettings()
 static void refreshPreparedSettings()
 {
     forecastPriceFactor = limiterSettings.forecastPriceFactor.get();
+    preparedSettings.idleOutputW = std::max(0, limiterSettings.idleOutput.get());
+    const int timeout = limiterSettings.sbtTimeout.get();
+    if (timeout < 1 || timeout > 9999) limiterSettings.sbtTimeout.set(180);
+    sbtInputs.configureTimeout(unsigned(limiterSettings.sbtTimeout.get()));
     preparedSettings.reserveOffSocPercent = limiterSettings.reserveOffSoc.get();
     preparedSettings.reserveOnSocPercent = limiterSettings.reserveOnSoc.get();
     preparedSettings.batteryPowerDeadbandW = limiterSettings.batteryPowerDeadband.get();
@@ -1122,6 +1203,8 @@ static void refreshPreparedSettings()
 static void configureLimiterSettingsBehavior()
 {
     // Preparation only: callbacks cache settings; no planner or actuator is enabled.
+    limiterSettings.idleOutput.setCallback([](int) { refreshPreparedSettings(); });
+    limiterSettings.sbtTimeout.setCallback([](int) { refreshPreparedSettings(); });
     limiterSettings.reserveOffSoc.setCallback([](float) { refreshPreparedSettings(); });
     limiterSettings.reserveOnSoc.setCallback([](float) { refreshPreparedSettings(); });
     limiterSettings.batteryPowerDeadband.setCallback([](int) { refreshPreparedSettings(); });
@@ -1285,6 +1368,12 @@ static void setupNetworkDefaults()
         lmg.log(LL::Info, "SETUP: MQTT server is empty and secret/secrets.h is missing; leaving MQTT unconfigured");
 #endif
     }
+
+#if defined(SIL_MOCK_TRANSPORT) && SIL_MOCK_TRANSPORT
+    // Mock images publish under a test identity even when production defaults exist.
+    mqttSettings.publishTopicBase.set("SILTest");
+    mqttSettings.clientId.set("SolarInverterLimiter-Test");
+#endif
 
     // Test firmware keeps the existing device OTA credential.
 #if !defined(SIL_MOCK_TRANSPORT) || !SIL_MOCK_TRANSPORT
@@ -1543,6 +1632,22 @@ static void publishMqttNow()
         lmg.logTag(priceScheduleSubscribed ? LL::Info : LL::Warn, "FORECAST", "subscribe=%d topic=%s",
             priceScheduleSubscribed, priceScheduleTopic.c_str());
     }
+    static uint32_t nextPvSubscribeMs = 0;
+    const String &pvTopic = limiterSettings.pvScheduleInputTopic.get();
+    if (pvScheduleTopic != pvTopic) {
+        if (pvScheduleSubscribed) mqtt.unsubscribe(pvScheduleTopic.c_str());
+        pvScheduleSubscribed = false;
+        pvForecast.clear();
+        pvScheduleTopic = pvTopic;
+        nextPvSubscribeMs = 0;
+    }
+    const bool pvTopicValid = !pvScheduleTopic.isEmpty() && pvScheduleTopic.length() <= 128 &&
+        pvScheduleTopic.indexOf('+') < 0 && pvScheduleTopic.indexOf('#') < 0;
+    if (pvTopicValid && !pvScheduleSubscribed && (!nextPvSubscribeMs ||
+        static_cast<int32_t>(nowMs - nextPvSubscribeMs) >= 0)) {
+        nextPvSubscribeMs = nowMs + 5000UL;
+        pvScheduleSubscribed = mqtt.subscribe(pvScheduleTopic.c_str(), 1);
+    }
     mqtt.publishExtraTopicLazy("setvalue_w", topicPublishSetValueW.c_str(), []() { return String(inverterSetValue); }, false);
     mqtt.publishExtraTopicLazy("calculated_w", topicPublishCalculatedValueW.c_str(), []() { return String(inverterCalculatedValue); }, false);
     mqtt.publishExtraTopicLazy("grid_import_w", topicPublishGridImportW.c_str(), []() { return String(currentGridImportW); }, false);
@@ -1780,6 +1885,8 @@ static void processRS485Tick()
 
     const auto source = sbtInputs.controlSnapshot(nowMs);
     control::CurrentInputs inputs;
+    inputs.sourcesWithinGrace = source.sourcesWithinGrace;
+    inputs.alarmRestricted = source.alarmRestricted;
     inputs.bmsValid = source.bmsValid;
     inputs.chargerValid = source.chargerValid;
     inputs.metersValid = gridFresh && inverterFresh;
@@ -1794,7 +1901,8 @@ static void processRS485Tick()
         source.bmsValid, source.soc, source.batteryW, source.fullCapacityAh,
         source.bmsSequence, priceFresh, measuredPrice,
         currentControl.expensivePrice(preparedSettings, priceFresh, measuredPrice),
-        forecastPriceFactor, configuredMax);
+        forecastPriceFactor, configuredMax, &pvForecast,
+        source.chargerValid ? source.chargerVoltageV * SIL_QUALIFIED_MPPT_MAX_CHARGE_A : 0.0f);
     inputs.futureValid = futurePlan.valid;
     inputs.futureBatteryCeilingW = futurePlan.batteryCeilingW;
     inputs.futureChargeTargetW = futurePlan.chargeTargetW;
@@ -1994,7 +2102,7 @@ void testRS232()
 void SetupStartTemperatureMeasuring()
 {
     // init BME280 for temperature and humidity sensor
-    bme280.setAddress(BME280_ADDRESS, i2cSettings.sdaPin.get(), i2cSettings.sclPin.get());
+    bme280.setAddress(BME280_ADDRESS, kI2cSda, kI2cScl);
     bool isStatus = bme280.begin(
         bme280.BME280_STANDBY_0_5,
         bme280.BME280_FILTER_16,
@@ -2003,6 +2111,7 @@ void SetupStartTemperatureMeasuring()
         bme280.BME280_OVERSAMPLING_16,
         bme280.BME280_OVERSAMPLING_1,
         bme280.BME280_MODE_NORMAL);
+    Wire.setClock(kI2cHz);
     if (!isStatus)
     {
         bme280Initialized = false;
@@ -2118,8 +2227,8 @@ static void handleDisplayPowerScheduler()
 
 void SetupStartDisplay()
 {
-    Wire.begin(i2cSettings.sdaPin.get(), i2cSettings.sclPin.get());
-    Wire.setClock(i2cSettings.busFreq.get());
+    Wire.begin(kI2cSda, kI2cScl);
+    Wire.setClock(kI2cHz);
 
     const uint8_t address = static_cast<uint8_t>(i2cSettings.displayAddr.get());
     if (!display.begin(SSD1306_SWITCHCAPVCC, address))

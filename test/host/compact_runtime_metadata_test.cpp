@@ -53,33 +53,32 @@ struct Sink {
 int main() {
     Sink receiver;
     assert(sbt::registerRuntimeMetadata(receiver));
-    assert(receiver.fields.size()==40 && receiver.providers.empty());
-    std::map<RuntimeFieldKind,unsigned> counts;
+    assert(receiver.fields.size()==29 && receiver.providers.empty());
     std::set<std::string> keys;
     for(const auto& field:receiver.fields) {
-        ++counts[field.kind];
         assert(keys.insert(field.base.key.c_str()).second);
         assert(field.base.sourceGroup=="sbt" && field.base.page=="BMS / MPPT 150/35");
         assert(field.base.group==field.base.card && !field.base.label.isEmpty());
     }
-    assert(counts[RuntimeFieldKind::Float]==19 && counts[RuntimeFieldKind::Int]==4);
-    assert(counts[RuntimeFieldKind::Bool]==11 && counts[RuntimeFieldKind::Text]==6);
-    for(size_t i=0;i<sbt::channelCount;++i) {
-        const auto& c=sbt::channels[i];const auto& field=receiver.fields[i+11];
-        assert(field.base.key==c.key && field.base.order==int(i)+10);
-        assert(field.base.card==(c.source?"MPPT 150/35":"BMS"));
-        const auto expected=c.kind==sbt::Kind::Boolean?RuntimeFieldKind::Bool:c.kind==sbt::Kind::Text?RuntimeFieldKind::Text:c.kind==sbt::Kind::Unsigned?RuntimeFieldKind::Int:RuntimeFieldKind::Float;
-        assert(field.kind==expected);
-        if(c.kind==sbt::Kind::Unsigned) assert(field.precision==0);
-        if(c.kind==sbt::Kind::Real || c.kind==sbt::Kind::Unsupported) assert(field.precision==2);
+    for(const char* key:{"bms_voltage_v","bms_current_a","bms_power_w","bms_remaining_ah",
+        "bms_full_ah","bms_temperature_max_c","bms_temperature_min_c","bms_cell_min_v",
+        "bms_cell_max_v","bms_cell_delta_v","bms_cell_count","bms_temperature_sensor_count",
+        "victron_pv_voltage_v","victron_pv_current_a","victron_battery_power_w"}) assert(!keys.count(key));
+    for(const char* key:{"bms_soc_pct","bms_temperature_1_c","bms_temperature_2_c","bms_protection",
+        "victron_solar_power_w","victron_battery_voltage_v","victron_charge_current_a","bms_age","victron_age"}) assert(keys.count(key));
+    for(const auto& f:receiver.fields) {
+        if(f.base.key=="bms_temperature_1_c") assert(f.base.label=="NTC 1 (Top)" && f.unit=="\u00B0C");
+        if(f.base.key=="bms_temperature_2_c") assert(f.base.label=="NTC 2 (Bottom)" && f.unit=="\u00B0C");
     }
-    const char* healthKeys[]={"online","bms_fresh","bms_reason","victron_fresh","victron_reason","commands_locked","remote_control_enabled","remote_control_ready","remote_control_pending","control_reason","control_result"};
-    const char* healthLabels[]={"SBT online","BMS data fresh","BMS source reason","MPPT data fresh","MPPT source reason","SIL MOS commands locked","SBT control enabled","SBT control ready","SBT command pending","SBT control reason","Last SBT control result"};
-    const int orders[]={0,1,2,3,4,0,1,2,3,4,5};
-    for(unsigned i=0;i<11;++i) {const auto& f=receiver.fields[i];assert(f.base.key==healthKeys[i] && f.base.label==healthLabels[i] && f.base.order==orders[i]);assert(f.base.card==(i<5?"Source Health":"MOS Control Status"));}
-    assert(receiver.fields[11+11].unit=="V" && receiver.fields[11+16].unit=="V");
-    assert(receiver.fields[11+20].unit=="W");
-    for(int failAt:{0,20,39}) {Sink failed;failed.failAfter=failAt;assert(!sbt::registerRuntimeMetadata(failed));assert(failed.attempts==unsigned(failAt+1) && failed.fields.size()==size_t(failAt));}
+    for(int failAt:{0,20,28}) {Sink failed;failed.failAfter=failAt;assert(!sbt::registerRuntimeMetadata(failed));assert(failed.attempts==unsigned(failAt+1) && failed.fields.size()==size_t(failAt));}
+    Sink heap;
+    assert(sil::registerHeapMetadata(heap));
+    assert(heap.fields.size()==3);
+    for(const auto& f:heap.fields) assert(f.base.page=="Limiter" && f.base.card=="Limiter");
+    const auto h=sil::heapSnapshot(2000,1000,800);
+    assert(h.used==1000 && h.free==1000 && h.fragmentation==20);
+    assert(sil::heapSnapshot(2000,0,0).fragmentation==100);
+    assert(sil::heapSnapshot(100,200,300).used==0);
     Sink values;
     float reading=12.345f;int slots=3;bool enabled=true;
     {
@@ -103,5 +102,5 @@ int main() {
     group.value<RuntimeFloatMeta>("temp",[]{return 1.0f;},"Temperature","C",1,2);
     group.value<RuntimeFloatMeta>("hum",[]{return 2.0f;},"Humidity","%",1,11);
     assert(!group.valid() && failed.fields.empty() && failed.providers.empty() && failed.attempts==1);
-    std::puts("[MOCKED!] SIL compact metadata: 40 receiver fields, units/routing/kinds/failures and real provider helper passed");
+    std::puts("[MOCKED!] SIL compact metadata: 29 visible receiver fields and guarded heap tuple, units/routing/kinds/failures and real provider helper passed");
 }

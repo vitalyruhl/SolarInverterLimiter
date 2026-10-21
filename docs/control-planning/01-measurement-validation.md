@@ -5,37 +5,45 @@ puppeteer:
   printBackground: true
 ---
 
-# SIL - Telemetry validity, held values and immediate alarms
+# SIL - Implemented telemetry qualification
 
-Target requirements: [active plan](../superpowers/plans/2026-10-20-sil-sbt-ha-integration.md), [specification](2026-10-20-integration-spec.md). Current source still has15s receiver/30s collector thresholds and cache-clearing behavior. The following is the approved replacement, not passed runtime evidence.
+[Active plan](../superpowers/plans/2026-10-20-sil-sbt-ha-integration.md) / [specification](2026-10-20-integration-spec.md).
 
 ```mermaid
 flowchart TD
-  RX([Message]) --> TOPIC["Check root, payload bounds, schema, source/session and sequence"]
-  TOPIC --> VALID{Candidate valid?}
-  VALID -- No --> KEEP["Reject candidate; keep last-good value and original age"]
-  VALID -- Yes --> TYPE{Real alarm / measurement / health / plan?}
-  TYPE -- Alarm --> ACT["Apply existing protection immediately; latch known restriction"]
-  TYPE -- Measurement --> COMMIT["Commit value atomically; unavailable remains distinct from zero"]
-  TYPE -- Health --> CLOCK["Use post-snapshot time; valid sample age and advancing sequence"]
-  TYPE -- Plan --> CHUNK["Stage bounded chunks; activate only complete valid revision"]
-  KEEP --> DEADLINE
-  COMMIT --> DEADLINE
-  CLOCK --> DEADLINE
-  DEADLINE{Valid source evidence expired under configured timeout?}
-  DEADLINE -- No --> NORMAL["Keep last approved strategy; no extra stale-data release"]
-  DEADLINE -- Yes --> OLD["Retain displayed value with Old; use approved Idle/stronger stop"]
-  NORMAL --> REC{Recovering source?}
-  REC -- Yes --> QUAL["Existing5s /2new samples qualification for normal control only"]
-  REC -- No --> OUT([Return source/control quality])
-  QUAL --> OUT
-  OLD --> OUT
-  ACT --> OUT
-  CHUNK --> OUT
+  RX([Message]) --> CHECK["Check root, bounds, schema, value usability and identity"]
+  CHECK --> VALID{"Valid candidate?"}
+  VALID -- No --> KEEP["Preserve last-good data; do not renew its original timing"]
+  VALID -- Yes --> TYPE{"Message kind?"}
+  TYPE -- Scalar --> VALUE["Commit scalar or explicit absence; keep absence distinct from zero"]
+  TYPE -- Health --> SEQ["Require advancing source sequence for renewed freshness"]
+  TYPE -- Session --> FENCE["Fence earlier unidentified or changed-session samples; qualify again"]
+  TYPE -- JBD_fault --> ALARM["Latch direction-specific restrictions immediately"]
+  TYPE -- Plan --> STAGE["Stage bounded chunks; activate complete valid snapshot only"]
+  KEEP --> QUALITY
+  VALUE --> QUALITY
+  SEQ --> QUALITY
+  FENCE --> QUALITY
+  QUALITY{"Usable current source data?"}
+  QUALITY -- Yes --> QUAL["Normal recovery requires five seconds and two new sample pairs"]
+  QUALITY -- No --> GRACE{"Prior approved strategy and unexpired usable evidence?"}
+  GRACE -- Yes --> HOLD["Keep bounded held ceiling; grid may reduce; pause controller dynamics"]
+  GRACE -- No --> FALL["Idle fallback or stronger stop; last-good source values become Old"]
+  QUAL --> OUT([Control quality])
+  HOLD --> OUT
+  FALL --> OUT
+  ALARM --> OUT
+  STAGE --> OUT
 ```
 
-Setting `SBT Data Timeout (s)` is1..9999, default180; no second timeout or doubled alarm wait. Source-health arrives about5s, unchanged scalar refresh60s: scalar receipt age alone must not falsely mark a healthy source Old. Retained health or duplicate sequence is not a new sample. Source restart needs identity fencing and requalification; preserve old values only as historical display until safe continuity is established.
+## Three separate clocks
 
-Producer stale acquisition status is diagnostic and must not clear consumer cache before its deadline. This does not extend MOS command readiness or real device protection sampling. Authentic alarm data remains immediate; absent data does not imply an alarm.
+- **Acquisition/control freshness:** SBT's source freshness is 30 seconds. SIL also requires online/available source evidence, an advancing sequence and usable essential scalars. A longer display deadline does not extend this acquisition window.
+- **Consumer grace and display:** `sbtAgeS` selects 1..9999 seconds, default 180, measured from original valid source evidence including its reported sample age. Only usable essential evidence renews held-control permission. Invalid settings normalize to 180. After expiry, historical numeric source values remain visible with `Old`; startup data remains unavailable. Explicitly absent positioned sensors are not substituted with another sensor.
+- **Plans:** price/PV coverage and generation/expiry are independent UTC properties. Publisher silence does not grant telemetry freshness or arbitrarily expire a still-covered schedule.
 
-The observed UINT32_MAX age arises from old loop time minus a newly received timestamp. Copy the sample before sampling current time; retain modulo arithmetic across real millis rollover. Do not hide true old data with an absolute value.
+Health normally updates about every five seconds; unchanged valid scalars receive a full refresh every 60 seconds. Advancing source health can therefore keep unchanged scalar values current. Duplicate or older health does not restart the clock. Local disconnect fences control eligibility while retaining bounded historical display/hold information. The first observed collector identity also fences previously unidentified samples; a changed identity permits fresh sequence qualification instead of blindly accepting a rollback. Root changes discard that root's scalar cache while preserving known alarm restrictions.
+
+Malformed or stale health does not erase the last-good scalar cache. Per-field absence, unusable values, acquisition failure, and a received alarm have different meanings. A fresh explicit fault-clear value may clear the applicable JBD latch; silence, malformed data and reconnect do not. Charge-only faults do not automatically forbid discharge. SIL MOS commands remain locked, and no full protection coordinator is implied.
+
+SBT now copies each corresponding source snapshot after BLE dispatch and captures `millis()` afterward for health generation. This removes the old loop-time T versus sample-time T+1 subtraction defect. Unsigned subtraction still handles real uint32 rollover; no absolute-value or blanket age clamp hides truly stale samples. SIL likewise obtains its control-snapshot time under the receiver mutex.

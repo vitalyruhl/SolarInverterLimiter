@@ -25,6 +25,8 @@ template<class Runtime> bool registerRuntimeMetadata(Runtime& runtime) {
         meta("bms_reason", "BMS source reason", "Source Health", Kind::Text, 2);
         meta("victron_fresh", "MPPT data fresh", "Source Health", Kind::Boolean, 3);
         meta("victron_reason", "MPPT source reason", "Source Health", Kind::Text, 4);
+        meta("bms_age", "BMS data", "Source Health", Kind::Text, 5);
+        meta("victron_age", "MPPT data", "Source Health", Kind::Text, 6);
         meta("commands_locked", "SIL MOS commands locked", "MOS Control Status", Kind::Boolean, 0);
         meta("remote_control_enabled", "SBT control enabled", "MOS Control Status", Kind::Boolean, 1);
         meta("remote_control_ready", "SBT control ready", "MOS Control Status", Kind::Boolean, 2);
@@ -42,19 +44,24 @@ template<class Runtime> bool registerRuntimeMetadata(Runtime& runtime) {
             "PV current (unsupported)", "Battery voltage", "Charge current",
             "Battery power (unsupported)", "Load current", "Charge state", "Error code",
             "Yield today", "Minimum temperature", "Cell count", "Temperature sensor count",
-            "Protection status"};
+            "Protection status", "NTC 1 (Top)", "NTC 2 (Bottom)"};
         static const char *const units[] = {
             "", "", "%", "V", "A", "W", "Ah", "Ah", "", "", "\u00B0C",
             "V", "V", "V", "", "W", "V", "A", "V", "A", "W", "A",
-            "", "", "Wh", "\u00B0C", "", "", ""};
+            "", "", "Wh", "\u00B0C", "", "", "", "\u00B0C", "\u00B0C"};
         static_assert(sizeof(labels) / sizeof(labels[0]) == channelCount,
                       "Every SBT channel needs a display label");
         static_assert(sizeof(units) / sizeof(units[0]) == channelCount,
                       "Every SBT channel needs a unit");
-        for (size_t i = 0; i < channelCount; ++i)
+        for (size_t i = 0; i < channelCount; ++i) {
+            // Hide display details only; the complete receiver contract stays available.
+            if (i == 3 || i == 4 || i == 5 || i == 6 || i == 7 || i == 10 ||
+                i == 11 || i == 12 || i == 13 || i == 16 || i == 17 || i == 20 ||
+                i == 25 || i == 26 || i == 27) continue;
             meta(channels[i].key, labels[i], channels[i].source ? "MPPT 150/35" : "BMS",
                  channels[i].kind, int(i) + 10, units[i],
                  channels[i].kind == Kind::Unsigned ? 0 : 2);
+        }
     return valid;
 }
 }

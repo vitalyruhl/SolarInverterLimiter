@@ -2,7 +2,7 @@
 # Shared price source; consumers independently configure this input topic.
 - id: sil_publish_price_schedule
   alias: SIL - publish future electricity prices
-  description: Publish confirmed EPEX quarter-hour prices; SIL applies its own factor.
+  description: Publish EPEX quarter-hour prices with provider-unknown provenance; SIL applies its own factor.
   triggers:
     - trigger: homeassistant
       event: start

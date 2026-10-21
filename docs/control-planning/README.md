@@ -1,34 +1,35 @@
 # SIL control integration and reference diagrams
 
-The **[2026-10-20 SIL / SBT / HA implementation plan](../superpowers/plans/2026-10-20-sil-sbt-ha-integration.md)** is the only active work queue. Read its [consolidated specification](2026-10-20-integration-spec.md) for the latest owner decisions, approvals and production-upload prohibition. Current closeout is documentation and local commits, then STOP before implementation.
+Updated 2026-10-20. The [SIL / SBT / HA implementation plan](../superpowers/plans/2026-10-20-sil-sbt-ha-integration.md) remains the only active work queue. The owner authorized its implementation after the earlier documentation closeout. The [consolidated specification](2026-10-20-integration-spec.md) records the accepted scope and production-upload prohibition.
 
-The October20 requirements supersede earlier defaults for source-loss MAX,15s receiver tolerance, measured tilt30degrees and temperature-card removal: target is Idle500W, configurable1..9999s/default180,14.8degrees and reversible PIO visualization switch. Actual source remains unchanged until implementation.
+The implementation diagrams below describe the current source: bounded source grace with a default 180-second deadline, Idle fallback at 500 W by default, positioned NTC channels, atomic price/PV schedules, and cached energy planning. They are not production-deployment or physical closed-loop acceptance evidence.
 
-## Diagrams
+## Diagrams and contracts
 
-- [Actual main integration and next target](00-main-control-flow.md)
+- [Implemented main integration](00-main-control-flow.md)
 - [Telemetry validation, held values and immediate alarms](01-measurement-validation.md)
 - [Fan reference design](02-fan-control.md)
 - [Directional protection reference design](03-protection-check.md)
 - [Protection-response reference design](04-protection-response.md)
-- [Slow planning and fast regulation](05-energy-planning.md)
+- [Cached planning and fast regulation](05-energy-planning.md)
 - [Energy budget reference](06-energy-budget.md)
-- [Existing grid PID and target arbitration](07-grid-pid.md)
+- [Grid PID and arbitration reference](07-grid-pid.md)
 - [Actual command / mock / feedback path](08-command-and-feedback.md)
 - [Settings and visualization switch](09-settings-callbacks.md)
 - [Accepted charge-target / PV-ceiling reference](10-charge-target-and-pv-ceiling.md)
+- [Implemented MQTT price and PV schedule contract](mqtt-schedule-contract.md)
 
-The full protection/fan/MOS diagrams contain accepted requirements beyond current implementation; they are not passed device evidence. Current `PreparedControl` stubs and locked SIL MOS commands must not be presented as deployed protection.
+The protection, fan, energy-budget and charge-target reference documents retain accepted requirements beyond this increment. Several `PreparedControl` module boundaries remain stubs. SIL latches existing directional JBD faults and keeps its MOS commands locked; it does not implement the full automatic MOS protection coordinator or new numeric battery protection thresholds.
 
-## Preserved reference and evidence
+## Preserved decisions and evidence
 
-- [Round5 decisions](round-5-decisions-and-defaults.md): accepted baseline; later decisions in the current specification override conflicts.
-- [Historical implementation / crash / MQTT ledger](implementation-follow-ups.md): evidence, not another task queue.
+- [Round 5 decisions](round-5-decisions-and-defaults.md): accepted baseline; later specification decisions override conflicts.
+- [Historical implementation / crash / MQTT ledger](implementation-follow-ups.md): evidence, not another work queue.
 - [Receiver implementation evidence](../acceptance/2026-10-16-sbt-telemetry-inputs-evidence.md)
 - [Compact-runtime implementation evidence](../acceptance/2026-10-18-compact-runtime-metadata-evidence.md)
 
-Old mixed work plans were moved to acceptance evidence, preserving recorded outcomes. Superseded Round4 discussion/review files were removed; original history is recoverable through Git. Remaining hardware qualifications (device loss-of-command behavior, source identity, protection limits, actual plant response) remain explicit in the current plan/specification.
+Historical acceptance does not validate a new firmware image. Test-board smoke observation, synthetic fixtures, real BLE acquisition, Home Assistant configuration and production plant response are separate evidence classes. The health timestamp correction alone does not resolve the historical overnight crash investigation. The owner deploys production firmware.
 
 ## VS Code / PDF
 
-Open the canonical plan directly in VS Code. The reference diagrams retain print frontmatter where useful. Export through an existing Mermaid-capable Markdown preview and review page breaks; old PDFs must not be treated as current source.
+Open the canonical plan or diagram directly in VS Code. Export through an existing Mermaid-capable Markdown preview and inspect page breaks; previously exported PDFs are not current source.

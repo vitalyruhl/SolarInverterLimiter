@@ -1,9 +1,14 @@
 # ESP32 RS485 Solar Inverter Limiter
 
-## Current integration handoff
+## Current integration handoff (5.1.0 development)
 
-Read the [single SIL / SBT / HA implementation plan](docs/superpowers/plans/2026-10-20-sil-sbt-ha-integration.md) and its [owner-approved specification](docs/control-planning/2026-10-20-integration-spec.md). This checkpoint consolidates documentation only; implementation and the authorized test-ESP acceptance run start after the owner's review/continuation. Production firmware upload is reserved to the owner. Historical work plans are preserved under docs/acceptance, not active queues.
+The [integration plan](docs/superpowers/plans/2026-10-20-sil-sbt-ha-integration.md) has been explicitly continued. See the [acceptance and owner handoff](docs/acceptance/2026-10-20-integration-acceptance.md) for exact build/device results and remaining gates. Production ESP deployment remains with the owner; the requested local intermediate commits preserve the current development state without clearing device acceptance. The current candidate uses local ConfigurationsManager4.7.1; final device acceptance remains open due to SBT HTTP timeouts and added overload failures. See exact per-image evidence before any rollout.
 
+The receiver retains last-good values through transient source loss. `SBT Data Timeout (s)` is 1..9999 seconds, default 180; invalid entries normalize visibly to 180. After expiry, `Idle Output (W)` defaults to 500 and is bounded by 0..MAX, including below MIN. During grace, only the previously approved ceiling may be held. Recovery requires five seconds and two new source pairs, then restarts dynamics from the actual held command. Existing stronger stops and directional received JBD alarms remain immediate. SIL MOS commands remain locked.
+
+SBT 1.2.0 adds independent `bms/temperature_1_c` and `bms/temperature_2_c`; SIL has 31 receiver slots and 29 visible SBT fields. NTC identities use raw JBD order, labeled Top/Bottom; a missing sensor is unavailable. The System live card is removed; only UsedHeap, FreeHeap and HeapFragmentation appear under Limiter. `SIL_DEACTIVATE_BME280_CARD=1` hides the BME280 card, while 0 shows it; sampling/MQTT remain enabled independently. I2C uses SDA21/SCL22/400000 Hz; old pin/frequency NVS keys are inert.
+
+Independent atomic price-v1/PV-v2 schedules feed bounded cached planning. Forecast energy never increases the measured battery pool. Qualified PV before the earliest future reserved target can reduce that future reservation, bounded by MPPT power, household demand, losses and SOC headroom. See the [wire contract](docs/control-planning/mqtt-schedule-contract.md) and [HA migration](docs/home-assistant/shed-migration.md). Calibration remains neutral until 14 eligible completed days in 30; missing intervals remain missing.
 
 This project is an ESP32-based solar inverter limiter that can be used to limit the power output of a solar inverter to a specific value. The project uses an ESP32 microcontroller and an RS485 module to communicate with the inverter.
 
@@ -16,9 +21,9 @@ This project is an ESP32-based solar inverter limiter that can be used to limit 
 - Web-based settings UI (ConfigManager)
 - BME280 sensor support; OLED and GUI/MQTT logging are disabled in the production profiles
 
-## Compact metadata development candidate (5.0.2)
+## Historical compact metadata checkpoint (5.0.2)
 
-The active development code requires CM >=4.7.0: 19 enabled GUI descriptors and
+At that checkpoint, CM >=4.7.0 supported 19 enabled GUI descriptors and
 40 SBT receiver descriptors use compact Float/Int/Bool/Text storage. Keys,
 placement, getters, individual provider order, units, precision and control
 algorithms remain unchanged. Optional fan/heater controls retain their existing
@@ -92,9 +97,9 @@ Open follow-up:
 - PID tuning may still require further live observation.
 - Negative-price handling should be verified during an actual negative-price period or with a controlled MQTT test payload.
 
-## SBT receiver preparation (4.4.0, test branch)
+## Historical SBT receiver preparation (4.4.0, test branch)
 
-The `sbt` runtime group receives the 29 documented SBT channels and separate source-health/control feedback. Set **SBT MQTT Input Root** to the collector root (default `SolarBatteryTelemetry`). Values remain unavailable until root/source availability and a fresh advancing heartbeat agree. Unchanged numeric values remain valid while health advances; unsupported, malformed, absent or stale values appear as `null`.
+The following describes the earlier 4.4.0 checkpoint; current behavior is documented above. Its `sbt` runtime group received the 29 documented SBT channels and separate source-health/control feedback. Set **SBT MQTT Input Root** to the collector root (default `SolarBatteryTelemetry`). Values remain unavailable until root/source availability and a fresh advancing heartbeat agree. Unchanged numeric values remain valid while health advances; unsupported, malformed, absent or stale values appear as `null`.
 
 MOS shutdown envelopes are prepared as pure previews only. `commands_locked` is always true; this version has no command publishing path, control action or activation setting. The new inputs do not feed the inverter limiter or price logic.
 
@@ -119,12 +124,12 @@ See [receiver plan](docs/acceptance/2026-10-16-sbt-telemetry-inputs-evidence.md)
 ## Build variants
 
 - `usb`: production profile without OLED or GUI/MQTT logging; BME280 remains enabled.
-- `usb_bench`: COM7 smoke test with MQTT and RS485 disabled in memory before startup; existing WiFi/NVS network settings are preserved. Never use this variant for the production inverter.
+- `testesp`: mock RS485 profile; the bounded integration acceptance uses a private derivative with CM logging disabled and the actual test-board partition layout. Mock images force the MQTT publication root `SILTest` and a test client identity. Never upload them to the production inverter.
 - `ota`: the same lean production profile with OTA upload.
 - `ota_no_oled`: compatibility alias for the production profile.
 - `ota_no_oled_no_bme`: disables both OLED and BME280 so the example also builds without the I2C sensor/display stack.
 
-When `FEATURE_BME280_ENABLED=0`, the temperature, humidity, and dewpoint runtime values and MQTT topics are omitted. When both OLED and BME280 are disabled, the example also omits the shared I2C settings page.
+When `FEATURE_BME280_ENABLED=0`, the temperature, humidity, and dewpoint runtime values and MQTT topics are omitted. I2C pins/frequency are fixed; an editable OLED address exists only when OLED is enabled.
 
 ## Wiring Diagram
 

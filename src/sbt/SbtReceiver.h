@@ -44,29 +44,67 @@ inline constexpr Channel channels[] = {
     {"bms/cell_count", "bms_cell_count", Kind::Unsigned, 0},
     {"bms/temperature_sensor_count", "bms_temperature_sensor_count",
      Kind::Unsigned, 0},
-    {"bms/protection", "bms_protection", Kind::Text, 0}};
+    {"bms/protection", "bms_protection", Kind::Text, 0},
+    {"bms/temperature_1_c", "bms_temperature_1_c", Kind::Real, 0},
+    {"bms/temperature_2_c", "bms_temperature_2_c", Kind::Real, 0}};
 inline constexpr size_t channelCount = sizeof(channels) / sizeof(channels[0]);
+static_assert(channelCount <= 32, "Diagnostic channel mask must fit uint32_t");
 class Receiver {
 public:
-  static constexpr uint32_t timeoutMs = 15000;
+  static constexpr uint32_t timeoutMs = 180000;
+  static constexpr uint32_t acquisitionMs = 30000;
+  void setTimeoutSeconds(unsigned seconds) {
+    deadlineMs_ = (seconds >= 1 && seconds <= 9999 ? seconds : 180) * 1000u;
+  }
+  uint32_t configuredTimeoutMs() const { return deadlineMs_; }
   struct Health {
-    bool online = false, available = false, seeded = false, advanced = false;
+    bool online = false, available = false, seeded = false, advanced = false, timestamped = false;
     uint32_t sequence = 0, received = 0, age = 0;
+    uint32_t heldReceived = 0, heldAge = 0, displayReceived = 0, displayAge = 0;
+    bool heldKnown = false, displayKnown = false;
     char reason[64] = "not_received";
   };
-  void reset() { *this = Receiver{}; }
+  void reset() {
+    const uint32_t deadline = deadlineMs_;
+    const bool dischargeAlarm = alarmRestricted_, chargeAlarm = chargeRestricted_;
+    *this = Receiver{};
+    deadlineMs_ = deadline;
+    alarmRestricted_ = dischargeAlarm; chargeRestricted_ = chargeAlarm;
+  }
+  // Transport loss revokes permission, while retaining the original display data.
+  void disconnect() {
+    online_ = remoteReady_ = controlAvailable_ = false;
+    for (unsigned source = 0; source < 2; ++source) fence(source);
+  }
+  bool alarmRestricted() const { return alarmRestricted_; }
+  bool chargeRestricted() const { return chargeRestricted_; }
+  bool hasSample(const char *topic) const {
+    const int i = index(topic);
+    return i >= 0 && values_[i].seen && values_[i].eligible;
+  }
+  bool old(unsigned source, uint32_t now) const {
+    if (source > 1 || !health_[source].displayKnown) return false;
+    const auto &h = health_[source];
+    return h.displayAge >= deadlineMs_ || uint32_t(now - h.displayReceived) >= deadlineMs_ - h.displayAge;
+  }
+  bool withinGrace(unsigned source, uint32_t now) const {
+    if (source > 1) return false;
+    const auto &h = health_[source];
+    return h.heldKnown && h.heldAge < deadlineMs_ &&
+        uint32_t(now - h.heldReceived) < deadlineMs_ - h.heldAge;
+  }
   static constexpr bool commandsLocked() { return true; }
   bool fresh(unsigned source, uint32_t now) const {
     if (source > 1)
       return false;
     const auto &h = health_[source];
-    return online_ && h.online && h.available && h.advanced &&
-           uint32_t(now - h.received) < timeoutMs && h.age < timeoutMs &&
-           uint32_t(now - h.received) < timeoutMs - h.age;
+    return online_ && h.online && h.available && h.advanced && h.age < deadlineMs_ &&
+           uint32_t(now - h.received) < deadlineMs_ - h.age &&
+           h.age < acquisitionMs && uint32_t(now - h.received) < acquisitionMs - h.age;
   }
   bool valid(const char *topic, uint32_t now) const {
     int i = index(topic);
-    return i >= 0 && values_[i].seen && fresh(channels[i].source, now);
+    return i >= 0 && hasSample(topic) && fresh(channels[i].source, now);
   }
   uint32_t sequence(unsigned source) const {
     return source < 2 ? health_[source].sequence : 0;
@@ -91,6 +129,10 @@ public:
     const int n = std::snprintf(out, capacity, "%s", value);
     return n >= 0 && size_t(n) < capacity;
   }
+  double cachedNumeric(const char *topic) const {
+    const int i = index(topic);
+    return i >= 0 && values_[i].seen && channels[i].kind != Kind::Text ? values_[i].number : NAN;
+  }
   double numeric(const char *topic) const {
     int i = index(topic);
     return i >= 0 ? values_[i].number : 0;
@@ -99,26 +141,16 @@ public:
                uint32_t now) {
     if (!topic || !payload)
       return false;
-    if (length > 1024) {
-      const int i = index(topic);
-      if (i >= 0)
-        values_[i].seen = false;
-      return false;
-    }
+    if (length > 1024) return false;
     char text[1025];
     std::memcpy(text, payload, length);
     text[length] = '\0';
-    if (std::strlen(text) != length) {
-      const int i = index(topic);
-      if (i >= 0)
-        values_[i].seen = false;
-      return false;
-    }
+    if (std::strlen(text) != length) return false;
     if (!std::strcmp(topic, "status")) {
       if (std::strcmp(text, "online") && std::strcmp(text, "offline"))
         return false;
       if (!std::strcmp(text, "offline")) {
-        reset();
+        disconnect();
         return true;
       }
       online_ = true;
@@ -131,7 +163,6 @@ public:
         if (std::strcmp(text, "available") && std::strcmp(text, "unavailable"))
           return false;
         if (!std::strcmp(text, "unavailable")) {
-          clearSource(s);
           health_[s].online = false;
         } else
           health_[s].online = true;
@@ -154,9 +185,14 @@ public:
       if (error || !d["enabled"].is<bool>() || !d["ready"].is<bool>() ||
           !d["pending"].is<bool>() || !hexSession(session) ||
           !d["reason"].is<const char *>()) {
-        session_[0] = 0;
-        remoteReady_ = false;
         return false;
+      }
+      // The first explicit session also invalidates any earlier retained health high-water.
+      if (std::strcmp(session_, session)) {
+        for (unsigned source = 0; source < 2; ++source) {
+          fence(source);
+          health_[source].seeded = false;
+        }
       }
       std::snprintf(session_, sizeof(session_), "%s", session);
       remoteEnabled_ = d["enabled"];
@@ -179,10 +215,15 @@ public:
     if (i < 0)
       return false;
     auto &v = values_[i];
-    v.seen = false;
     const auto kind = channels[i].kind;
-    if (!std::strcmp(text, "null") || kind == Kind::Unsupported)
+    if (!std::strcmp(text, "null") || kind == Kind::Unsupported) {
+      v.eligible = false;
+      const bool missingNtc = !std::strcmp(topic, "bms/temperature_1_c") ||
+          !std::strcmp(topic, "bms/temperature_2_c");
+      if (kind == Kind::Unsupported || missingNtc) v.seen = false;
+      if (missingNtc) recordQualified(channels[i].source, now);
       return true;
+    }
     if (kind == Kind::Text) {
       char *output = i == 28 ? protection_ : chargeState_;
       const size_t capacity =
@@ -196,27 +237,51 @@ public:
         std::snprintf(output, capacity, "%s", d.as<const char *>());
       } else
         std::memcpy(output, text, length + 1);
-      v.seen = true;
+      v.seen = v.eligible = true;
       return true;
     }
     JsonDocument d;
     if (deserializeJson(d, text))
       return false;
+    double candidate = 0;
     if (kind == Kind::Boolean) {
       if (!d.is<bool>())
         return false;
-      v.number = d.as<bool>() ? 1 : 0;
+      candidate = d.as<bool>() ? 1 : 0;
     } else {
       if (!d.is<double>() || d.is<bool>())
         return false;
-      v.number = d.as<double>();
-      if (!std::isfinite(v.number))
+      candidate = d.as<double>();
+      if (!std::isfinite(candidate))
         return false;
-      if (kind == Kind::Unsigned && (v.number < 0 || v.number > 4294967295.0 ||
-                                     std::floor(v.number) != v.number))
+      if (kind == Kind::Unsigned && (candidate < 0 || candidate > 4294967295.0 ||
+                                     std::floor(candidate) != candidate))
         return false;
     }
-    v.seen = true;
+    // Match the existing control-snapshot semantics before committing a candidate.
+    const bool invalidEssential =
+        (!std::strcmp(topic, "bms/state_of_charge_pct") && (candidate < 0 || candidate > 100)) ||
+        (!std::strcmp(topic, "victron/battery_voltage_v") && candidate <= 0) ||
+        (!std::strcmp(topic, "victron/charge_current_a") && candidate < 0);
+    if (invalidEssential) {
+      v.eligible = false; // Keep the last-good display value and its original clocks.
+      return false;
+    }
+    v.number = candidate;
+    v.seen = v.eligible = true;
+    recordQualified(channels[i].source, now);
+    if (!std::strcmp(topic, "bms/alarm_bits")) {
+      const uint32_t bits = static_cast<uint32_t>(candidate);
+      // JBD protocol directions, not new numeric battery thresholds.
+      constexpr uint32_t dischargeMask = 0xffff0000u | (1u<<1) | (1u<<3) | (1u<<6) |
+          (1u<<7) | (1u<<9) | (1u<<10) | (1u<<11) | (1u<<12) | (1u<<14) | (1u<<15);
+      constexpr uint32_t chargeMask = 0xffff0000u | (1u<<0) | (1u<<2) | (1u<<4) |
+          (1u<<5) | (1u<<8) | (1u<<10) | (1u<<11) | (1u<<12) | (1u<<13) | (1u<<14) | (1u<<15);
+      if (bits & dischargeMask) alarmRestricted_ = true;
+      else if (fresh(0, now)) alarmRestricted_ = false;
+      if (bits & chargeMask) chargeRestricted_ = true;
+      else if (fresh(0, now)) chargeRestricted_ = false;
+    }
     return true;
   }
   // Preview only: deliberately has no MQTT transport or publish dependency.
@@ -248,6 +313,8 @@ public:
   void writeRuntime(JsonObject out, uint32_t now) const {
     out["online"] = online_;
     out["commands_locked"] = true;
+    out["charge_restriction"] = chargeRestricted_;
+    out["discharge_restriction"] = alarmRestricted_;
     out["remote_control_ready"] =
         remoteReady_ && controlAvailable_ && fresh(0, now);
     out["remote_control_enabled"] = remoteEnabled_;
@@ -265,12 +332,14 @@ public:
       out[s ? "victron_reason" : "bms_reason"] =
           static_cast<const char *>(h.reason);
       out[s ? "victron_sequence" : "bms_sequence"] = h.sequence;
+      out[s ? "victron_age" : "bms_age"] = old(s, now) ? "Old" : "";
+      out[s ? "victron_grace" : "bms_grace"] = withinGrace(s, now);
     }
     unsigned received = 0;
     for (size_t i = 0; i < channelCount; ++i) {
       if (values_[i].seen)
         ++received;
-      if (!values_[i].seen || !fresh(channels[i].source, now)) {
+      if (!values_[i].seen) {
         out[channels[i].key] = nullptr;
         continue;
       }
@@ -287,10 +356,12 @@ public:
 private:
   struct Value {
     double number = 0;
-    bool seen = false;
+    bool seen = false, eligible = false;
   };
   std::array<Value, channelCount> values_{};
   Health health_[2];
+  uint32_t deadlineMs_ = timeoutMs;
+  bool alarmRestricted_ = false, chargeRestricted_ = false;
   bool online_ = false, remoteReady_ = false, remoteEnabled_ = false,
        remotePending_ = false, controlAvailable_ = false;
   char protection_[512] = "", chargeState_[32] = "", session_[33] = "",
@@ -310,54 +381,58 @@ private:
         return false;
     return true;
   }
-  void clearValues(unsigned s) {
+  void fence(unsigned source) {
     for (size_t i = 0; i < channelCount; ++i)
-      if (channels[i].source == s)
-        values_[i].seen = false;
+      if (channels[i].source == source) values_[i].eligible = false;
+    health_[source].advanced = false;
+    health_[source].available = false;
   }
-  void clearSource(unsigned s) {
-    clearValues(s);
-    health_[s].seeded = false;
-    health_[s].advanced = false;
-    health_[s].available = false;
+  void recordQualified(unsigned source, uint32_t now) {
+    auto &h = health_[source];
+    bool allCurrent = true;
+    for (size_t i = 0; i < channelCount; ++i)
+      if (channels[i].source == source && values_[i].seen && !values_[i].eligible) allCurrent = false;
+    if (allCurrent && h.timestamped) {
+      h.displayKnown = true; h.displayReceived = h.received; h.displayAge = h.age;
+    }
+    const bool essential = source ? hasSample("victron/battery_voltage_v") && hasSample("victron/charge_current_a")
+        : hasSample("bms/state_of_charge_pct") && hasSample("bms/power_w");
+    if (essential && fresh(source, now)) {
+      h.heldKnown = true; h.heldReceived = h.received; h.heldAge = h.age;
+    }
   }
-  bool receiveHealth(unsigned s, const char *text, uint32_t now) {
+  bool receiveHealth(unsigned source, const char *text, uint32_t now) {
     JsonDocument d;
-    auto &h = health_[s];
     if (deserializeJson(d, text) || !d["available"].is<bool>() ||
         !d["reason"].is<const char *>() ||
+        std::strlen(d["reason"].as<const char *>()) >= sizeof(health_[0].reason) ||
         !d["sample_sequence"].is<uint32_t>() ||
-        (!d["sample_age_ms"].is<uint32_t>() && d["available"].as<bool>())) {
-      clearSource(s);
-      return false;
-    }
+        (!d["sample_age_ms"].is<uint32_t>() &&
+         (d["available"].as<bool>() || !d["sample_age_ms"].isNull()))) return false;
+    auto &h = health_[source];
     const bool available = d["available"];
-    const uint32_t seq = d["sample_sequence"],
-                   age = d["sample_age_ms"] | timeoutMs;
-    if (!available || age >= timeoutMs) {
-      clearSource(s);
-      std::snprintf(h.reason, sizeof(h.reason), "%s",
-                    d["reason"].as<const char *>());
+    const uint32_t seq = d["sample_sequence"];
+    const uint32_t age = d["sample_age_ms"] | UINT32_MAX;
+    // Diagnostic failures never erase a good scalar or renew its sample clock.
+    if (!available || age >= acquisitionMs) {
+      h.available = false;
+      std::snprintf(h.reason, sizeof(h.reason), "%s", d["reason"].as<const char *>());
       return true;
     }
-    if (h.seeded && (uint32_t(now - h.received) >= timeoutMs ||
-                     int32_t(seq - h.sequence) < 0))
-      clearSource(s);
+    // A delayed retained packet is not evidence of a source restart.
+    // Only a changed explicit collector control session permits a lower sequence.
+    if (h.seeded && int32_t(seq - h.sequence) < 0) return false;
     if (!h.seeded) {
-      h.seeded = true;
-      h.sequence = seq;
-      h.received = now;
-      h.age = age;
+      h.seeded = true; h.sequence = seq;
+      h.received = now; h.age = age; h.timestamped = true;
       h.advanced = false;
     } else if (int32_t(seq - h.sequence) > 0) {
-      h.sequence = seq;
-      h.received = now;
-      h.age = age;
-      h.advanced = true;
+      h.sequence = seq; h.received = now; h.age = age;
+      h.timestamped = h.advanced = true;
     }
     h.available = true;
-    std::snprintf(h.reason, sizeof(h.reason), "%s",
-                  d["reason"].as<const char *>());
+    recordQualified(source, now);
+    std::snprintf(h.reason, sizeof(h.reason), "%s", d["reason"].as<const char *>());
     return true;
   }
 };
