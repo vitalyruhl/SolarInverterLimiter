@@ -1,6 +1,7 @@
 #pragma once
 
 #include "PreparedControl.h"
+#include "DischargeBudget.h"
 #include "JsonArena.h"
 #include "PvForecast.h"
 #include <algorithm>
@@ -23,6 +24,7 @@ struct FuturePlan {
 class FuturePrices {
 public:
     static constexpr unsigned kSlots = 288, kChunk = 24, kPlanSlots = 144;
+    static_assert(kPlanSlots == DischargeBudget::kSlots, "Trace must cover the entire allocation window");
     void clear() {
         activeCount_ = pendingCount_ = 0; parts_ = 0;
         activeRevision_ = pendingRevision_ = 0;
@@ -97,13 +99,14 @@ public:
     FuturePlan plan(uint32_t utc, uint32_t ms, const PreparedSettings &cfg,
                     bool bmsValid, float soc, float batteryW, float fullAh,
                     uint32_t sequence, bool currentPriceValid, float currentPrice, bool currentExpensive,
-                    float factor, int maximumW, const PvForecast *pv = nullptr, float qualifiedMaxChargeW = 0) {
+                    float factor, int maximumW, const PvForecast *pv = nullptr, float qualifiedMaxChargeW = 0, DischargeBudget *trace = nullptr) {
         FuturePlan out;
+        if (trace) trace->reset(utc, activeRevision_, pv ? pv->revision() : 0);
         const bool energyValid = bmsValid && std::isfinite(fullAh) && fullAh > 0 && fullAh <= 389 &&
             std::isfinite(soc) && soc >= 0 && soc <= 100 && std::isfinite(batteryW);
         if (!energyValid) {
             energyTickReady_ = false; // Preserve known debits; never integrate an unknown outage.
-            out.reason = "energy_missing"; return out;
+            out.reason = "energy_missing"; return finish(out, trace);
         }
         const float fullWh = fullAh * 51.38f;
         const float socWh = std::max(0.0f, (soc - cfg.reserveOffSocPercent) * .01f * fullWh);
@@ -118,19 +121,19 @@ public:
         energyWh_ = std::max(0.0f, std::min(energyWh_, socWh));
         out.availableWh = energyWh_ * kDischargeEfficiency;
         if (!cfg.valid || !std::isfinite(factor) || factor <= 0 || factor > 5) {
-            out.reason = "forecast_settings"; return out;
+            out.reason = "forecast_settings"; return finish(out, trace);
         }
         if (utc < 1704067200UL || (lastUtc_ && uint64_t(utc) + 5 < lastUtc_)) {
-            out.reason = "clock_invalid"; clear(); lastUtc_ = utc; return out;
+            out.reason = "clock_invalid"; clear(); lastUtc_ = utc; return finish(out, trace);
         }
         lastUtc_ = utc;
         if (!activeCount_ || utc < activeStart_ || uint64_t(utc) >= uint64_t(activeStart_) + activeCount_ * 900ULL ||
-            uint64_t(utc) > uint64_t(activeRevision_) + 259200) return out;
+            uint64_t(utc) > uint64_t(activeRevision_) + 259200) return finish(out, trace);
         const unsigned first = (utc - activeStart_) / 900;
         const unsigned end = std::min(unsigned(activeCount_), first + kPlanSlots);
-        if (end <= first + 1) return out;
+        if (end <= first + 1) return finish(out, trace);
         if (!currentPriceValid || !std::isfinite(currentPrice)) {
-            out.reason = "current_price_missing"; return out;
+            out.reason = "current_price_missing"; return finish(out, trace);
         }
         // Cap resolution follows the whole-watt forecast wire contract, not arbitrary noise percentages.
         // 12000 W is the maximum encoded offer (10000 W * maximum calibration 1.2), not a plant limit.
@@ -158,6 +161,7 @@ public:
         }
         const auto price = [&](unsigned i) { return i == first ? currentPrice : float(active_[i]) * .000001f * factor; };
         out.nextPrice = price(first + 1);
+        if (trace) { trace->start = activeStart_ + first * 900UL; trace->count = end - first; }
         float pool = out.availableWh, currentAllocation = 0, futureNeed = 0, economicPvCredit = 0;
         uint32_t firstTarget = 0;
         // O(144) bounded arithmetic remains live: current-slot time and measured energy never freeze in the cache.
@@ -174,6 +178,8 @@ public:
             pvBudget -= pvCredit; out.usablePvWh += pvCredit;
             const float allocation = std::min(pool, need - pvCredit);
             pool -= allocation;
+            if (trace) trace->watts[i - first] = int(std::max(0.0f, std::min(float(maximumW),
+                allocation * 3600.0f / float(start + 900UL - (i == first ? utc : start)))));
             if (i == first) currentAllocation = allocation;
             else {
                 out.reservedWh += allocation;
@@ -193,12 +199,16 @@ public:
             out.chargeTargetW = out.shortfallWh / kDischargeEfficiency * 3600.0f / float(firstTarget - utc);
         out.valid = true;
         out.reason = out.batteryCeilingW > 0 ? "forecast_release" : (out.shortfallWh > 0 ? "forecast_charge" : "forecast_hold");
-        return out;
+        return finish(out, trace);
     }
     uint32_t planningBuilds() const { return planningBuilds_; }
     uint32_t revision() const { return activeRevision_; }
     unsigned slots() const { return activeCount_; }
 private:
+    static FuturePlan finish(FuturePlan out, DischargeBudget *trace) {
+        if (trace) trace->finish(out.valid, out.reason);
+        return out;
+    }
     static bool eligible(unsigned i, unsigned first, float p, float currentPrice,
                          bool expensive, const PreparedSettings &cfg) {
         if (p < 0 || (i == first ? !expensive : p < cfg.priceComfortEurPerKwh + cfg.priceDeadbandEurPerKwh)) return false;

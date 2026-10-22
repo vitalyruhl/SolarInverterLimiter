@@ -14,6 +14,8 @@ SBT 1.2.0 adds independent `bms/temperature_1_c` and `bms/temperature_2_c`; SIL 
 
 Independent atomic price-v1/PV-v2 schedules feed bounded cached planning. Forecast energy never increases the measured battery pool. Qualified PV before the earliest future reserved target can reduce that future reservation, bounded by MPPT power, household demand, losses and SOC headroom. See the [wire contract](docs/control-planning/mqtt-schedule-contract.md) and [HA migration](docs/home-assistant/shed-migration.md). Calibration remains neutral until 14 eligible completed days in 30; missing intervals remain missing.
 
+Version 5.2.0 adds a non-retained diagnostic [battery discharge-budget schedule](docs/control-planning/mqtt-schedule-contract.md#battery-discharge-budget-output-v1). The existing per-quarter allocations can be overlaid on the same 24-hour price chart with a right W axis using the [MQTT sensor](docs/home-assistant/sil-discharge-budget-sensor.yaml) and [card example](docs/home-assistant/sil-price-discharge-overlay.yaml). The budget is planned battery AC contribution, not measured discharge or a complete future inverter SetValue. Actual discharge MOS OFF does not suppress the budget; charge MOS OFF retains the existing PV-storage veto. This version was tested by USB only on the isolated dedicated test ESP; production SIL and Home Assistant remain unchanged. See the [bounded acceptance evidence](docs/acceptance/2026-10-22-discharge-budget-export.md).
+
 This project is an ESP32-based solar inverter limiter that can be used to limit the power output of a solar inverter to a specific value. The project uses an ESP32 microcontroller and an RS485 module to communicate with the inverter.
 
 ## Features

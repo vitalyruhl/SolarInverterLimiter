@@ -134,5 +134,66 @@ static void snapshotGapsAndConflicts(){
  assert(!std::strcmp(send(pending,prices(many,t,1)),"packet_conflict"));assert(pending.slots()==0);
  assert(!std::strcmp(send(pending,prices({},t)),"packet_conflict")); // Same revision cannot turn conflicting data into withdrawal.
 }
-int main(){economicTraces();creditNeverCreatesCurrentEnergy();pvCoverageBoundaries();energyDebitAndGaps();currentSlotAndCache();snapshotGapsAndConflicts();
+
+// [MOCKED!] The trace must expose the actual allocator without changing scalar decisions.
+static void dischargeBudgetTrace(){
+ PreparedSettings cfg;cfg.valid=true;FuturePrices plain,traced;
+ const std::vector<int> values{400000,100000,600000,500000};load(plain,values);load(traced,values);
+ PvForecast pv;solar(pv,{1500,1500,0,0});DischargeBudget trace;
+ for(unsigned step=0;step<3;++step){
+  const uint32_t at=t+step*120,ms=100+step*120000;
+  auto a=plain.plan(at,ms,cfg,true,20,0,10,1,true,.4f,true,1,900,&pv,1500);
+  auto b=traced.plan(at,ms,cfg,true,20,0,10,1,true,.4f,true,1,900,&pv,1500,&trace);
+  assert(a.valid&&b.valid&&trace.valid&&trace.count==4&&trace.start==t&&trace.generatedAt==at);
+  assert(trace.priceRevision==t&&trace.pvRevision==t+1&&trace.watts[0]==b.batteryCeilingW);
+  assert(a.batteryCeilingW==b.batteryCeilingW);near(a.reservedWh,b.reservedWh);near(a.availableWh,b.availableWh);
+  near(a.usablePvWh,b.usablePvWh);near(a.chargeTargetW,b.chargeTargetW);assert(a.targetAt==b.targetAt);
+  float future=0;for(unsigned i=1;i<trace.count;++i)future+=trace.watts[i]*.25f;
+  assert(future<=b.reservedWh+.001f&&b.reservedWh-future<.75f);
+ }
+ FuturePrices limited;load(limited,{100000,100000,400000,500000});
+ auto b=limited.plan(t,100,cfg,true,10,0,100,1,true,.1f,false,1,900,nullptr,0,&trace);
+ assert(b.valid&&trace.watts[0]==0&&trace.watts[1]==0&&trace.watts[2]==579&&trace.watts[3]==900);
+ char payload[DischargeBudget::kPayloadBytes];auto length=trace.serialize(payload,sizeof(payload));assert(length>0);
+ JsonDocument decoded;assert(!deserializeJson(decoded,payload));assert(decoded["valid"]==true&&decoded["w"].size()==4);
+ assert(decoded["w"][2]==579&&decoded["w"][3]==900);
+ char small[64];assert(trace.serialize(small,sizeof(small))==0&&small[0]=='\0');
+ FuturePrices partial;load(partial,{600000,100000});
+ auto c=partial.plan(t+450,100,cfg,true,5,0,50,1,true,.6f,true,1,900,nullptr,0,&trace);
+ assert(c.valid&&trace.generatedAt==t+450&&trace.start==t&&trace.count==2&&trace.watts[0]==554);
+ auto missing=partial.plan(t+450,200,cfg,false,5,0,50,2,true,.6f,true,1,900,nullptr,0,&trace);
+ assert(!missing.valid&&!trace.valid&&trace.count==0&&!std::strcmp(trace.reason,"energy_missing"));
+ length=trace.serialize(payload,sizeof(payload));assert(length>0);decoded.clear();assert(!deserializeJson(decoded,payload));
+ assert(decoded["valid"]==false&&decoded["n"]==0&&decoded["w"].size()==0);
+ FuturePrices large;load(large,std::vector<int>(288,600000));
+ auto full=large.plan(t,100,cfg,true,100,0,389,1,true,.6f,true,1,2147483647,nullptr,0,&trace);
+ assert(full.valid&&trace.count==144&&trace.serialize(payload,sizeof(payload))>0);
+ for(unsigned i=0;i<144;++i)trace.watts[i]=2147483647;
+ length=trace.serialize(payload,sizeof(payload));assert(length>1584&&length<2048);
+ assert(DischargeBudget::packetFits(128,length));assert(!DischargeBudget::packetFits(2304,length));
+ assert(!DischargeBudget::packetFits(1,2048));
+ FuturePrices charging;load(charging,{100000,100000,600000,500000});
+ auto on=charging.plan(t,100,cfg,true,5,0,100,1,true,.1f,false,1,900,&pv,1500,&trace);
+ assert(on.usablePvWh==350&&trace.watts[2]==0&&trace.watts[3]==400);
+ auto off=charging.plan(t,100,cfg,true,5,0,100,1,true,.1f,false,1,900,&pv,0,&trace);
+ assert(off.usablePvWh==0&&trace.watts[2]==554&&trace.watts[3]==0);
+ DischargeBudgetPublication publication;
+ assert(!publication.captureDue(0));publication.connection(true);assert(publication.captureDue(0));
+ publication.snapshot.finish(true,"forecast_release");publication.captured(10);assert(publication.publishDue(10));
+ publication.published(false,10);assert(!publication.publishDue(5009)&&publication.publishDue(5010));
+ publication.published(true,5010);assert(!publication.publishDue(6000));
+ assert(!publication.captureDue(60009)&&publication.captureDue(60010));
+ assert(publication.invalidationDue(false)&&!publication.invalidationDue(true));
+ publication.snapshot.finish(false,"energy_missing");publication.captured(6020);
+ assert(!publication.invalidationDue(false));publication.published(true,6020);
+ assert(!publication.invalidationDue(false));
+ publication.connection(false);assert(!publication.captureDue(90000)&&!publication.publishDue(90000));
+ publication.connection(true);assert(publication.captureDue(90000));
+ publication.captured(UINT32_MAX-10000);assert(!publication.captureDue(49998)&&publication.captureDue(49999));
+ publication.topicChanged();assert(publication.captureDue(0)&&!publication.publishDue(0));
+ publication.snapshot.finish(true,"forecast_release");publication.captured(10);publication.published(false,10);
+ assert(publication.invalidationDue(false)); // A failed first valid send must not later publish a revoked plan.
+ std::cout<<"[MOCKED!] Discharge budget trace, scalar equivalence, chronological allocation, partial slot, invalidity, PV charge veto and packet bounds passed; trace="<<sizeof(trace)<<" bytes, publication="<<sizeof(publication)<<" bytes, maximum packet="<<length<<" bytes\n";
+}
+int main(){dischargeBudgetTrace();economicTraces();creditNeverCreatesCurrentEnergy();pvCoverageBoundaries();energyDebitAndGaps();currentSlotAndCache();snapshotGapsAndConflicts();
  std::cout<<"Future price/PV traces, bounded credit, signed pool, snapshot gaps and cached planning passed; object="<<sizeof(FuturePrices)<<" bytes\n";}

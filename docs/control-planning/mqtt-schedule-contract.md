@@ -1,6 +1,6 @@
 # MQTT price and PV schedule contract
 
-Updated 2026-10-20. Source of truth: `src/control/FuturePrices.h`, `src/control/PvForecast.h`, and the HA producers under `docs/home-assistant/` and `ha-price-schedule.yaml`. Schedules offer planning inputs only; they never command MOS or inverter hardware.
+Updated 2026-10-22. Source of truth: `src/control/FuturePrices.h`, `src/control/PvForecast.h`, and the HA producers under `docs/home-assistant/` and `ha-price-schedule.yaml`. Schedules offer planning inputs only; they never command MOS or inverter hardware.
 
 ## Transport and ownership
 
@@ -68,3 +68,33 @@ PV uses two fixed snapshots with 712 bytes of snapshot/state budget, plus its ow
 Raw provider `wh_period` uses END timestamps. The producer validates previous-to-end intervals, assigns their Wh to the actual containing UTC hour, then distributes that hourly total over four quarters with energy conservation and explicit disaggregated quality. HA's built-in end-timestamp hour-floor aggregation is not used; [migration evidence](../home-assistant/shed-migration.md) records the source conflict and schema2 reference migration. No absent nighttime interval is filled with an assumed zero. Calibration stays neutral until at least 14 eligible completed days in 30 days pass whole-day original-forecast and actual-energy qualification. Calibration metadata is an asserted producer result; SIL validates its bounds/consistency rather than independently reading HA history.
 
 `FuturePrices` credits only usable PV available before the earliest eligible future target, bounded by current storage headroom and qualified charging power. It never adds predicted generation to its actual measured battery pool. A forecast does not establish BMS freshness, relax reserve/fault policy, force export, or prove physical delivery. See [planning](05-energy-planning.md) and [telemetry qualification](01-measurement-validation.md) for those separate boundaries.
+
+
+## Battery discharge-budget output v1
+
+Local 5.2.0 preparation with [isolated USB acceptance](../acceptance/2026-10-22-discharge-budget-export.md); production and HA installation require separate owner authorization. Source of truth: `src/control/DischargeBudget.h`, the optional trace in `FuturePrices::plan()`, and `src/main.cpp` publication.
+
+SIL publishes one complete JSON snapshot to `<resolved publish base>/Planning/DischargeBudget`, QoS 0 and non-retained. This is a diagnostic output, never a control input. The same allocation pass records existing battery allocations when capture is due (every 60 seconds while connected and after reconnect/topic change). There is no second planner call or new optimizer. A valid published plan becoming invalid queues an invalid snapshot promptly. Failed serialization or send retries after five seconds without blocking existing scalar MQTT or control paths. Cadence follows normal control ticks, not a separate control scheduler.
+
+| Key | Type / meaning |
+| --- | --- |
+| `v` | Integer 1 |
+| `valid` | Boolean plan validity |
+| `reason` | Existing planner reason |
+| `g` | UTC Unix generation seconds |
+| `r` | Accepted price revision |
+| `pv` | Accepted PV revision, zero if absent |
+| `t` | Current quarter-hour slot start, divisible by 900 |
+| `d` | Integer 900 seconds |
+| `n` | Actual considered interval count, 2..144 when valid; zero otherwise |
+| `w` | Chronological integer non-negative AC W array, length `n`; empty when invalid |
+
+The first value applies on `[g, t + d)`; later value `i` applies on `[t + i*d, t + (i+1)*d)`. Coverage ends at `t + n*d`. Each value is the allocated AC battery energy divided by its remaining interval duration, truncated using the current battery-ceiling conversion. Known intervals with no allocation are zero. Invalid, absent or expired planning is unavailable, never a synthetic zero schedule. At generation, the first rate equals the scalar planner's `batteryCeilingW`.
+
+These values expose the existing 650-W/MAX planning-demand assumptions. Future PV credit can reduce battery allocation without reducing the intended household supply to zero. Future measured PV, household demand, reserves/protection, PID state, ramps and final output correction still determine actual inverter requests at runtime. Thus the series is named **Planned battery discharge budget**, not future SetValue. Discharge MOS OFF does not zero this intent trace; charge MOS OFF continues to block storage credit. Current protection/control precedence and all hardware paths are unchanged.
+
+Serialization has a fixed 2048-byte buffer and fails with no publishable payload on truncation. The persistent publication object holds the 144-rate trace and buffer. SIL requests a 2304-byte PubSubClient packet buffer (formerly 1024); topic plus payload plus seven bytes must fit. CM checks buffer allocation internally but its setter returns no status; SIL separately checks every raw publication result. A failed enlargement/send affects this diagnostic and remains retryable. No CM source, receive schema, storage settings or existing scalar schemas change.
+
+The [sensor example](../home-assistant/sil-discharge-budget-sensor.yaml) uses JSON attributes and `ready`/`invalid` state, existing `<base>/System-Info/status` availability, and 180-second expiry. It is a schedule container, not a measured power statistic. Merge it into the existing MQTT sensor section and confirm its entity registry name during separately authorized installation. The [overlay card](../home-assistant/sil-price-discharge-overlay.yaml) preserves the supplied price entity, thresholds, time formatting and current-hour 24-hour window. A translucent battery-budget area uses the right W axis; price remains on the left EUR/kWh axis. Both generators use identical local current-hour rounding plus 24 elapsed hours. Data stops at real coverage; stale or invalid attributes produce no curve. No actual MOS-state filter is applied.
+
+Card options were checked against the [official ApexCharts card documentation](https://github.com/RomRider/apexcharts-card#series-options), including `area`, `stepline`, `opacity`, `data_generator` and the [axis mapping](https://github.com/RomRider/apexcharts-card#yaxis-options-multi-y-axis). The existing experimental color thresholds are preserved; no incompatible `apex_config.fill` override is added. YAML/generator checks do not constitute rendered-card or live HA acceptance.

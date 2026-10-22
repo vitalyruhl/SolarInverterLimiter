@@ -114,7 +114,7 @@ static constexpr uint32_t kI2cHz = 400000;
 #endif
 
 #ifndef VERSION
-#define VERSION "5.1.3"
+#define VERSION "5.2.0"
 #endif
 
 enum class NegativePriceSettingPreference : uint8_t
@@ -411,6 +411,7 @@ static String topicPublishCalculatedValueW;
 static String topicPublishGridImportW;
 static String topicPublishPlanningConfig;
 static String topicPublishPlanningState;
+static String topicPublishDischargeBudget;
 #if FEATURE_BME280_ENABLED
 static String topicPublishTempC;
 static String topicPublishHumidityPct;
@@ -496,6 +497,7 @@ static control::PvForecast pvForecast;
 static String pvScheduleTopic;
 static bool pvScheduleSubscribed = false;
 static control::FuturePlan futurePlan;
+static control::DischargeBudgetPublication dischargeBudget;
 static String priceScheduleTopic;
 static bool priceScheduleSubscribed = false;
 static float forecastPriceFactor = 0.93f;
@@ -1065,9 +1067,8 @@ static const char *resetReasonToText(esp_reset_reason_t reason)
 
 static void setupMqtt()
 {
-    // Tasmota SENSOR payloads can exceed PubSubClient default packet size (~256B).
-    // Increase buffer to avoid silently dropped inbound messages.
-    mqtt.setBufferSize(1024);
+    // Full diagnostic schedule plus topic/header; CM checks allocation and publish errors.
+    mqtt.setBufferSize(control::DischargeBudget::kMqttPacketBytes);
 
     mqtt.attach(ConfigManager);
     // Keep MQTT settings/diagnostic values without the helper's implicit System card.
@@ -1531,6 +1532,8 @@ static void updateMqttTopics()
     topicPublishGridImportW = mqttBaseTopic + "/GetValue";
     topicPublishPlanningConfig = mqttBaseTopic + "/Planning/Config";
     topicPublishPlanningState = mqttBaseTopic + "/Planning/State";
+    topicPublishDischargeBudget = mqttBaseTopic + "/Planning/DischargeBudget";
+    dischargeBudget.topicChanged();
 #if FEATURE_BME280_ENABLED
     topicPublishTempC = mqttBaseTopic + "/Temperature";
     topicPublishHumidityPct = mqttBaseTopic + "/Humidity";
@@ -1594,6 +1597,7 @@ static String buildPlanningStatePayload()
 
 static void publishMqttNow()
 {
+    dischargeBudget.connection(mqtt.isConnected());
     if (!mqtt.isConnected())
     {
         return;
@@ -1651,6 +1655,15 @@ static void publishMqttNow()
         static_cast<int32_t>(nowMs - nextPvSubscribeMs) >= 0)) {
         nextPvSubscribeMs = nowMs + 5000UL;
         pvScheduleSubscribed = mqtt.subscribe(pvScheduleTopic.c_str(), 1);
+    }
+    if (dischargeBudget.publishDue(nowMs))
+    {
+        const size_t bytes = dischargeBudget.snapshot.serialize(dischargeBudget.payload, sizeof(dischargeBudget.payload));
+        const bool fits = control::DischargeBudget::packetFits(topicPublishDischargeBudget.length(), bytes);
+        // A failed buffer allocation, serialization or send affects only this diagnostic.
+        const bool sent = fits && mqtt.publishRaw(topicPublishDischargeBudget.c_str(), dischargeBudget.payload, false);
+        dischargeBudget.published(sent, nowMs);
+        if (!sent) lmg.logTag(LL::Warn, "FORECAST", "budget publish failed; retry 5s");
     }
     mqtt.publishExtraTopicLazy("setvalue_w", topicPublishSetValueW.c_str(), []() { return String(inverterSetValue); }, false);
     mqtt.publishExtraTopicLazy("calculated_w", topicPublishCalculatedValueW.c_str(), []() { return String(inverterCalculatedValue); }, false);
@@ -1911,12 +1924,21 @@ static void processRS485Tick()
     inputs.price = measuredPrice;
     inputs.bmsSequence = source.bmsSequence;
     inputs.chargerSequence = source.chargerSequence;
-    futurePlan = futurePrices.plan(uint32_t(time(nullptr)), nowMs, preparedSettings,
+    const uint32_t utc = uint32_t(time(nullptr));
+    control::DischargeBudget *budgetTrace = dischargeBudget.captureDue(nowMs) ? &dischargeBudget.snapshot : nullptr;
+    futurePlan = futurePrices.plan(utc, nowMs, preparedSettings,
         source.bmsValid, source.soc, source.batteryW, source.fullCapacityAh,
         source.bmsSequence, priceFresh, measuredPrice,
         currentControl.expensivePrice(preparedSettings, priceFresh, measuredPrice),
         forecastPriceFactor, configuredMax, &pvForecast,
-        source.chargerValid && source.batteryChargeConfirmed ? source.chargerVoltageV * SIL_QUALIFIED_MPPT_MAX_CHARGE_A : 0.0f);
+        source.chargerValid && source.batteryChargeConfirmed ? source.chargerVoltageV * SIL_QUALIFIED_MPPT_MAX_CHARGE_A : 0.0f, budgetTrace);
+    if (budgetTrace) dischargeBudget.captured(nowMs);
+    else if (dischargeBudget.invalidationDue(futurePlan.valid))
+    {
+        dischargeBudget.snapshot.reset(utc, futurePrices.revision(), pvForecast.revision());
+        dischargeBudget.snapshot.finish(false, futurePlan.reason);
+        dischargeBudget.captured(nowMs);
+    }
     inputs.futureValid = futurePlan.valid;
     inputs.futureBatteryCeilingW = futurePlan.batteryCeilingW;
     inputs.futureChargeTargetW = futurePlan.chargeTargetW;

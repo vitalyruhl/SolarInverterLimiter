@@ -1,0 +1,24 @@
+# Local 5.2.0 example; install only with matching firmware after owner approval.
+# Merge this sensor into the existing mqtt.sensor section; do not replace other sensors.
+mqtt:
+  sensor:
+    - name: SolarLimiter Discharge Budget
+      unique_id: solarlimiter_discharge_budget
+      state_topic: SolarLimiter/Planning/DischargeBudget
+      value_template: "{{ 'ready' if value_json.valid | default(false) else 'invalid' }}"
+      json_attributes_topic: SolarLimiter/Planning/DischargeBudget
+      json_attributes:
+        - v
+        - valid
+        - reason
+        - g
+        - r
+        - pv
+        - t
+        - d
+        - n
+        - w
+      availability_topic: SolarLimiter/System-Info/status
+      payload_available: online
+      payload_not_available: offline
+      expire_after: 180
