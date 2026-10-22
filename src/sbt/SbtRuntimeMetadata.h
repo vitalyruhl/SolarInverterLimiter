@@ -27,7 +27,8 @@ template<class Runtime> bool registerRuntimeMetadata(Runtime& runtime) {
         meta("victron_reason", "MPPT source reason", "Source Health", Kind::Text, 4);
         meta("bms_age", "BMS data", "Source Health", Kind::Text, 5);
         meta("victron_age", "MPPT data", "Source Health", Kind::Text, 6);
-        meta("commands_locked", "SIL MOS commands locked", "MOS Control Status", Kind::Boolean, 0);
+        meta("commands_locked", "Emergency stop blocked", "MOS Control Status", Kind::Boolean, 0);
+        meta("emergency_state", "Emergency stop", "MOS Control Status", Kind::Text, 6);
         meta("remote_control_enabled", "SBT control enabled", "MOS Control Status", Kind::Boolean, 1);
         meta("remote_control_ready", "SBT control ready", "MOS Control Status", Kind::Boolean, 2);
         meta("remote_control_pending", "SBT command pending", "MOS Control Status", Kind::Boolean, 3);

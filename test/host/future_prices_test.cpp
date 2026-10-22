@@ -71,7 +71,7 @@ static void creditNeverCreatesCurrentEnergy(){
  assert(float(b.batteryCeilingW)*.25f<=b.availableWh+.001f);near(b.availableWh,a.availableWh);
  FuturePrices empty;load(empty,{400000,100000,100000,600000});auto noStored=plan(empty,cfg,&pv,1500,2,10,t,100,1,0,.4f,true);
  assert(noStored.availableWh==0&&noStored.batteryCeilingW==0);
- CurrentInputs in;in.bmsValid=in.chargerValid=in.metersValid=in.priceValid=true;in.soc=20;in.chargerW=1500;
+ CurrentInputs in;in.bmsValid=in.batteryDischargeIntentAvailable=in.chargerValid=in.metersValid=in.priceValid=true;in.soc=20;in.chargerW=1500;
  in.price=-.01f;in.futureValid=b.valid;in.futureBatteryCeilingW=b.batteryCeilingW;
  CurrentControl control;assert(control.update(cfg,in,true,true,900,100,100).ceilingW==0);
  cfg.inverterEnabled=false;in.price=.4f;assert(control.update(cfg,in,true,true,900,100,200).ceilingW==0);

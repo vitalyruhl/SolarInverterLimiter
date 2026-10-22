@@ -2,7 +2,7 @@
 
 ## Scope and current gate
 
-Owner-authorized implementation of the [single integration plan](../superpowers/plans/2026-10-20-sil-sbt-ha-integration.md). The prior documentation-only stop was explicitly superseded. No production ESP upload, NVS/partition erase, physical MOS command, automatic commit, push, merge, release or branch cleanup is authorized or performed.
+Owner-authorized implementation of the [single integration plan](../superpowers/plans/2026-10-20-sil-sbt-ha-integration.md). The prior documentation-only stop was explicitly superseded. Production ESP upload was originally excluded. On2026-10-21 the owner explicitly authorized normal application OTA for production SIL192.168.2.122 and SBT192.168.2.21; exact outcomes are appended below. NVS/partition erasure, physical MOS commands, automatic commits, push, merge, release and branch cleanup remain outside this operation.
 
 Firmware implementation, focused host tests and four current consumer builds passed; HA migration and corrected publication are live verified. **Final device acceptance remains incomplete:** the fresh SBT normal-UI observation still had HTTP timeouts. The additional concurrent overload test also failed. Exact per-image outcomes are recorded below. No production readiness, complete HTTP repair or overnight stability is claimed. A bounded Windows packet capture is prepared as the next diagnostic step; Windows denied capture without administrator rights.
 
@@ -103,7 +103,7 @@ Calibration requires an immutable complete original day forecast, matched reset-
 
 Owner plant checks remain: actual BLE samples/NTC positioning, production timing and command response, source-loss/recovery and directional alarms on the plant, charger curtailment validity, day/night Energy behavior, calibration learning, and sustained overnight stability. No real hardware commissioning result is inferred from synthetic host fixtures or an unavailable-source test board.
 
-## Owner handoff and rollback
+## Initial owner handoff and rollback before production authorization
 
 Do not deploy the mock or diagnostic artifacts to production. After all device gates pass, the normal usb BIN/ELF pair above is the candidate for the owner to deploy separately per repository, retaining existing device-specific NVS and partition layouts. Confirm SBT input root, forecast topics, MAX/Idle/MIN and180-second timeout before plant use. SIL has no new physical MOS publishing path.
 
@@ -193,3 +193,56 @@ All five records were depth-limited; four interleaved/corrupt UART records were 
 The new64KiB raw core SHA256 is `AA1CC8543708F51D3F6B53EC4F20731EE975E2E238DAB30597EFF7B5237F89B3`; its CRC32 `C57516F0` and ELF digest match the private probe. Independent decoding places the immediate fault in pinned AsyncTCP `_tcp_poll` at0x400dae00: `malloc(36)` returns zero, then the next store writes `LWIP_TCP_POLL` through that null pointer. The source allocates `lwip_event_packet_t` and dereferences it without checking. This is a distinct, evidenced third-party low-memory crash path, not a fault in the probe's stack walker. It does not establish the preceding heap-retention cause or prove that a null guard alone repairs HTTP delivery/overload recovery. The probe's additional RAM cost limits direct production comparisons.
 
 The exact final4 diagnostic SBT artifact from the build table was restored application-only on COM8 at06:17:13.871 UTC, after identity/partition/OTA/hash preflight. A complete2944B runtime read confirmed root `SILTest`, worker ready and control enabled/ready/pending all false. The browser remains disconnected. No production upload, NVS/partition erase, commit, push or release occurred. Product source hashes still match the frozen12 SIL/4 SBT/11 CM file manifest. Packet/ACK evidence, full retained-resource accounting and a passing SBT device gate remain open.
+
+
+## Explicitly authorized production OTA and inverter power cycle (2026-10-21)
+
+The owner explicitly requested production OTA for SIL192.168.2.122 and SBT192.168.2.21 after the failed SBT device gates had been reported. This supersedes the earlier owner-only production-upload restriction for these named devices; it does not convert failed delivery/overload acceptance into a pass. The owner subsequently prioritized SBT.
+
+The existing normal final4 BIN/ELF pairs were independently checked against checkpoints SIL `8b459054ab1bc86a65aa12eaf963dfa505477a44`, SBT `5c2e8abf5403f566ac48696be2cc64155d9b50bd` and CM `0ef9b5f4aa5ad33aba7239bcccc9c6d2f5936854`. All27 frozen product files match. No mock, heap-diagnostic or allocation-probe image was used. No source rebuild or change was needed. Existing local OTA credentials were reused without logging them.
+
+The owner additionally requested inverter restart via smartplug12: `switch.tasmota_smartplug_12_tasmota`, device `Solar 12`, was switched off at08:34:35.800 UTC, followed by the requested10-second wait and switched on at08:34:46.923 UTC (11.123s between observed commands). HA confirmed `on/Ein`. No other switch or BMS MOS command was sent. This proves the switch cycle; physical inverter operation was not independently established.
+
+SBT was identified live as SolarBatteryTelemetry1.1.0 on192.168.2.21, MAC `88:57:21:8f:66:4c`, with valid BMS/Victron data and no pending control. Normal1.2.0 BIN SHA256 `11E260E5DC1F7473BB92300C8F491093FD005941371AB0E95F5DFAECE0C32FF4` (1,385,296B) was uploaded via authenticated ArduinoOTA08:35:24.965–08:35:48.565 UTC (10:35:24.965–10:35:48.565 Europe/Berlin). Sender exit0 and final `Result: OK` establish protocol success. The installed updater checks the announced size against the next OTA partition before writing; it accepted this image. Exact production partition geometry was not independently read, and OTA did not migrate the partition table or erase NVS.
+
+Post-boot appinfo confirms1.2.0. Complete runtime observations at08:36:26 and08:38:26 UTC showed uptime advancing32347→151761ms and BMS sequence6→29. BMS/Victron reasons remained `ok`, MQTT `online`, raw NTC1/2 were13.6/12.7C, worker ready and OTA inactive. Existing control enabled/ready values remained true; no pending control was present. This is bounded post-deployment verification, not long-run HTTP/overload or plant-safety acceptance.
+
+SIL's normal5.1.0 BIN SHA256 `85EBA6FA9B4F094F0A96ADDCB278CE0F6456FAA5F26A00A45EA72D2BF96E9241` was prepared, but the owner-confirmed IP192.168.2.122 remained unreachable via HTTP/ping after the inverter switch cycle. One bounded ArduinoOTA attempt08:37:00.219–08:37:50.301 UTC received no device response and exited1. No authentication, transfer or SIL firmware update was observed. SIL needs network/controller recovery before deployment can continue; no other plug was guessed or switched.
+
+Automatic approval review rejected a proposed full `/config.json` read/save because it could capture production WiFi/MQTT/OTA secrets without separate authorization. That operation was not performed or retried. Non-secret identity/runtime endpoints and existing local OTA credentials were used instead. No configuration backup is claimed. Detailed private upload/result/runtime and switch evidence stays under the ignored integration evidence directory. These operational documentation updates are uncommitted; no additional commit, push, merge or release was performed.
+
+
+## Output correction and retained Victron candidates: COM7 test (2026-10-21)
+
+The owner requested normal SIL and SBT candidate tests on the TestESP before production OTA. MAC `3c:8a:1f:a7:22:7c` was verified on COM7 and the complete 4 MiB flash was backed up before temporary test configuration. Test IP was `192.168.2.144`; MQTT publication was disabled with isolated roots/client IDs, SIL RS485 was disabled, and SBT BMS control/read-target were disabled/empty. These runs exercised the normal firmware and WebUI without plant actuation; live BLE/MQTT acquisition, closed-loop inverter behavior and long-term stability are not established.
+
+- **SIL 5.1.1 / CM 4.8.0 PASS for the bounded UI cohort:** normal BIN SHA256 `25A61DDBC57F2AFAF81F5EF1E3586C3347B4672495062E8674A7DBC3EC40E686`. All Settings/Live pages and three reload rounds completed; final browser stress ended at17:55:58.283 UTC. The observer ended at18:01:00.300 UTC after95 successful runtime observations, with final uptime476370ms and maximum HTTP duration1.843s. No recorded Guru/panic/watchdog signature, HTTP failure or unexpected restart occurred. Parent independently checked the artifact hash, increasing uptime and every request against the8s budget.
+- **SBT 1.4.0 / CM 4.8.0 FAIL:** normal BIN SHA256 `7E15236FB927042F47F537E4E8EDE7844C91E3C73A64A363ED90D33D290F38AB`. Settings and all three Live pages completed three reload rounds; final stress ended at18:05:19.106 UTC. After73 complete runtime observations, an8s socket `TimeoutError` at18:08:23.046 UTC stopped the cohort before its required300-second post-stress window. UART contained no panic/reset after startup. Subsequent read-only checks returned appinfo in0.610s and runtime in0.469s, with uptime increasing364299 to403510ms and resetReason1. This supports recovery without a detected reboot; it does not identify the timeout cause.
+
+A separate bounded comparison completed24 small/full HTTP requests with one further runtime-body timeout: HTTP200 headers arrived after4.219s with Content-Length2993, then no body byte arrived before the8s idle timeout (12.219s total). Gateway pings succeeded24/24 and TestESP pings22/24. The Windows ping-output reader produced a local character-decoding error; only process return codes/counts were used, and no packet-loss timing correlation or root cause is claimed. A final90-second diagnostic used the original filtered runtime request, recorded connect/first-byte/header/body phases and UART, and completed18/18 with no critical UART markers; it is not a replacement acceptance pass. Neither heap pressure nor the existing CM/AsyncTCP delivery path was confirmed or excluded.
+
+Both production OTA updates remain withheld because the requested paired test prerequisite was not met. Production was only read: SIL remained5.1.0 at192.168.2.122, SBT1.3.0 at192.168.2.21. No production upload attempt, actuator command, commit or push was made for these candidates. HA before-update checks confirmed raw Smartplug2W and corrected AC0W; the new last-receipt entities remained unknown until a future SBT update and valid sample. Private raw evidence is retained under the ignored `device-acceptance-20261021T174217Z` directory.
+
+The owner deferred seasonal/shading forecast changes until several weeks of observation. [The TODO](../todo.md#later---pv-forecast-calibration-after-observation) records the current30-day/minimum14-day baseline and later options; no forecast algorithm was changed.
+
+The original complete TestESP flash was subsequently restored and esptool verified the written data. Backup SHA256 was `663D0F1FF2442FE5AEB7F863D86DB4ED9767764DE7693A3F3D7297A15C6688A5`. Readback at192.168.2.144 confirmed the original `CM-Watchdog-HIL`4.8.0 application. The temporary test settings and candidate applications are no longer installed on COM7.
+
+
+## Separately authorized SIL production OTA (2026-10-21)
+
+The owner subsequently explicitly authorized deploying SIL independently of the failed SBT HTTP cohort. The exact normal SIL5.1.1 / CM4.8.0 artifact that passed COM7 was used without rebuilding: SHA256 `25A61DDBC57F2AFAF81F5EF1E3586C3347B4672495062E8674A7DBC3EC40E686`. Authenticated HTTP OTA to192.168.2.122 started at18:22:59.255 UTC and returned HTTP200 at18:23:10.042 UTC. Credentials were read locally in memory and were not logged.
+
+Post-reboot appinfo confirmed5.1.1. All stored setting values matched a fresh pre-upload baseline;13 consecutive runtime observations showed increasing uptime through91799ms at18:24:43.203 UTC. WiFi and MQTT were connected and OTA inactive in the final observation. This confirms bounded deployment/runtime verification, not long-term stability or new physical plant acceptance. SBT remains unchanged on production1.3.0; no SBT upload was attempted. No additional commit, push or release was performed.
+
+
+## Owner-authorized SBT deployment despite the HTTP test failure (2026-10-21)
+
+After the failed HTTP cohort and separately successful SIL deployment were explained, the owner explicitly requested installing SBT as well for overnight observation. The failed device-acceptance result remains unchanged. The frozen normal SBT1.4.0 / CM4.8.0 BIN SHA256 `7E15236FB927042F47F537E4E8EDE7844C91E3C73A64A363ED90D33D290F38AB` was used without rebuilding.
+
+HTTP OTA at192.168.2.21 returned409 `ota_busy` at18:33:04.792 UTC. Read-only reconciliation confirmed production1.3.0, OTA inactive and MQTT online before the native fallback; no blind HTTP retry was made. Authenticated ArduinoOTA subsequently completed with sender exit0 at18:35:07.683 UTC. Passwords remained local in memory and were not included in command arguments or output.
+
+Post-reboot appinfo confirmed1.4.0. All stored setting values matched the fresh pre-native-upload baseline. Thirteen runtime observations showed increasing uptime through69295ms at18:36:22.693 UTC. A fresh MQTT subscription received all four Victron messages with the retained flag: raw error_code0, raw yield_today_wh0 and both last_valid JSON records with value0 and received_at1792607755. These last-receipt records are display history, not control freshness evidence.
+
+One further bounded read recorded SBT uptime120542ms, MQTT online, worker ready and BMS/Victron reason `ok`. SIL simultaneously remained online with uptime842723ms, limiter enabled, RS485 enabled, no mock transport and requested output0W for reserve. Forecast data had arrived (288 slots); this is not a daytime output or forecast-quality acceptance. Both overnight-start runtime snapshots were saved locally for later comparison. No unattended monitoring or overnight-stability result is claimed, and no actuator command, new commit or push was performed.
+
+A subsequent read-only HA check at18:36:47.713 UTC confirmed all13 selected entities: both last-received values0 with a fresh received_at1792607799, current-BLE receipt timestamps on error/yield displays, today display0.0kWh, PV display0W and raw Smartplug2W versus corrected AC0W. No dashboard write or service call was made.

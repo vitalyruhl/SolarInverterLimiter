@@ -25,6 +25,7 @@
 #include "sbt/SbtService.h"
 #include "control/PreparedControl.h"
 #include "control/CurrentControl.h"
+#include "control/OutputCorrection.h"
 #include "control/TelemetryAge.h"
 #include "control/FuturePrices.h"
 #include "control/PvForecast.h"
@@ -113,7 +114,7 @@ static constexpr uint32_t kI2cHz = 400000;
 #endif
 
 #ifndef VERSION
-#define VERSION "5.1.0"
+#define VERSION "5.1.3"
 #endif
 
 enum class NegativePriceSettingPreference : uint8_t
@@ -211,7 +212,7 @@ struct LimiterSettings
     Config<int> idleOutput{ConfigOptions<int>{.key = "LimiterIdleW", .name = "Idle Output (W)", .category = "Limiter", .defaultValue = 500, .sortOrder = 3}};
     Config<int> sbtTimeout{ConfigOptions<int>{.key = "sbtAgeS", .name = "SBT Data Timeout (s)", .category = "Limiter", .defaultValue = 180, .sortOrder = 19}};
     Config<int> minOutput{ConfigOptions<int>{.key = "LimiterMinW", .name = "Min Output (W)", .category = "Limiter", .defaultValue = 500, .sortOrder = 4}};
-    Config<int> inputCorrectionOffset{ConfigOptions<int>{.key = "LimiterCorrW", .name = "Input Correction Offset (W)", .category = "Limiter", .defaultValue = 50, .sortOrder = 5}};
+    Config<int> inputCorrectionOffset{ConfigOptions<int>{.key = "LimiterCorrW", .name = "Output Correction Offset (W)", .category = "Limiter", .defaultValue = 50, .sortOrder = 5}};
     Config<float> pidKp{ConfigOptions<float>{.key = "LimiterPIDKp", .name = "PID Kp", .category = "Limiter", .defaultValue = 0.35f, .sortOrder = 7}};
     Config<float> pidKi{ConfigOptions<float>{.key = "LimiterPIDKi", .name = "PID Ki", .category = "Limiter", .defaultValue = 0.05f, .sortOrder = 8}};
     Config<float> pidKd{ConfigOptions<float>{.key = "LimiterPIDKd", .name = "PID Kd", .category = "Limiter", .defaultValue = 0.02f, .sortOrder = 9}};
@@ -501,6 +502,9 @@ static float forecastPriceFactor = 0.93f;
 static bool currentDecisionAvailable = false;
 static int lastIssuedCommandW = 0;
 static int lastMockCommandW = 0;
+// Regulator state stays in the pre-correction domain; wire/log values stay corrected.
+static int lastIssuedBaseCommandW = 0;
+static int lastMockBaseCommandW = 0;
 static bool lastIssuedCommandKnown = false;
 static int lastNegativePriceOverrideTarget = -1;
 static NegativePriceSettingPreference lastNegativePriceSettingPreference = NegativePriceSettingPreference::None;
@@ -1824,10 +1828,14 @@ void cb_RS485Listener()
     rs485TickDue = true;
 }
 
-static void issueInverterCommand(int watts)
+static void issueInverterCommand(int watts, int maximumW, int outputOffsetW)
 {
+    const int baseWatts = control::correctOutputCommand(watts, 0, maximumW);
+    watts = control::correctOutputCommand(baseWatts, outputOffsetW, maximumW);
+    inverterSetValue = watts;
     if (kRs485MockTransport)
     {
+        lastMockBaseCommandW = baseWatts;
         lastMockCommandW = watts;
         lmg.logTag(LL::Info, "MOCK", "[MOCKED!] demand=%dW reason=%s band=%s limit=%dW; no hardware TX",
             watts, currentDecision.reason, currentDecision.priceBand, currentDecision.ceilingW);
@@ -1836,6 +1844,7 @@ static void issueInverterCommand(int watts)
     sendToRS485(static_cast<uint16_t>(watts));
     if (rs485settings.enableRS485.get())
     {
+        lastIssuedBaseCommandW = baseWatts;
         lastIssuedCommandW = watts;
         lastIssuedCommandKnown = true;
     }
@@ -1888,6 +1897,11 @@ static void processRS485Tick()
     inputs.sourcesWithinGrace = source.sourcesWithinGrace;
     inputs.alarmRestricted = source.alarmRestricted;
     inputs.bmsValid = source.bmsValid;
+    inputs.batteryDischargeIntentAvailable = source.batteryDischargeIntentAvailable;
+    inputs.batteryChargeAvailable = source.batteryChargeAvailable;
+    inputs.softwareMosLockOnly = source.softwareMosLockOnly;
+    inputs.chargerFault = source.chargerFault;
+    inputs.householdW = measuredInverterW + measuredGridW;
     inputs.chargerValid = source.chargerValid;
     inputs.metersValid = gridFresh && inverterFresh;
     inputs.priceValid = priceFresh;
@@ -1902,14 +1916,14 @@ static void processRS485Tick()
         source.bmsSequence, priceFresh, measuredPrice,
         currentControl.expensivePrice(preparedSettings, priceFresh, measuredPrice),
         forecastPriceFactor, configuredMax, &pvForecast,
-        source.chargerValid ? source.chargerVoltageV * SIL_QUALIFIED_MPPT_MAX_CHARGE_A : 0.0f);
+        source.chargerValid && source.batteryChargeConfirmed ? source.chargerVoltageV * SIL_QUALIFIED_MPPT_MAX_CHARGE_A : 0.0f);
     inputs.futureValid = futurePlan.valid;
     inputs.futureBatteryCeilingW = futurePlan.batteryCeilingW;
     inputs.futureChargeTargetW = futurePlan.chargeTargetW;
     inputs.futureReason = futurePlan.reason;
     currentDecision = currentControl.update(preparedSettings, inputs,
         limiterSettings.enableController.get(), kRs485MockTransport || rs485settings.enableRS485.get(),
-        configuredMax, kRs485MockTransport ? lastMockCommandW : lastIssuedCommandW, nowMs);
+        configuredMax, kRs485MockTransport ? lastMockBaseCommandW : lastIssuedBaseCommandW, nowMs);
     currentDecisionAvailable = true;
 
     if (negativePriceOverrideTarget >= 0)
@@ -1928,7 +1942,7 @@ static void processRS485Tick()
     }
     else
     {
-        pidBaseTarget = currentInverterOutputW + signedGridPowerW + offset;
+        pidBaseTarget = currentInverterOutputW + signedGridPowerW;
         const int effectiveCeiling = constrain(currentDecision.ceilingW, 0, configuredMax);
         const int effectiveMin = min(configuredMin, effectiveCeiling);
         pidClampedBaseTarget = constrain(pidBaseTarget, effectiveMin, effectiveCeiling);
@@ -1938,21 +1952,21 @@ static void processRS485Tick()
     if (negativePriceOverrideTarget >= 0)
     {
         inverterSetValue = min(negativePriceOverrideTarget, currentDecision.ceilingW);
-        issueInverterCommand(inverterSetValue);
+        issueInverterCommand(inverterSetValue, configuredMax, offset);
     }
     else if (currentDecision.direct)
     {
         inverterSetValue = constrain(currentDecision.ceilingW, 0, configuredMax);
         resetPidController();
-        issueInverterCommand(inverterSetValue);
+        issueInverterCommand(inverterSetValue, configuredMax, offset);
     }
-    else if (limiterSettings.enableController.get())
+    else if (limiterSettings.enableController.get() || currentDecision.pvOnly)
     {
         const int correctedValue = inverterCalculatedValue;
         const int ceiling = constrain(currentDecision.ceilingW, 0, configuredMax);
         const int effectiveMin = min(configuredMin, ceiling);
         inverterSetValue = constrain(correctedValue, effectiveMin, ceiling);
-        issueInverterCommand(inverterSetValue);
+        issueInverterCommand(inverterSetValue, configuredMax, offset);
         lmg.logTag(LL::Trace, "RS485", "Controller enabled -> set inverter to %d W (calc=%d, corr=%d)", inverterSetValue, inverterCalculatedValue, correctedValue);
         lmg.logTag(LL::Trace, "PID", "inv=%d gridSigned=%d gridIn=%d gridOut=%d off=%d base=%d clamp=%d in=%d out=%d min=%d max=%d set=%d",
                    currentInverterOutputW, signedGridPowerW, gridImportW, gridExportW, offset, pidBaseTarget, pidClampedBaseTarget,
@@ -1963,7 +1977,7 @@ static void processRS485Tick()
         inverterSetValue = configuredMax;
         resetPidController();
         lmg.logTag(LL::Info, "RS485", "Controller disabled -> using MAX output");
-        issueInverterCommand(inverterSetValue);
+        issueInverterCommand(inverterSetValue, configuredMax, offset);
     }
 
 #if CM_ENABLE_LOGGING && CM_ENABLE_VERBOSE_LOGGING
@@ -2053,7 +2067,7 @@ static void verboseLogging()
         currentDecision.chargeTargetValid ? currentDecision.chargeTargetW : NAN,
         currentDecision.reserveKnown ? (currentDecision.reserveAllowed ? "allowed" : "blocked") : "unknown");
     lmg.logTag(LL::Info, "CTRL-CMD", "demand=%.1fW calc=%dW set=%dW lastAttempt=%.0fW (not ACK)",
-        inputs.metersValid ? double(controlLog.inverterW) + controlLog.gridW + controlLog.offsetW : NAN,
+        inputs.metersValid ? double(controlLog.inverterW) + controlLog.gridW : NAN,
         inverterCalculatedValue, inverterSetValue, lastIssuedCommandKnown ? double(lastIssuedCommandW) : NAN);
     lmg.logTag(LL::Info, "CTRL-CMD", "mockDemand=%.0fW bmsValid=%d chargerValid=%d mqtt=%d",
         kRs485MockTransport ? double(lastMockCommandW) : NAN,

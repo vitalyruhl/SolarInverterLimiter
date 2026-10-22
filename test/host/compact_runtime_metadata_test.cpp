@@ -53,7 +53,7 @@ struct Sink {
 int main() {
     Sink receiver;
     assert(sbt::registerRuntimeMetadata(receiver));
-    assert(receiver.fields.size()==29 && receiver.providers.empty());
+    assert(receiver.fields.size()==30 && receiver.providers.empty());
     std::set<std::string> keys;
     for(const auto& field:receiver.fields) {
         assert(keys.insert(field.base.key.c_str()).second);
@@ -65,7 +65,7 @@ int main() {
         "bms_cell_max_v","bms_cell_delta_v","bms_cell_count","bms_temperature_sensor_count",
         "victron_pv_voltage_v","victron_pv_current_a","victron_battery_power_w"}) assert(!keys.count(key));
     for(const char* key:{"bms_soc_pct","bms_temperature_1_c","bms_temperature_2_c","bms_protection",
-        "victron_solar_power_w","victron_battery_voltage_v","victron_charge_current_a","bms_age","victron_age"}) assert(keys.count(key));
+        "victron_solar_power_w","victron_battery_voltage_v","victron_charge_current_a","bms_age","victron_age","emergency_state"}) assert(keys.count(key));
     for(const auto& f:receiver.fields) {
         if(f.base.key=="bms_temperature_1_c") assert(f.base.label=="NTC 1 (Top)" && f.unit=="\u00B0C");
         if(f.base.key=="bms_temperature_2_c") assert(f.base.label=="NTC 2 (Bottom)" && f.unit=="\u00B0C");
@@ -102,5 +102,5 @@ int main() {
     group.value<RuntimeFloatMeta>("temp",[]{return 1.0f;},"Temperature","C",1,2);
     group.value<RuntimeFloatMeta>("hum",[]{return 2.0f;},"Humidity","%",1,11);
     assert(!group.valid() && failed.fields.empty() && failed.providers.empty() && failed.attempts==1);
-    std::puts("[MOCKED!] SIL compact metadata: 29 visible receiver fields and guarded heap tuple, units/routing/kinds/failures and real provider helper passed");
+    std::puts("[MOCKED!] SIL compact metadata: 30 visible receiver fields and guarded heap tuple, units/routing/kinds/failures and real provider helper passed");
 }

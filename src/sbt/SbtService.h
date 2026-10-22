@@ -5,6 +5,7 @@
 #include "mqtt/MQTTManager.h"
 #include <freertos/FreeRTOS.h>
 #include <freertos/semphr.h>
+#include <ctime>
 
 namespace sbt {
 class Service {
@@ -90,6 +91,18 @@ class Service {
             lastSubscribe_ = millis();
             subscribed_ = mqtt_->subscribe((root_ + "/#").c_str());
         }
+        if (subscribed_) {
+            char payload[256], requestId[33];
+            std::snprintf(requestId,sizeof(requestId),"sil-%08lx-%08lx",
+                static_cast<unsigned long>(requestNonce_),static_cast<unsigned long>(++requestSequence_));
+            // Recheck the current gate/session/fault immediately before consuming the episode.
+            xSemaphoreTake(mutex_, portMAX_DELAY);
+            const auto utc = std::time(nullptr);
+            const bool send = receiver_.takeEmergencyOff(millis(),utc > 0 ? static_cast<uint64_t>(utc) : 0,
+                requestId,payload,sizeof(payload));
+            xSemaphoreGive(mutex_);
+            if (send) mqtt_->publishRaw((root_ + "/" + Receiver::emergencyOffTopic()).c_str(),payload,false);
+        }
     }
 
     double liveMeasurement(const char *topic, uint32_t now) {
@@ -103,6 +116,8 @@ class Service {
 
     struct ControlSnapshot {
         bool bmsValid = false, chargerValid = false, sourcesWithinGrace = false, alarmRestricted = false;
+        bool batteryPathAvailable = false, batteryChargeAvailable = false, batteryChargeConfirmed = false, softwareMosLockOnly = false, chargerFault = false;
+        bool batteryDischargeIntentAvailable = false;
         float soc = 0, batteryW = 0, chargerW = 0, chargerVoltageV = 0, fullCapacityAh = NAN;
         uint32_t bmsSequence = 0, chargerSequence = 0;
     };
@@ -138,6 +153,12 @@ class Service {
         now = millis(); // Never compare a concurrently received sample with an older loop timestamp.
         s.sourcesWithinGrace = receiver_.withinGrace(0, now) && receiver_.withinGrace(1, now);
         s.alarmRestricted = receiver_.alarmRestricted();
+        s.softwareMosLockOnly = receiver_.softwareMosLockOnly();
+        s.batteryPathAvailable = receiver_.batteryPathAvailable(now);
+        s.batteryDischargeIntentAvailable = receiver_.batteryDischargeIntentAvailable(now);
+        s.batteryChargeAvailable = receiver_.batteryChargeAvailable(now);
+        s.batteryChargeConfirmed = receiver_.batteryChargeConfirmed(now);
+        s.chargerFault = receiver_.valid("victron/error_code", now) && receiver_.numeric("victron/error_code") != 0;
         s.bmsValid = receiver_.valid("bms/state_of_charge_pct", now) &&
                      receiver_.valid("bms/power_w", now);
         s.chargerValid = receiver_.valid("victron/battery_voltage_v", now) &&
@@ -178,6 +199,7 @@ class Service {
     String root_;
     bool subscribed_ = false;
     uint32_t lastSubscribe_ = 0;
+    uint32_t requestNonce_ = esp_random(), requestSequence_ = 0;
     void reset(bool rootChanged = false) {
         if (mutex_) {
             xSemaphoreTake(mutex_, portMAX_DELAY);

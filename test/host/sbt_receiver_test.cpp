@@ -142,7 +142,116 @@ static void explicitMissingNtcIsUnavailableWithoutOldBms(){
   assert(std::strcmp(doc["bms_age"].as<const char*>(),"")==0);
  }
 }
+
+static void actualMosAndSoftwareLockClassification() {
+  sbt::Receiver r; qualified(r,0);
+  assert(!r.batteryPathAvailable(201)); // Remote master or activity never substitutes for MOS feedback.
+  assert(receive(r,"bms/charge_enabled","true",202));
+  assert(receive(r,"bms/discharge_enabled","true",202));
+  assert(receive(r,"bms/alarm_bits","0",202));
+  assert(r.batteryPathAvailable(203));
+  assert(receive(r,"bms/charge_enabled","false",204));
+  assert(r.batteryPathAvailable(205)); // A blocked charge path does not block available discharge.
+  assert(receive(r,"bms/charge_enabled","true",206));
+  assert(receive(r,"bms/discharge_enabled","false",206));
+  assert(!r.batteryPathAvailable(207));
+  assert(r.batteryDischargeIntentAvailable(207)); // Actual OFF must not suppress the planned inverter request.
+  assert(receive(r,"bms/alarm_bits","4096",208));
+  assert(r.alarmRestricted()&&r.softwareMosLockOnly());
+  assert(receive(r,"bms/alarm_bits","4098",209));
+  assert(r.alarmRestricted()&&!r.softwareMosLockOnly());
+  assert(!r.batteryDischargeIntentAvailable(209)); // Genuine discharge protection still wins.
+  r.disconnect();
+  assert(receive(r,"bms/alarm_bits","4096",210));
+  assert(r.alarmRestricted()&&!r.softwareMosLockOnly()); // Stale lock cannot clear critical bit 1.
+  r.reset();assert(r.alarmRestricted()&&!r.softwareMosLockOnly());
+  qualified(r,0);
+  assert(receive(r,"bms/alarm_bits","4096",211));
+  assert(r.alarmRestricted()&&r.softwareMosLockOnly()); // Fresh verified report may clear other bits.
+  assert(!r.batteryPathAvailable(30212));
+  assert(!r.batteryDischargeIntentAvailable(30212));
+  r.disconnect();assert(r.softwareMosLockOnly());
+}
+static void independentSoftwarePermissions() {
+  auto control=[](sbt::Receiver& r,const char* fields,uint32_t now){
+    char payload[512];std::snprintf(payload,sizeof(payload),"{\"enabled\":true,\"ready\":true,\"pending\":false,\"session\":\"0123456789abcdef0123456789abcdef\",\"reason\":\"ok\",%s}",fields);
+    return receive(r,"bms/control",payload,now);
+  };
+  sbt::Receiver r;
+  assert(control(r,R"("permissions_known":false,"requested_charge_enabled":null,"requested_discharge_enabled":null)",90));
+  qualified(r,0);
+  assert(receive(r,"bms/charge_enabled","true",202));
+  assert(receive(r,"bms/discharge_enabled","true",202));
+  assert(receive(r,"bms/alarm_bits","0",202));
+  assert(receive(r,"bms/alarm_bits","4096",203));
+  assert(r.batteryChargeAvailable(204)&&r.batteryChargeConfirmed(204)&&r.batteryPathAvailable(204));
+  assert(control(r,R"("permissions_known":true,"requested_charge_enabled":true,"requested_discharge_enabled":false)",205));
+  assert(r.batteryChargeAvailable(206)&&r.batteryChargeConfirmed(206)&&r.batteryPathAvailable(206));
+  // Historical intent must never override fresh actual readback.
+  assert(receive(r,"bms/alarm_bits","0",207));assert(r.batteryPathAvailable(208));
+  assert(control(r,R"("permissions_known":true,"requested_charge_enabled":false,"requested_discharge_enabled":true)",209));
+  assert(r.batteryChargeAvailable(210)&&r.batteryChargeConfirmed(210)&&r.batteryPathAvailable(210));
+  assert(receive(r,"bms/charge_enabled","false",211));assert(r.batteryPathAvailable(212));
+  // Genuine direction-specific faults stay restrictive.
+  assert(receive(r,"bms/alarm_bits","2",213));assert(!r.batteryPathAvailable(214));
+  assert(control(r,R"("permissions_known":true,"requested_charge_enabled":true,"requested_discharge_enabled":false)",215));
+  assert(receive(r,"bms/charge_enabled","true",216));
+  assert(receive(r,"bms/alarm_bits","1",217));assert(!r.batteryChargeAvailable(218));
+  assert(receive(r,"bms/alarm_bits","4096",219));assert(r.batteryChargeConfirmed(220));
+  assert(receive(r,"bms/alarm_bits","0",220));
+  assert(!control(r,R"("permissions_known":true,"requested_charge_enabled":true,"requested_discharge_enabled":null)",221));
+  assert(r.batteryChargeConfirmed(222)&&r.batteryPathAvailable(222)); // Rejected diagnostics cannot change actual feedback.
+  assert(!r.batteryChargeAvailable(30223));
+  r.disconnect();assert(!r.batteryChargeAvailable(223)&&!r.batteryPathAvailable(223));
+}
+static void emergencyOffEpisodes() {
+  sbt::Receiver r;
+  const char* currentSession="0123456789abcdef0123456789abcdef";
+  auto control=[&](bool enabled,bool pending=false,const char* session=nullptr) {
+    if(session)currentSession=session;else session=currentSession;
+    char payload[256];std::snprintf(payload,sizeof(payload),"{\"enabled\":%s,\"ready\":%s,\"pending\":%s,\"session\":\"%s\",\"reason\":\"ok\"}",enabled?"true":"false",enabled?"true":"false",pending?"true":"false",session);
+    assert(receive(r,"bms/control",payload,201));
+  };
+  char out[256];
+  control(false);qualified(r,0);
+  assert(receive(r,"bms/control/availability","available",201));
+  assert(receive(r,"bms/alarm_bits","16",202)); // [MOCKED!] Charge overtemperature.
+  assert(!r.takeEmergencyOff(203,2000000000,"sil-1",out,sizeof(out)));
+  control(true);
+  assert(!r.takeEmergencyOff(203,0,"sil-1",out,sizeof(out))); // No valid clock: do not consume.
+  assert(!r.takeEmergencyOff(203,2000000000,"bad id",out,sizeof(out)));
+  assert(!r.commandsLocked(203));
+  assert(r.takeEmergencyOff(203,2000000000,"sil-1",out,sizeof(out)));
+  JsonDocument envelope;assert(!deserializeJson(envelope,out));
+  assert(envelope.size()==4&&envelope["state"].is<bool>()&&!envelope["state"].as<bool>());
+  assert(envelope["expires_at"].as<uint64_t>()==2000000030);
+  assert(!std::strcmp(envelope["session"].as<const char*>(),"0123456789abcdef0123456789abcdef"));
+  assert(!std::strcmp(r.emergencyOffTopic(),"bms/emergency_off/set"));
+  assert(!r.takeEmergencyOff(204,2000000001,"sil-2",out,sizeof(out)));
+  r.disconnect();control(true,false,"abcdef0123456789abcdef0123456789");qualified(r,0);
+  assert(receive(r,"bms/control/availability","available",201));
+  assert(receive(r,"bms/alarm_bits","16",202));
+  assert(!r.takeEmergencyOff(203,2000000002,"sil-3",out,sizeof(out))); // No reconnect retry.
+  assert(receive(r,"bms/alarm_bits","0",30203)); // Stale clear does not rearm.
+  health(r,0,1002,30204);assert(receive(r,"bms/alarm_bits","16",30205));
+  assert(!r.takeEmergencyOff(30206,2000000003,"sil-4",out,sizeof(out)));
+  assert(receive(r,"bms/alarm_bits","4096",30207)); // Fresh software-lock-only is a hard-fault clear.
+  assert(!r.takeEmergencyOff(30208,2000000004,"sil-5",out,sizeof(out)));
+  assert(receive(r,"bms/alarm_bits","64",30209));
+  control(false);assert(!r.takeEmergencyOff(30210,2000000005,"sil-6",out,sizeof(out)));
+  control(true,true);assert(!r.takeEmergencyOff(30210,2000000005,"sil-6",out,sizeof(out)));
+  control(true);assert(r.takeEmergencyOff(30210,2000000005,"sil-6",out,sizeof(out)));
+  r.reset();control(true);qualified(r,0);assert(receive(r,"bms/control/availability","available",201));
+  assert(receive(r,"bms/alarm_bits","64",202));assert(!r.takeEmergencyOff(203,2000000006,"sil-7",out,sizeof(out)));
+  assert(receive(r,"bms/alarm_bits","0",204));assert(r.commandsLocked(205)); // Never auto-ON.
+  assert(!r.takeEmergencyOff(205,2000000007,"sil-8",out,sizeof(out)));
+  assert(receive(r,"bms/alarm_bits","2048",206));
+  assert(!r.takeEmergencyOff(30207,2000000008,"sil-9",out,sizeof(out))); // Stale alarm is not emergency authority.
+}
 int main() {
+  emergencyOffEpisodes();
+  independentSoftwarePermissions();
+  actualMosAndSoftwareLockClassification();
   invalidEssentialKeepsCacheAndOriginalDeadline();
   firstSessionFencesRetainedHealthHighWater();
   explicitMissingNtcIsUnavailableWithoutOldBms();

@@ -1,12 +1,16 @@
 # ESP32 RS485 Solar Inverter Limiter
 
-## Current integration handoff (5.1.0 development)
+## Current integration handoff (5.1.1 development)
 
-The [integration plan](docs/superpowers/plans/2026-10-20-sil-sbt-ha-integration.md) has been explicitly continued. See the [acceptance and owner handoff](docs/acceptance/2026-10-20-integration-acceptance.md) for exact build/device results and remaining gates. Production ESP deployment remains with the owner; the requested local intermediate commits preserve the current development state without clearing device acceptance. The current candidate uses local ConfigurationsManager4.7.1; final device acceptance remains open due to SBT HTTP timeouts and added overload failures. See exact per-image evidence before any rollout.
+The [integration plan](docs/superpowers/plans/2026-10-20-sil-sbt-ha-integration.md) has been explicitly continued. See the [acceptance and owner handoff](docs/acceptance/2026-10-20-integration-acceptance.md) for exact build/device results and remaining gates. Production ESP deployment remains with the owner; the requested local intermediate commits preserve the current development state without clearing device acceptance. The current candidate uses local ConfigurationsManager 4.8.0; final device acceptance remains open due to SBT HTTP timeouts and added overload failures. See exact per-image evidence before any rollout.
 
-The receiver retains last-good values through transient source loss. `SBT Data Timeout (s)` is 1..9999 seconds, default 180; invalid entries normalize visibly to 180. After expiry, `Idle Output (W)` defaults to 500 and is bounded by 0..MAX, including below MIN. During grace, only the previously approved ceiling may be held. Recovery requires five seconds and two new source pairs, then restarts dynamics from the actual held command. Existing stronger stops and directional received JBD alarms remain immediate. SIL MOS commands remain locked.
+The receiver retains last-good values through transient source loss. `SBT Data Timeout (s)` is 1..9999 seconds, default 180; invalid entries normalize visibly to 180. Since 5.1.3, fresh actual MOS flags and genuine directional alarms govern physical battery capability; historical acknowledged requests have no control authority. The global software-lock bit cannot identify a direction and remains diagnostic. Actual discharge MOS OFF does not cap the calculated or transmitted inverter request: SIL continues to plan and send ordinary desired discharge under existing economics, reserve, protection, settings and transport rules. Physical discharge capability is reported separately; SIL never enables a MOS to satisfy that intent. Charge MOS OFF disables PV storage reservation. With charging enabled, cheap/forecast-charge periods still reserve PV normally. Missing PV/meters and genuine charger/protection faults retain restrictive behavior.
+
+SIL sends only a one-shot emergency both-off request on `bms/emergency_off/set` for fresh JBD hard faults (bits 0..11). SBT's shared persistent control gate governs this path; disabled, unavailable, busy or stale state cannot consume an unsent episode. No economic MOS action, automatic ON or retry is implemented. Reconnect/session changes never rearm an attempted fault; only a fresh hard-fault clear does. SBT independently checks its gate and current fault before writing. A local MQTT send or E1 ACK does not prove physical isolation. The legacy `mosMan` setting is preserved but does not authorize or suppress this emergency-only path. This supersedes earlier Hand/Auto and always-locked planning text; local build validation is separate from hardware acceptance.
 
 SBT 1.2.0 adds independent `bms/temperature_1_c` and `bms/temperature_2_c`; SIL has 31 receiver slots and 29 visible SBT fields. NTC identities use raw JBD order, labeled Top/Bottom; a missing sensor is unavailable. The System live card is removed; only UsedHeap, FreeHeap and HeapFragmentation appear under Limiter. `SIL_DEACTIVATE_BME280_CARD=1` hides the BME280 card, while 0 shows it; sampling/MQTT remain enabled independently. I2C uses SDA21/SCL22/400000 Hz; old pin/frequency NVS keys are inert.
+
+`Output Correction Offset (W)` retains the persisted `LimiterCorrW` key and applies exactly once to the complete calculated command, immediately before transmission. It is no longer part of the PID input. An uncorrected zero remains zero and configured MAX remains MAX; every intermediate result is offset and then clamped to 0..MAX before conversion to the wire type. Thus 0 + 50 = 0 W, 1 + 50 = 51 W, 1 - 50 = 0 W, and 200 + 50 = 250 W. This intentional final bias may exceed the pre-correction PV or household ceiling; other battery and forecast efficiency models are unchanged.
 
 Independent atomic price-v1/PV-v2 schedules feed bounded cached planning. Forecast energy never increases the measured battery pool. Qualified PV before the earliest future reserved target can reduce that future reservation, bounded by MPPT power, household demand, losses and SOC headroom. See the [wire contract](docs/control-planning/mqtt-schedule-contract.md) and [HA migration](docs/home-assistant/shed-migration.md). Calibration remains neutral until 14 eligible completed days in 30; missing intervals remain missing.
 
@@ -169,7 +173,7 @@ mqtt:
       state_topic: "SolarLimiter/Temperature"
       unique_id: SolarLimiter_Temperature
       device_class: temperature
-      unit_of_measurement: "°C"
+      unit_of_measurement: "Â°C"
 
     - name: "SolarLimiter_Humidity"
       state_topic: "SolarLimiter/Humidity"
@@ -181,7 +185,7 @@ mqtt:
       state_topic: "SolarLimiter/Dewpoint"
       unique_id: SolarLimiter_Dewpoint
       device_class: temperature
-      unit_of_measurement: "°C"
+      unit_of_measurement: "Â°C"
 
 ```
 

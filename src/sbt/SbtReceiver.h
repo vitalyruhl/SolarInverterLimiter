@@ -66,17 +66,38 @@ public:
   };
   void reset() {
     const uint32_t deadline = deadlineMs_;
+    const bool emergencyAttempted = emergencyAttempted_;
     const bool dischargeAlarm = alarmRestricted_, chargeAlarm = chargeRestricted_;
+    const uint32_t dischargeBits = dischargeRestrictionBits_, chargeBits = chargeRestrictionBits_;
     *this = Receiver{};
     deadlineMs_ = deadline;
+    emergencyAttempted_ = emergencyAttempted;
     alarmRestricted_ = dischargeAlarm; chargeRestricted_ = chargeAlarm;
+    dischargeRestrictionBits_ = dischargeBits; chargeRestrictionBits_ = chargeBits;
   }
   // Transport loss revokes permission, while retaining the original display data.
   void disconnect() {
-    online_ = remoteReady_ = controlAvailable_ = false;
+    online_ = remoteReady_ = controlAvailable_ = permissionsKnown_ = false;
     for (unsigned source = 0; source < 2; ++source) fence(source);
   }
   bool alarmRestricted() const { return alarmRestricted_; }
+  bool softwareMosLockOnly() const { return dischargeRestrictionBits_ == (1u << 12); }
+  // An open discharge MOS is physical feedback, not a veto on the visible inverter intent.
+  bool batteryDischargeIntentAvailable(uint32_t now) const {
+    return valid("bms/alarm_bits", now) && valid("bms/discharge_enabled", now) &&
+        !(dischargeRestrictionBits_ & ~(1u << 12));
+  }
+  bool batteryPathAvailable(uint32_t now) const {
+    return batteryDischargeIntentAvailable(now) && numeric("bms/discharge_enabled") != 0;
+  }
+  // Reserving PV does not force a BMS/charger write or claim future stored energy.
+  bool batteryChargeAvailable(uint32_t now) const {
+    return valid("bms/alarm_bits", now) && valid("bms/charge_enabled", now) && numeric("bms/charge_enabled") != 0 &&
+        !(chargeRestrictionBits_ & ~(1u << 12));
+  }
+  bool batteryChargeConfirmed(uint32_t now) const {
+    return batteryChargeAvailable(now);
+  }
   bool chargeRestricted() const { return chargeRestricted_; }
   bool hasSample(const char *topic) const {
     const int i = index(topic);
@@ -93,7 +114,18 @@ public:
     return h.heldKnown && h.heldAge < deadlineMs_ &&
         uint32_t(now - h.heldReceived) < deadlineMs_ - h.heldAge;
   }
-  static constexpr bool commandsLocked() { return true; }
+  bool commandsLocked(uint32_t now = 0) const { return !emergencyOffEligible(now); }
+  bool emergencyOffEligible(uint32_t now) const {
+    return !emergencyAttempted_ && remoteEnabled_ && remoteReady_ && !remotePending_ && controlAvailable_ &&
+        hexSession(session_) && valid("bms/alarm_bits", now) && (uint32_t(numeric("bms/alarm_bits")) & 0xfffu);
+  }
+  static constexpr const char* emergencyOffTopic() { return "bms/emergency_off/set"; }
+  // Caller owns synchronization. Consume before publishing: even an uncertain send is never retried.
+  bool takeEmergencyOff(uint32_t now, uint64_t utc, const char* requestId, char* output, size_t capacity) {
+    if (!emergencyOffEligible(now) || !previewDisable(false,requestId,utc,output,capacity)) return false;
+    emergencyAttempted_ = true;
+    return true;
+  }
   bool fresh(unsigned source, uint32_t now) const {
     if (source > 1)
       return false;
@@ -187,6 +219,14 @@ public:
           !d["reason"].is<const char *>()) {
         return false;
       }
+      bool known = false, requestedCharge = false, requestedDischarge = false;
+      if (d["permissions_known"].is<bool>()) {
+        known = d["permissions_known"].as<bool>();
+        if (known && (!d["requested_charge_enabled"].is<bool>() || !d["requested_discharge_enabled"].is<bool>())) {
+          return false;
+        }
+        if (known) { requestedCharge = d["requested_charge_enabled"].as<bool>(); requestedDischarge = d["requested_discharge_enabled"].as<bool>(); }
+      } else if (!d["permissions_known"].isNull()) { return false; }
       // The first explicit session also invalidates any earlier retained health high-water.
       if (std::strcmp(session_, session)) {
         for (unsigned source = 0; source < 2; ++source) {
@@ -195,6 +235,7 @@ public:
         }
       }
       std::snprintf(session_, sizeof(session_), "%s", session);
+      permissionsKnown_ = known; requestedCharge_ = requestedCharge; requestedDischarge_ = requestedDischarge;
       remoteEnabled_ = d["enabled"];
       remoteReady_ = d["ready"];
       remotePending_ = d["pending"];
@@ -272,15 +313,20 @@ public:
     recordQualified(channels[i].source, now);
     if (!std::strcmp(topic, "bms/alarm_bits")) {
       const uint32_t bits = static_cast<uint32_t>(candidate);
+      // Only a fresh clear rearms the one-shot emergency; link/session changes do not.
+      if (fresh(0, now) && !(bits & 0xfffu)) emergencyAttempted_ = false;
       // JBD protocol directions, not new numeric battery thresholds.
       constexpr uint32_t dischargeMask = 0xffff0000u | (1u<<1) | (1u<<3) | (1u<<6) |
           (1u<<7) | (1u<<9) | (1u<<10) | (1u<<11) | (1u<<12) | (1u<<14) | (1u<<15);
       constexpr uint32_t chargeMask = 0xffff0000u | (1u<<0) | (1u<<2) | (1u<<4) |
           (1u<<5) | (1u<<8) | (1u<<10) | (1u<<11) | (1u<<12) | (1u<<13) | (1u<<14) | (1u<<15);
-      if (bits & dischargeMask) alarmRestricted_ = true;
-      else if (fresh(0, now)) alarmRestricted_ = false;
-      if (bits & chargeMask) chargeRestricted_ = true;
-      else if (fresh(0, now)) chargeRestricted_ = false;
+      // A stale/software-lock packet must not erase a separately latched critical fault.
+      if (fresh(0, now)) dischargeRestrictionBits_ = bits & dischargeMask;
+      else dischargeRestrictionBits_ |= bits & dischargeMask;
+      alarmRestricted_ = dischargeRestrictionBits_ != 0;
+      if (fresh(0, now)) chargeRestrictionBits_ = bits & chargeMask;
+      else chargeRestrictionBits_ |= bits & chargeMask;
+      chargeRestricted_ = chargeRestrictionBits_ != 0;
     }
     return true;
   }
@@ -312,7 +358,9 @@ public:
   }
   void writeRuntime(JsonObject out, uint32_t now) const {
     out["online"] = online_;
-    out["commands_locked"] = true;
+    out["commands_locked"] = commandsLocked(now);
+    out["emergency_state"] = emergencyAttempted_ ? "Attempted; manual retry if needed" :
+        emergencyOffEligible(now) ? "Emergency stop ready" : !remoteEnabled_ ? "Control disabled" : "Waiting for a fresh fault";
     out["charge_restriction"] = chargeRestricted_;
     out["discharge_restriction"] = alarmRestricted_;
     out["remote_control_ready"] =
@@ -351,6 +399,13 @@ public:
         out[channels[i].key] = values_[i].number;
     }
     out["received_fields"] = received;
+    out["permissions_known"] = permissionsKnown_;
+    if (permissionsKnown_) { out["requested_charge_enabled"] = requestedCharge_; out["requested_discharge_enabled"] = requestedDischarge_; }
+    else { out["requested_charge_enabled"] = nullptr; out["requested_discharge_enabled"] = nullptr; }
+    out["battery_charge_possible"] = batteryChargeAvailable(now);
+    out["battery_charge_confirmed"] = batteryChargeConfirmed(now);
+    out["battery_discharge_available"] = batteryPathAvailable(now);
+    out["battery_discharge_intent_available"] = batteryDischargeIntentAvailable(now);
   }
 
 private:
@@ -362,6 +417,9 @@ private:
   Health health_[2];
   uint32_t deadlineMs_ = timeoutMs;
   bool alarmRestricted_ = false, chargeRestricted_ = false;
+  uint32_t dischargeRestrictionBits_ = 0, chargeRestrictionBits_ = 0;
+  bool permissionsKnown_ = false, requestedCharge_ = false, requestedDischarge_ = false;
+  bool emergencyAttempted_ = false;
   bool online_ = false, remoteReady_ = false, remoteEnabled_ = false,
        remotePending_ = false, controlAvailable_ = false;
   char protection_[512] = "", chargeState_[32] = "", session_[33] = "",

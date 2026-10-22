@@ -4,7 +4,7 @@ The [control-planning baseline](control-planning/README.md) owns battery-control
 
 ## P1 - Complete the existing telemetry receiver increment
 
-- [CURRENT] Review and finish the existing uncommitted SBT receiver/UI work against its own implementation plan and acceptance evidence. Preserve the automatic-command lock until the approved ownership/protection implementation is qualified.
+- [CURRENT] Review and finish the existing uncommitted SBT receiver/UI work against its implementation and acceptance evidence. The 5.1.3 emergency-only path uses the shared SBT gate; physical acceptance remains pending.
 - [NEXT] Reconcile the receiver's earlier 15-second freshness contract with the planned BMS/Victron policy; do not assume the planning constants are already deployed.
 
 ## P1 - Implement the approved battery control plan
@@ -13,13 +13,13 @@ The [control-planning baseline](control-planning/README.md) owns battery-control
 - [NEXT] Implement protection-first arbitration, shared startup/recovery, explicit inverter enable, existing limiter bypass and negative-price zero.
 - [NEXT] Implement the bounded energy/price planner, reserve OFF/ON 2%/10%, adjustable battery power band and charge-target/PV ceiling. Use the current baseline for price classes, source-loss precedence and ownership.
 - [NEXT] Add separate economic ceiling ramp constants, initially 50 W/s up and down, optionally exposed later if resources permit. Do not ramp every demand-PID response; restrictive PV/load/protection/stop changes bypass the economic ramp. Reuse RS485 publication timing and actuator-command anti-windup tracking.
-- [NEXT] Add Hand/Auto (`mosMan` candidate) independently of the overall MOS write gate. Enforce command ownership in SBT and report accepted state in HA. MOS automation is fault-only; no economic/reserve switching.
+- [CURRENT] Validate the shared SBT gate and one-shot emergency both-off path. The earlier separate Hand/Auto proposal is superseded; retain `mosMan` only for stored-setting compatibility. No economic/reserve MOS switching or automatic ON.
 - [NEXT] Use the qualified CM development revision and warning/main-alarm callbacks. Record exact test versions; publish a release only after actual agreed HITL acceptance.
 
 ## P1 - HA telemetry and cooling
 
 - [NEXT] Expand the SolarLimiter card with selected/effective strategy, decision reason, desired/sent/measured power, active limits, reserve/allocation, price quality/next transition and source ages as implemented.
-- [NEXT] Show overall MOS gate, Hand/Auto, SIL request, actual MOS feedback and pending/blocked/failed status distinctly. Place actual MOS feedback beside/below the related Allow control.
+- [NEXT] Show the shared MOS gate, SIL emergency request, actual MOS feedback and pending/blocked/failed status distinctly. The Allow controls follow actual MOS feedback.
 - [NEXT] Add independent battery-driven fan demand alongside BME280, using the accepted OR/hysteresis/failure policy. Keep the existing relay fan-only.
 - [NEXT] Decode native JBD cycle count in SBT, verify its meaning, publish it, and add it to the HA BMS card without redundant polling.
 

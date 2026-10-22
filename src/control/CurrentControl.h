@@ -15,11 +15,16 @@ struct CurrentInputs {
     bool sourcesWithinGrace = false;
     bool alarmRestricted = false;
     bool bmsValid = false;
+    bool batteryDischargeIntentAvailable = false; // Fresh healthy source permits inverter intent, even with actual MOS OFF.
+    bool batteryChargeAvailable = false; // Fresh, qualified charge permission independent of discharge.
+    bool softwareMosLockOnly = false; // The sole latched discharge bit is JBD bit 12.
+    bool chargerFault = false;
     bool chargerValid = false;
     bool metersValid = false;
     bool priceValid = false;
     float soc = 0;
     float batteryW = 0; // Positive means charging.
+    float householdW = 0; // Measured inverter AC + signed grid power, before correction offset.
     float chargerW = 0; // Victron battery voltage * charger output current.
     float price = 0;
     uint32_t bmsSequence = 0;
@@ -32,6 +37,7 @@ struct CurrentInputs {
 
 struct CurrentDecision {
     int ceilingW = 0;
+    bool pvOnly = false; // Always use the household PID, including with Limiter OFF.
     bool direct = false; // A fallback/stop/bypass decision, not a demand request.
     bool reserveKnown = false;
     bool reserveAllowed = false;
@@ -49,7 +55,7 @@ public:
         classify(cfg, valid, price);
         return band_ == Expensive;
     }
-    // heldCommandW must describe the actual held output command, not a new demand.
+    // heldCommandW is the last issued command before output correction, not a new demand.
     // The caller retains responsibility for transport and higher-priority protection.
     CurrentDecision update(const PreparedSettings &cfg, const CurrentInputs &in,
                            bool limiterEnabled, bool transportEnabled,
@@ -70,18 +76,44 @@ public:
         classify(cfg, price, in.price);
         out.priceBand = band_ == Expensive ? "expensive" :
             (band_ == Cheap ? "cheap" : (band_ == Comfort ? "comfort" : "unknown"));
-        if (in.alarmRestricted) return stop(out, "source_alarm");
+        const bool chargeAvailable = bms && in.batteryChargeAvailable;
+        const bool dischargeAvailable = bms && in.batteryDischargeIntentAvailable;
+        const bool pvOnly = !chargeAvailable && !dischargeAvailable;
+        if (pvOnly != pvOnly_ || chargeAvailable != chargeAvailable_ || dischargeAvailable != dischargeAvailable_) {
+            resetDynamics(); pvOnly_ = pvOnly; chargeAvailable_ = chargeAvailable; dischargeAvailable_ = dischargeAvailable;
+        }
+        // A directional software lock is not a separate hardware protection fault.
+        if (in.alarmRestricted && !in.softwareMosLockOnly) return stop(out, "source_alarm");
         if (!cfg.inverterEnabled) return stop(out, "inverter_off");
         if (!transportEnabled) return stop(out, "transport_off");
         if (price && in.price < 0) return stop(out, "negative_price");
-        if (!limiterEnabled) {
+        if (pvOnly) {
+            out.pvOnly = true; out.reserveAllowed = false;
+            out.strategy = "pv_only";
+            if (!in.metersValid || !std::isfinite(in.householdW)) return stop(out, "meters_missing");
+            if (in.chargerFault) return stop(out, "charger_fault");
+            if (!charger || in.chargerW <= 0) return stop(out, "pv_missing");
+            // Fresh PV can qualify without a missing battery sequence ever advancing.
+            if (!qualify(in, now, true)) {
+                out.direct = true; out.reason = "pv_recovery"; return out;
+            }
+            const float demand = clamp(in.householdW, 0, maximum);
+            out.ceilingW = int(clamp(in.chargerW, 0, demand));
+            out.reason = bms ? "pv_only_mos" : "pv_only_bms_missing";
+            return out; // No battery-power PI, forecast discharge budget or old reserve permission.
+        }
+        // Keep the household PID active for charge-only operation, including Limiter OFF.
+        out.pvOnly = !dischargeAvailable;
+        if (!limiterEnabled && dischargeAvailable) {
             resetDynamics();
             out.direct = true; out.ceilingW = int(maximum);
             out.strategy = "bypass"; out.reason = "limiter_off";
             return out;
         }
         if (!in.metersValid) return stop(out, "meters_missing");
+        if (in.chargerFault) return stop(out, "charger_fault");
         if (!bms || !charger) {
+            if (!dischargeAvailable) return stop(out, "pv_missing");
             if (approved_ && in.sourcesWithinGrace && !(reserveKnown_ && !reserveAllowed_)) {
                 qualified_ = qualifying_ = false; pairs_ = 0;
                 pauseDynamics();
@@ -111,7 +143,7 @@ public:
             out.direct = true; out.reason = "recovery";
             return out;
         }
-        if (out.reserveAllowed && (in.futureValid ? in.futureBatteryCeilingW > 0 : band_ == Expensive)) {
+        if (dischargeAvailable && out.reserveAllowed && (in.futureValid ? in.futureBatteryCeilingW > 0 : band_ == Expensive)) {
             const float economicTarget = in.futureValid
                 ? clamp(float(in.futureBatteryCeilingW) +
                     clamp(in.chargerW - cfg.batteryPowerDeadbandW, 0, maximum) * kDischargeEfficiency, 0, maximum)
@@ -134,6 +166,15 @@ public:
             return approve(out);
         }
         economicActive_ = false;
+        if (!chargeAvailable) {
+            // Consume available PV without reserving power for an inaccessible battery.
+            if (!std::isfinite(in.householdW)) return stop(out, "meters_missing");
+            piActive_ = false; integral_ = 0;
+            out.pvOnly = true; out.reserveAllowed = false; out.strategy = "pv_only";
+            out.ceilingW = int(clamp(in.chargerW, 0, clamp(in.householdW, 0, maximum)));
+            out.reason = "pv_only_charge_disabled";
+            return approve(out);
+        }
         out.strategy = "preserve";
         out.reason = !out.reserveAllowed ? "reserve" :
             (in.futureValid ? in.futureReason :
@@ -184,7 +225,7 @@ private:
     uint32_t recoveryAt_ = 0, bmsSequence_ = 0, chargerSequence_ = 0;
     uint32_t lastTick_ = 0, lastSampleAt_ = 0, lastPiSequence_ = 0;
     float integral_ = 0, ceiling_ = 0, economicCeiling_ = 0;
-    bool economicActive_ = false;
+    bool economicActive_ = false, pvOnly_ = false, chargeAvailable_ = false, dischargeAvailable_ = false;
     uint32_t economicAt_ = 0;
 
     static float clamp(float value, float low, float high) {
@@ -199,12 +240,12 @@ private:
         if (band_ == Cheap && price < low + hysteresis) return;
         band_ = price >= high ? Expensive : (price <= low ? Cheap : Comfort);
     }
-    bool qualify(const CurrentInputs &in, uint32_t now) {
+    bool qualify(const CurrentInputs &in, uint32_t now, bool chargerOnly = false) {
         if (qualified_) return true;
         if (!qualifying_) {
             qualifying_ = true; recoveryAt_ = now; pairs_ = 0;
             bmsSequence_ = in.bmsSequence; chargerSequence_ = in.chargerSequence;
-        } else if (in.bmsSequence != bmsSequence_ && in.chargerSequence != chargerSequence_) {
+        } else if ((chargerOnly || in.bmsSequence != bmsSequence_) && in.chargerSequence != chargerSequence_) {
             bmsSequence_ = in.bmsSequence; chargerSequence_ = in.chargerSequence;
             if (pairs_ < kRecoveryNewSamples) ++pairs_;
         }
