@@ -1,0 +1,254 @@
+# SIL 5.4.0 isolated preview; requires sil-charge-plan-sensor.yaml.
+# Add to a separate test dashboard after owner approval; leave production dashboards unchanged.
+type: vertical-stack
+cards:
+- type: custom:apexcharts-card
+  header:
+    show: true
+    title: Test energy plan
+    show_states: false
+  graph_span: 27h
+  span:
+    start: hour
+    offset: -3h
+  now:
+    show: true
+    label: Now
+  series:
+  - entity: sensor.sil_test_discharge_budget
+    name: Battery discharge allowance (AC W)
+    yaxis_id: discharge_ac
+    unit: W
+    float_precision: 0
+    type: area
+    curve: stepline
+    color: '#ef5350'
+    opacity: 0.2
+    stroke_width: 1
+    extend_to: false
+    show:
+      extremas: false
+    data_generator: |
+      const nowMs = Date.now();
+      const localNow = new Date(nowMs);
+      // Preserve the current UTC offset during the repeated local DST hour.
+      const hourStart = nowMs - localNow.getMinutes() * 60000 -
+        localNow.getSeconds() * 1000 - localNow.getMilliseconds();
+      const windowStart = hourStart - 3 * 60 * 60 * 1000;
+      const windowEnd = windowStart + 27 * 60 * 60 * 1000;
+      const a = entity?.attributes;
+      if (entity?.state !== 'ready' || !a || a.valid !== true || a.v !== 1 ||
+          !Number.isInteger(a.g) || !Number.isInteger(a.t) || a.d !== 900 ||
+          !Number.isInteger(a.n) || a.n < 2 || a.n > 144 ||
+          a.t % 900 !== 0 || a.g < a.t || a.g >= a.t + a.d) return [];
+      if (!Array.isArray(a.w) || a.w.length !== a.n ||
+          a.w.some(value => !Number.isInteger(value) || value < 0)) return [];
+      const generatedMs = a.g * 1000;
+      const coverageEnd = (a.t + a.n * a.d) * 1000;
+      if (nowMs - generatedMs > 180000 || generatedMs - nowMs > 120000 ||
+          nowMs >= coverageEnd) return [];
+      const values = a.w;
+      const points = [];
+      for (let i = 0; i < a.n; ++i) {
+        const intervalStart = (a.t + i * a.d) * 1000;
+        const intervalEnd = intervalStart + a.d * 1000;
+        const at = Math.max(intervalStart, generatedMs, windowStart, nowMs);
+        const end = Math.min(intervalEnd, windowEnd);
+        if (end <= at) continue;
+        // Keep explicit null gaps and the full duration of adjacent known intervals.
+        points.push([at, values[i]], [end, values[i]]);
+      }
+      return points;
+  - entity: sensor.sil_test_charge_plan
+    name: PV withheld for charging (DC W)
+    yaxis_id: solar_dc
+    unit: W
+    float_precision: 0
+    type: area
+    curve: stepline
+    color: '#42a5f5'
+    opacity: 0.2
+    stroke_width: 1
+    extend_to: false
+    show:
+      extremas: false
+    data_generator: |
+      const nowMs = Date.now();
+      const localNow = new Date(nowMs);
+      // Preserve the current UTC offset during the repeated local DST hour.
+      const hourStart = nowMs - localNow.getMinutes() * 60000 -
+        localNow.getSeconds() * 1000 - localNow.getMilliseconds();
+      const windowStart = hourStart - 3 * 60 * 60 * 1000;
+      const windowEnd = windowStart + 27 * 60 * 60 * 1000;
+      const a = entity?.attributes;
+      if (entity?.state !== 'ready' || !a || a.valid !== true || a.v !== 1 ||
+          !Number.isInteger(a.g) || !Number.isInteger(a.t) || a.d !== 900 ||
+          !Number.isInteger(a.n) || a.n < 2 || a.n > 144 ||
+          a.t % 900 !== 0 || a.g < a.t || a.g >= a.t + a.d) return [];
+      if (a.kind !== 'intent_projection' ||
+          !Array.isArray(a.w) || a.w.length !== a.n ||
+          !Array.isArray(a.s) || a.s.length !== a.n ||
+          [...a.w, ...a.s].some(value => value !== null &&
+            (!Number.isInteger(value) || value < 0 || value > 12000))) return [];
+      const generatedMs = a.g * 1000;
+      const coverageEnd = (a.t + a.n * a.d) * 1000;
+      if (nowMs - generatedMs > 180000 || generatedMs - nowMs > 120000 ||
+          nowMs >= coverageEnd) return [];
+      const values = a.w;
+      const points = [];
+      for (let i = 0; i < a.n; ++i) {
+        const intervalStart = (a.t + i * a.d) * 1000;
+        const intervalEnd = intervalStart + a.d * 1000;
+        const at = Math.max(intervalStart, generatedMs, windowStart, nowMs);
+        const end = Math.min(intervalEnd, windowEnd);
+        if (end <= at) continue;
+        // Keep explicit null gaps and the full duration of adjacent known intervals.
+        points.push([at, values[i]], [end, values[i]]);
+      }
+      return points;
+  - entity: sensor.sil_test_charge_plan
+    name: Forecast solar PV (DC W)
+    yaxis_id: solar_dc
+    unit: W
+    float_precision: 0
+    type: line
+    curve: stepline
+    color: '#ffca28'
+    opacity: 1
+    stroke_width: 2
+    extend_to: false
+    show:
+      extremas: false
+    data_generator: |
+      const nowMs = Date.now();
+      const localNow = new Date(nowMs);
+      // Preserve the current UTC offset during the repeated local DST hour.
+      const hourStart = nowMs - localNow.getMinutes() * 60000 -
+        localNow.getSeconds() * 1000 - localNow.getMilliseconds();
+      const windowStart = hourStart - 3 * 60 * 60 * 1000;
+      const windowEnd = windowStart + 27 * 60 * 60 * 1000;
+      const a = entity?.attributes;
+      if (entity?.state !== 'ready' || !a || a.valid !== true || a.v !== 1 ||
+          !Number.isInteger(a.g) || !Number.isInteger(a.t) || a.d !== 900 ||
+          !Number.isInteger(a.n) || a.n < 2 || a.n > 144 ||
+          a.t % 900 !== 0 || a.g < a.t || a.g >= a.t + a.d) return [];
+      if (a.kind !== 'intent_projection' ||
+          !Array.isArray(a.w) || a.w.length !== a.n ||
+          !Array.isArray(a.s) || a.s.length !== a.n ||
+          [...a.w, ...a.s].some(value => value !== null &&
+            (!Number.isInteger(value) || value < 0 || value > 12000))) return [];
+      const generatedMs = a.g * 1000;
+      const coverageEnd = (a.t + a.n * a.d) * 1000;
+      if (nowMs - generatedMs > 180000 || generatedMs - nowMs > 120000 ||
+          nowMs >= coverageEnd) return [];
+      const values = a.s;
+      const points = [];
+      for (let i = 0; i < a.n; ++i) {
+        const intervalStart = (a.t + i * a.d) * 1000;
+        const intervalEnd = intervalStart + a.d * 1000;
+        const at = Math.max(intervalStart, generatedMs, windowStart, nowMs);
+        const end = Math.min(intervalEnd, windowEnd);
+        if (end <= at) continue;
+        // Keep explicit null gaps and the full duration of adjacent known intervals.
+        points.push([at, values[i]], [end, values[i]]);
+      }
+      return points;
+    stroke_dash: 6
+  - entity: sensor.epex_spot_data_total_price_2
+    name: Electricity price
+    yaxis_id: price
+    unit: EUR/kWh
+    float_precision: 3
+    type: line
+    curve: stepline
+    extend_to: false
+    show:
+      extremas: true
+    data_generator: |
+      const nowMs = Date.now();
+      const localNow = new Date(nowMs);
+      // Preserve the current UTC offset during the repeated local DST hour.
+      const hourStart = nowMs - localNow.getMinutes() * 60000 -
+        localNow.getSeconds() * 1000 - localNow.getMilliseconds();
+      const windowStart = hourStart - 3 * 60 * 60 * 1000;
+      const windowEnd = windowStart + 27 * 60 * 60 * 1000;
+      return (entity?.attributes?.data ?? [])
+        .map(entry => [new Date(entry.start_time).getTime(), entry.price_per_kwh])
+        .filter(([at, value]) => Number.isFinite(at) &&
+          at >= windowStart && at < windowEnd &&
+          typeof value === 'number' && Number.isFinite(value));
+    color_threshold:
+    - value: 0
+      color: '#186ddc'
+    - value: 0.155
+      color: '#04822e'
+    - value: 0.2
+      color: '#12A141'
+    - value: 0.25
+      color: '#79B92C'
+    - value: 0.3
+      color: '#C4D81D'
+    - value: 0.35
+      color: '#F3DC0C'
+    - value: 0.4
+      color: red
+    - value: 0.5
+      color: magenta
+  experimental:
+    color_threshold: true
+  yaxis:
+  - id: price
+    decimals: 3
+    apex_config:
+      title:
+        text: EUR/kWh
+      tickAmount: 4
+  - id: discharge_ac
+    opposite: true
+    min: 0
+    decimals: 0
+    apex_config:
+      title:
+        text: 'AC W: discharge'
+      tickAmount: 4
+  - id: solar_dc
+    opposite: true
+    min: 0
+    decimals: 0
+    apex_config:
+      title:
+        text: 'DC W: PV / withholding'
+      tickAmount: 4
+  apex_config:
+    chart:
+      height: 420
+      animations:
+        enabled: false
+    markers:
+      size: 0
+    legend:
+      show: true
+    tooltip:
+      x:
+        show: true
+        format: dd.MM. HH:mm
+    xaxis:
+      type: datetime
+      labels:
+        datetimeUTC: false
+- type: markdown
+  content: |
+    **Test preview: charging intent, not exact inverter commands.**
+
+    Red: planned battery discharge allowance (**AC W**). Blue: forecast PV deliberately
+    withheld for charging (**DC W**). The dashed solar line shows expected PV (**DC W**).
+    AC and DC use separately labelled axes; no conversion or equality is implied.
+
+    Blue is a coarse projection of the current charging intent. It excludes natural
+    surplus/offset trickle and is not an exact future SetValue. MIN, PID, offset,
+    new measurements and safety can change actual inverter output.
+
+    Power curves start at the current time. Zero means known zero intent; gaps mean
+    unknown values or an invalid/stale plan (180 seconds). Known solar intervals may
+    remain visible when charging intent is unknown. This preview does not reconstruct
+    past plans: the preceding three hours show only existing price data.

@@ -259,5 +259,15 @@ static void dischargeBudgetTrace(){
  assert(publication.invalidationDue(false)); // A failed first valid send must not later publish a revoked plan.
  std::cout<<"[MOCKED!] Discharge budget trace, scalar equivalence, chronological allocation, partial slot, invalidity, PV charge veto and packet bounds passed; trace="<<sizeof(trace)<<" bytes, publication="<<sizeof(publication)<<" bytes, maximum packet="<<length<<" bytes\n";
 }
-int main(){freeGridDoesNotSpendStoredEnergy();ownerTariffsKeepStoredAndNewEnergySeparate();relativePricesAndExistingEnergy();dischargeBudgetTrace();economicTraces();creditNeverCreatesCurrentEnergy();pvCoverageBoundaries();energyDebitAndGaps();currentSlotAndCache();snapshotGapsAndConflicts();
+static void readOnlyPriceLookup(){
+ FuturePrices p;float value=-1;
+ assert(!p.priceAt(t,1,value));
+ load(p,{200000,300000,400000});
+ assert(p.priceAt(t,1.1f,value));near(value,.22f);
+ assert(p.priceAt(t+900,1,value));near(value,.3f);
+ assert(!p.priceAt(t-1,1,value));assert(!p.priceAt(t+2700,1,value));
+ assert(!p.priceAt(t,0,value));assert(!p.priceAt(t,NAN,value));
+ assert(p.planningBuilds()==0); // Diagnostic lookup neither replans nor changes the energy pool.
+}
+int main(){readOnlyPriceLookup();freeGridDoesNotSpendStoredEnergy();ownerTariffsKeepStoredAndNewEnergySeparate();relativePricesAndExistingEnergy();dischargeBudgetTrace();economicTraces();creditNeverCreatesCurrentEnergy();pvCoverageBoundaries();energyDebitAndGaps();currentSlotAndCache();snapshotGapsAndConflicts();
  std::cout<<"Future price/PV traces, bounded credit, signed pool, snapshot gaps and cached planning passed; object="<<sizeof(FuturePrices)<<" bytes\n";}

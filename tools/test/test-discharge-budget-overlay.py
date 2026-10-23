@@ -9,7 +9,7 @@ import yaml
 root = Path(__file__).resolve().parents[2]
 card = yaml.safe_load((root / "docs/home-assistant/sil-price-discharge-overlay.yaml").read_text(encoding="utf-8"))
 sensor = yaml.safe_load((root / "docs/home-assistant/sil-discharge-budget-sensor.yaml").read_text(encoding="utf-8"))
-assert card["graph_span"] == "24h" and card["span"] == {"start": "hour"}
+assert card["graph_span"] == "27h" and card["span"] == {"start": "hour", "offset": "-3h"}
 assert len(card["series"]) == 2 and card["series"][1]["entity"] == "sensor.epex_spot_data_total_price_2"
 assert card["series"][0]["yaxis_id"] == "discharge_w" and card["yaxis"][1]["opposite"] is True
 assert sensor["mqtt"]["sensor"][0]["expire_after"] == 180
@@ -36,13 +36,13 @@ for(const at of ['2026-10-22T09:07:00Z','2026-10-25T01:30:00Z']) {
   const s=Math.floor(now/900000)*900;
   const long={state:'ready',attributes:{v:1,valid:true,g:now/1000,t:s,d:900,n:144,w:Array(144).fill(650)}};
   const hour=new MockDate();hour.setMinutes(0,0,0);
-  const windowStart=hour.getTime(),windowEnd=windowStart+24*3600000;
+  const windowStart=hour.getTime()-3*3600000,windowEnd=windowStart+27*3600000;
   const prices={attributes:{data:Array.from({length:30},(_,i)=>({start_time:new RealDate(windowStart+(i-1)*3600000).toISOString(),price_per_kwh:i/100}))}};
   const pp=run(price,prices),bb=run(budget,long);
-  assert.equal(pp.length,24);assert.equal(pp[0][0],windowStart);assert.equal(pp.at(-1)[0],windowEnd-3600000);
+  assert.equal(pp.length,27);assert.equal(pp[0][0],windowStart);assert.equal(pp.at(-1)[0],windowEnd-3600000);
   assert.equal(bb.at(-1)[0],windowEnd);assert(bb.every(p=>p[0]>=windowStart&&p[0]<=windowEnd));
 }
-console.log('[MOCKED!] HA YAML/generators passed: partial slot, zero, invalid/missing/stale/unavailable, MOS independence, coverage, 144 slots, 24h/DST alignment.');
+console.log('[MOCKED!] HA YAML/generators passed: partial slot, zero, invalid/missing/stale/unavailable, MOS independence, coverage, 144 slots, 3h history plus 24h forward/DST alignment.');
 """
 env = os.environ.copy()
 env["TZ"] = "Europe/Berlin"

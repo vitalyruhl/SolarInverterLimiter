@@ -203,6 +203,14 @@ public:
     uint32_t planningBuilds() const { return planningBuilds_; }
     uint32_t revision() const { return activeRevision_; }
     unsigned slots() const { return activeCount_; }
+    // Diagnostic lookup only; never advances the measured-energy ledger or planner cache.
+    bool priceAt(uint32_t utc, float factor, float &price) const {
+        if (!activeCount_ || !std::isfinite(factor) || factor <= 0 || factor > 5 ||
+            utc < activeStart_ || uint64_t(utc) >= uint64_t(activeStart_) + activeCount_ * 900ULL ||
+            uint64_t(utc) > uint64_t(activeRevision_) + 259200ULL) return false;
+        price = float(active_[(utc - activeStart_) / 900UL]) * .000001f * factor;
+        return std::isfinite(price);
+    }
 private:
     static FuturePlan finish(FuturePlan out, DischargeBudget *trace) {
         if (trace) trace->finish(out.valid, out.reason);

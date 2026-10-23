@@ -1,5 +1,13 @@
 # ESP32 RS485 Solar Inverter Limiter
 
+## Charging-intent preview (5.4.0)
+
+The new diagnostic charge projection shows when the currently recognized policy deliberately withholds PV for the battery; a separate series exposes expected sunlight. It projects the existing economic request and reserve full/half policy without changing controller decisions, MOS commands or NVS. Blue/DC withholding is distinct from the existing red/AC discharge allowance and is not a complete future inverter SetValue. Missing forecast intervals remain unknown. See the [wire contract](docs/control-planning/mqtt-schedule-contract.md#charge-intent-projection-output-v1-540-test-candidate) and [implementation plan](docs/superpowers/plans/2026-10-23-charge-intent-projection.md). After isolated COM8 acceptance, the owner authorized production OTA; the frozen real-transport image was installed and version 5.4.0 verified with Live disabled, Settings enabled and all captured setting values preserved.
+
+The separate instrumented COM8 fixture completed a 15-minute observation plus a passive tail without an unexpected reset; four complete HTTP reads and authentic public MQTT/HA test delivery passed. This bounded isolated result does not establish production or long-term stability, and does not diagnose production NVS. See the [acceptance record](docs/acceptance/2026-10-23-charge-intent-projection.md) for source provenance, memory/stack/timing, test-transport repairs, production verification and remaining limits. The earlier production reset cause remains open; `Connectivity check target = off` disables the extra target probe, while the separate WiFi-loss reboot and loop watchdog remain active.
+
+The owner-authorized Home card #3 uses production price, red AC discharge, blue DC withholding and dashed DC solar forecast, preserving actual recorded discharge history. Its window includes three previous hours and the existing 24-hour forward endpoint. Invalid/stale/unknown intervals remain gaps. The isolated TEST dashboard continues to use its own test entities; a view-level `type: panel` wrapper must not be pasted into a single-card editor.
+
 ## Control correction (5.3.0)
 
 Stored energy is allocated by relative useful prices within the existing 36-hour window, independently of the comfort/deadband bands. New charging retains the existing round-trip efficiency, wear, and minimum-benefit checks. Reserve OFF charging uses all available PV when the price is not expensive; between OFF and ON, cheap prices reserve half of charger DC power. Economic charging may request a higher common target. Reserve discharge hysteresis and the existing qualified MIN override remain in force.

@@ -55,10 +55,11 @@ struct DischargeBudget {
 };
 
 // Publication timing is isolated from allocation and scalar/control publication.
-class DischargeBudgetPublication {
+template <typename Plan>
+class PlanPublication {
 public:
-    DischargeBudget snapshot;
-    char payload[DischargeBudget::kPayloadBytes] = {};
+    Plan snapshot;
+    char payload[Plan::kPayloadBytes] = {};
     void connection(bool connected) {
         if (connected && !connected_) { requested_ = true; pending_ = false; }
         connected_ = connected;
@@ -86,4 +87,5 @@ private:
     bool connected_ = false, captured_ = false, requested_ = true, pending_ = false;
     bool attempted_ = false, publishedValid_ = false;
 };
+using DischargeBudgetPublication = PlanPublication<DischargeBudget>;
 } // namespace control

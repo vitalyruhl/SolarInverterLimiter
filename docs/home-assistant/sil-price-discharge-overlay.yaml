@@ -3,9 +3,10 @@
 type: custom:apexcharts-card
 header:
   show: false
-graph_span: 24h
+graph_span: 27h
 span:
   start: hour
+  offset: '-3h'
 now:
   show: true
   label: Now
@@ -26,8 +27,8 @@ series:
     data_generator: |
       const currentHour = new Date();
       currentHour.setMinutes(0, 0, 0);
-      const windowStart = currentHour.getTime();
-      const windowEnd = windowStart + 24 * 60 * 60 * 1000;
+      const windowStart = currentHour.getTime() - 3 * 60 * 60 * 1000;
+      const windowEnd = windowStart + 27 * 60 * 60 * 1000;
       const nowMs = Date.now();
       const a = entity.attributes;
       if (entity.state !== 'ready' || a.valid !== true || a.v !== 1 ||
@@ -65,8 +66,8 @@ series:
     data_generator: |
       const currentHour = new Date();
       currentHour.setMinutes(0, 0, 0);
-      const windowStart = currentHour.getTime();
-      const windowEnd = windowStart + 24 * 60 * 60 * 1000;
+      const windowStart = currentHour.getTime() - 3 * 60 * 60 * 1000;
+      const windowEnd = windowStart + 27 * 60 * 60 * 1000;
       return entity.attributes.data
         .filter(entry => {
           const at = new Date(entry.start_time).getTime();

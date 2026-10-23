@@ -29,6 +29,7 @@
 #include "control/TelemetryAge.h"
 #include "control/FuturePrices.h"
 #include "control/PvForecast.h"
+#include "control/ChargePlan.h"
 
 #include "RS485Module/RS485Module.h"
 #include "helpers/HelperModule.h"
@@ -114,7 +115,7 @@ static constexpr uint32_t kI2cHz = 400000;
 #endif
 
 #ifndef VERSION
-#define VERSION "5.3.0"
+#define VERSION "5.4.0"
 #endif
 
 enum class NegativePriceSettingPreference : uint8_t
@@ -410,6 +411,7 @@ static String topicPublishGridImportW;
 static String topicPublishPlanningConfig;
 static String topicPublishPlanningState;
 static String topicPublishDischargeBudget;
+static String topicPublishChargePlan;
 #if FEATURE_BME280_ENABLED
 static String topicPublishTempC;
 static String topicPublishHumidityPct;
@@ -496,6 +498,7 @@ static String pvScheduleTopic;
 static bool pvScheduleSubscribed = false;
 static control::FuturePlan futurePlan;
 static control::DischargeBudgetPublication dischargeBudget;
+static control::ChargePlanPublication chargePlan;
 static String priceScheduleTopic;
 static bool priceScheduleSubscribed = false;
 static float forecastPriceFactor = 0.93f;
@@ -1528,7 +1531,9 @@ static void updateMqttTopics()
     topicPublishPlanningConfig = mqttBaseTopic + "/Planning/Config";
     topicPublishPlanningState = mqttBaseTopic + "/Planning/State";
     topicPublishDischargeBudget = mqttBaseTopic + "/Planning/DischargeBudget";
+    topicPublishChargePlan = mqttBaseTopic + "/Planning/ChargePlan";
     dischargeBudget.topicChanged();
+    chargePlan.topicChanged();
 #if FEATURE_BME280_ENABLED
     topicPublishTempC = mqttBaseTopic + "/Temperature";
     topicPublishHumidityPct = mqttBaseTopic + "/Humidity";
@@ -1592,6 +1597,7 @@ static String buildPlanningStatePayload()
 static void publishMqttNow()
 {
     dischargeBudget.connection(mqtt.isConnected());
+    chargePlan.connection(mqtt.isConnected());
     if (!mqtt.isConnected())
     {
         return;
@@ -1658,6 +1664,14 @@ static void publishMqttNow()
         const bool sent = fits && mqtt.publishRaw(topicPublishDischargeBudget.c_str(), dischargeBudget.payload, false);
         dischargeBudget.published(sent, nowMs);
         if (!sent) lmg.logTag(LL::Warn, "FORECAST", "budget publish failed; retry 5s");
+    }
+    if (chargePlan.publishDue(nowMs))
+    {
+        const size_t bytes = chargePlan.snapshot.serialize(chargePlan.payload, sizeof(chargePlan.payload));
+        const bool fits = control::ChargePlan::packetFits(topicPublishChargePlan.length(), bytes);
+        const bool sent = fits && mqtt.publishRaw(topicPublishChargePlan.c_str(), chargePlan.payload, false);
+        chargePlan.published(sent, nowMs);
+        if (!sent) lmg.logTag(LL::Warn, "FORECAST", "charge plan publish failed; retry 5s");
     }
     mqtt.publishExtraTopicLazy("setvalue_w", topicPublishSetValueW.c_str(), []() { return String(inverterSetValue); }, false);
     mqtt.publishExtraTopicLazy("calculated_w", topicPublishCalculatedValueW.c_str(), []() { return String(inverterCalculatedValue); }, false);
@@ -1930,7 +1944,8 @@ static void processRS485Tick()
     inputs.bmsSequence = source.bmsSequence;
     inputs.chargerSequence = source.chargerSequence;
     const uint32_t utc = uint32_t(time(nullptr));
-    control::DischargeBudget *budgetTrace = dischargeBudget.captureDue(nowMs) ? &dischargeBudget.snapshot : nullptr;
+    const bool capturePlans = dischargeBudget.captureDue(nowMs) || chargePlan.captureDue(nowMs);
+    control::DischargeBudget *budgetTrace = capturePlans ? &dischargeBudget.snapshot : nullptr;
     futurePlan = futurePrices.plan(utc, nowMs, preparedSettings,
         source.bmsValid, source.soc, source.batteryW, source.fullCapacityAh,
         source.bmsSequence, priceFresh, measuredPrice,
@@ -1951,6 +1966,33 @@ static void processRS485Tick()
     currentDecision = currentControl.update(preparedSettings, inputs,
         limiterSettings.enableController.get(), kRs485MockTransport || rs485settings.enableRS485.get(),
         configuredMax, kRs485MockTransport ? lastMockBaseCommandW : lastIssuedBaseCommandW, nowMs);
+    // This projection consumes the decision but never participates in PID, MOS or inverter commands.
+    control::ChargePlanInputs projection;
+    projection.controlEnabled = preparedSettings.inverterEnabled &&
+        (kRs485MockTransport || rs485settings.enableRS485.get()) &&
+        (limiterSettings.enableController.get() || !source.batteryDischargeIntentAvailable);
+    projection.sourcesQualified = preparedSettings.valid && inputs.sourcesWithinGrace &&
+        inputs.bmsValid && inputs.chargerValid && inputs.priceValid && inputs.metersValid && source.batteryChargeStateKnown &&
+        !inputs.chargerFault && (!inputs.alarmRestricted || inputs.softwareMosLockOnly) &&
+        (!projection.controlEnabled || !currentDecision.direct);
+    projection.chargeAvailable = source.batteryChargeAvailable;
+    projection.soc = source.soc;
+    projection.fullCapacityAh = source.fullCapacityAh;
+    projection.maxChargeW = source.chargerVoltageV * SIL_QUALIFIED_MPPT_MAX_CHARGE_A;
+    projection.currentChargerW = source.chargerW;
+    projection.priceFactor = forecastPriceFactor;
+    if (capturePlans)
+    {
+        chargePlan.snapshot.project(utc, preparedSettings, futurePlan, futurePrices, pvForecast,
+            currentDecision, dischargeBudget.snapshot, projection);
+        chargePlan.captured(nowMs);
+    }
+    else if (chargePlan.invalidationDue(futurePlan.valid && projection.sourcesQualified))
+    {
+        chargePlan.snapshot.reset(utc, futurePrices.revision(), pvForecast.revision());
+        chargePlan.snapshot.finish(false, futurePlan.valid ? "sources_missing" : futurePlan.reason);
+        chargePlan.captured(nowMs);
+    }
     currentDecisionAvailable = true;
     // Only qualified discharge intent may lift economic/PV preservation limits.
     // Stops, reserve, source grace/recovery and discharge-unavailable paths retain precedence.

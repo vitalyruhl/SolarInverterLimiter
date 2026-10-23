@@ -117,6 +117,7 @@ class Service {
     struct ControlSnapshot {
         bool bmsValid = false, chargerValid = false, sourcesWithinGrace = false, alarmRestricted = false;
         bool batteryPathAvailable = false, batteryChargeAvailable = false, batteryChargeConfirmed = false, softwareMosLockOnly = false, chargerFault = false;
+        bool batteryChargeStateKnown = false; // Diagnostic distinction: blocked is not missing telemetry.
         bool batteryDischargeIntentAvailable = false;
         float soc = 0, batteryW = 0, chargerW = 0, chargerVoltageV = 0, fullCapacityAh = NAN;
         uint32_t bmsSequence = 0, chargerSequence = 0;
@@ -158,6 +159,7 @@ class Service {
         s.batteryDischargeIntentAvailable = receiver_.batteryDischargeIntentAvailable(now);
         s.batteryChargeAvailable = receiver_.batteryChargeAvailable(now);
         s.batteryChargeConfirmed = receiver_.batteryChargeConfirmed(now);
+        s.batteryChargeStateKnown = receiver_.valid("bms/alarm_bits", now) && receiver_.valid("bms/charge_enabled", now);
         s.chargerFault = receiver_.valid("victron/error_code", now) && receiver_.numeric("victron/error_code") != 0;
         s.bmsValid = receiver_.valid("bms/state_of_charge_pct", now) &&
                      receiver_.valid("bms/power_w", now);
