@@ -166,3 +166,45 @@ The resumable handoff and test-tool commands are also in the current chat
 workspace `cm49-autonomous-handoff.md` and `sil-cm49-test/`. No automatic commit,
 push, integration or production rollout is queued. Further adoption of the SIL
 build profile or CM publication remains a separate owner decision.
+
+## Vite 8.3.4 settings-only USB smoke test — 2026-10-23
+
+The owner explicitly authorized importing Dependabot PR #82, a short
+settings-only test on the dedicated SIL test ESP, and a local checkpoint after
+success. No push, PR update, production deployment or extended test was requested.
+
+- CM `4.9.x` local merge commit: `9a0413f9c35622cdd31b45391e26e5e9e5a028b3`.
+  Vite is 8.3.4; previously accepted shell-quote/brace-expansion updates remain.
+  The default embedded page was regenerated with Live=1, Settings=1.
+- Test image: current SIL 5.2.0 sources with CM 4.9.0, Live=0, Settings=1,
+  existing RAM-only isolated broker, mocked RS485 and OTA disabled. No SIL
+  product source, production setting or BMS/MOS control was changed.
+- The same dedicated COM8 MAC `3c:8a:1f:a7:22:7c` and active application bank
+  were reverified. The preceding application was backed up; USB wrote only
+  `app1` at `0x150000` and verified the written hash. No NVS, selector,
+  partition table or bootloader write was performed.
+- Firmware SHA-256:
+  `7a9581eaf270072dcfb25d2372c83ddb050f73b076e74f47eb7b397c315757ce`.
+  Flash usage: 1,190,925/1,310,720 bytes; static RAM: 84,000 bytes.
+- All 120 CM source-freeze entries and 437 prepared inputs matched; compilation
+  succeeded without changing those inputs. All 42 JavaScript unit tests passed.
+- Fresh UART/HTTP confirmed the MAC, new boot and required isolated UI modes.
+  The 90.489-second observation had 18 diagnostic samples and 24 complete HTTP
+  checks, all successful. No Guru Meditation, panic/assert, reset, heap-integrity
+  failure or uptime regression was observed. Minimum sampled default free heap
+  was 103,824 bytes; loop-stack reserve was 4,444 bytes.
+- Actual Chrome at `http://192.168.2.126/`, 1280 x 900: 30.307 seconds, two tabs,
+  four rendered-state checks. WiFi, MQTT and Limiter forms were populated;
+  category navigation worked, Live was absent and Flash was disabled. The
+  screenshot was visually inspected. No JavaScript errors, console warnings,
+  framework overlay or unintended settings mutation was observed.
+- Evidence: `.local/vite834-smoke-20261023/` in SIL, including build/USB/boot
+  results, `observation/`, `browser/` and the prior application backup. Frontend
+  build/source-freeze and unit-test evidence is in the same-named CM directory.
+  Browser used existing Playwright/Chrome because the Browser plugin was absent.
+- Existing test MQTT routing was preserved. The bridge restarted with updated
+  verified image metadata; PID 35212 and broker PID 38532 are snapshots.
+  Observers, serial handles and test browser closed after the short run.
+
+Result: **PASS for the requested short Settings-only smoke test**. The other UI
+feature combinations and long-run behavior were not revalidated for Vite 8.3.4.
