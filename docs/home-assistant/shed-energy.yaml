@@ -1,0 +1,23 @@
+# Export of the corrected delivery sensors. This is a Home Assistant package.
+# The live instance uses an equivalent template and native Integral helper.
+# Do not install a second copy when those entities already exist.
+template:
+  - sensor:
+      - name: Shed inverter corrected power
+        unique_id: shed_inverter_corrected_power
+        unit_of_measurement: W
+        device_class: power
+        state_class: measurement
+        availability: "{{ is_number(states('sensor.tasmota_smartplug_12_energy_power')) }}"
+        state: "{{ [0, states('sensor.tasmota_smartplug_12_energy_power') | float - 2] | max }}"
+sensor:
+  - platform: integration
+    source: sensor.shed_inverter_corrected_power
+    name: Shed inverter corrected delivery
+    unique_id: shed_inverter_corrected_delivery
+    unit_prefix: k
+    unit_time: h
+    method: left
+    round: 6
+    max_sub_interval:
+      minutes: 1

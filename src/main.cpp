@@ -5,13 +5,14 @@
 #include <Ticker.h>
 #include <WiFi.h>
 #include <time.h>
-#include <new>
+#include <cmath>
 
 #include <AsyncTCP.h>
 #include <ESPAsyncWebServer.h>
 // AsyncWebServer instance is provided by ConfigManager library (extern AsyncWebServer server)
 
 #include "ConfigManager.h"
+#include "runtime/CompactLiveMetadata.h"
 
 #include "core/CoreSettings.h"
 #include "core/CoreWiFiServices.h"
@@ -21,10 +22,29 @@
 
 #define CM_MQTT_NO_DEFAULT_HOOKS
 #include "mqtt/MQTTManager.h"
+#include "sbt/SbtService.h"
+#include "control/PreparedControl.h"
+#include "control/CurrentControl.h"
+#include "control/OutputCorrection.h"
+#include "control/TelemetryAge.h"
+#include "control/FuturePrices.h"
+#include "control/PvForecast.h"
+#include "control/ChargePlan.h"
 
 #include "RS485Module/RS485Module.h"
 #include "helpers/HelperModule.h"
-#include "Smoother/Smoother.h"
+
+// Card visibility is independent from sensor acquisition and MQTT.
+#ifndef SIL_DEACTIVATE_BME280_CARD
+#define SIL_DEACTIVATE_BME280_CARD 1
+#endif
+// Installed MPPT 150/35 hardware ceiling; owner confirmed no additional current limit.
+#ifndef SIL_QUALIFIED_MPPT_MAX_CHARGE_A
+#define SIL_QUALIFIED_MPPT_MAX_CHARGE_A 35.0f
+#endif
+static_assert(SIL_QUALIFIED_MPPT_MAX_CHARGE_A >= 0, "MPPT charge limit cannot be negative");
+static constexpr int kI2cSda = 21, kI2cScl = 22;
+static constexpr uint32_t kI2cHz = 400000;
 
 // Feature flags
 #ifndef FEATURE_BME280_ENABLED
@@ -95,7 +115,7 @@
 #endif
 
 #ifndef VERSION
-#define VERSION "4.3.2"
+#define VERSION "5.4.0"
 #endif
 
 enum class NegativePriceSettingPreference : uint8_t
@@ -127,6 +147,7 @@ static void attachSystemSettings();
 static void syncStoredCodeVersion();
 static void registerProjectSettings();
 static void configureLimiterSettingsBehavior();
+static void refreshPreparedSettings();
 static void normalizeNegativePriceSettings(NegativePriceSettingPreference preferred, bool persist, bool logCorrection);
 static void registerIOBindings();
 static bool ensureNvsReady();
@@ -148,7 +169,9 @@ void testRS232();
 static void resetPidController();
 static int computePidStabilizedTarget(int baseTarget, int configuredMin, int configuredMax);
 static void processRS485Tick();
-static bool ensurePowerSmoother(int initialValue);
+#if CM_ENABLE_LOGGING && CM_ENABLE_VERBOSE_LOGGING
+static void verboseLogging();
+#endif
 
 // Display helpers
 #if FEATURE_OLED_DISPLAY_ENABLED
@@ -187,10 +210,10 @@ struct LimiterSettings
 {
     Config<bool> enableController{ConfigOptions<bool>{.key = "LimiterEnable", .name = "Limiter Enabled", .category = "Limiter", .defaultValue = true, .sortOrder = 1}};
     Config<int> maxOutput{ConfigOptions<int>{.key = "LimiterMaxW", .name = "Max Output (W)", .category = "Limiter", .defaultValue = 1100, .sortOrder = 2}};
-    Config<int> minOutput{ConfigOptions<int>{.key = "LimiterMinW", .name = "Min Output (W)", .category = "Limiter", .defaultValue = 500, .sortOrder = 3}};
-    Config<int> inputCorrectionOffset{ConfigOptions<int>{.key = "LimiterCorrW", .name = "Input Correction Offset (W)", .category = "Limiter", .defaultValue = 50, .sortOrder = 4}};
-    Config<int> smoothingSize{ConfigOptions<int>{.key = "LimiterSmooth", .name = "Smoothing Level", .category = "Limiter", .defaultValue = 10, .sortOrder = 5}};
-    Config<bool> usePidSmoothing{ConfigOptions<bool>{.key = "LimiterUsePID", .name = "Use PID Smoothing", .category = "Limiter", .defaultValue = false, .sortOrder = 6}};
+    Config<int> idleOutput{ConfigOptions<int>{.key = "LimiterIdleW", .name = "Idle Output (W)", .category = "Limiter", .defaultValue = 500, .sortOrder = 3}};
+    Config<int> sbtTimeout{ConfigOptions<int>{.key = "sbtAgeS", .name = "SBT Data Timeout (s)", .category = "Limiter", .defaultValue = 180, .sortOrder = 19}};
+    Config<int> minOutput{ConfigOptions<int>{.key = "LimiterMinW", .name = "Min Output (W)", .category = "Limiter", .defaultValue = 500, .sortOrder = 4}};
+    Config<int> inputCorrectionOffset{ConfigOptions<int>{.key = "LimiterCorrW", .name = "Output Correction Offset (W)", .category = "Limiter", .defaultValue = 50, .sortOrder = 5}};
     Config<float> pidKp{ConfigOptions<float>{.key = "LimiterPIDKp", .name = "PID Kp", .category = "Limiter", .defaultValue = 0.35f, .sortOrder = 7}};
     Config<float> pidKi{ConfigOptions<float>{.key = "LimiterPIDKi", .name = "PID Ki", .category = "Limiter", .defaultValue = 0.05f, .sortOrder = 8}};
     Config<float> pidKd{ConfigOptions<float>{.key = "LimiterPIDKd", .name = "PID Kd", .category = "Limiter", .defaultValue = 0.02f, .sortOrder = 9}};
@@ -198,20 +221,40 @@ struct LimiterSettings
     Config<bool> setZeroOnNegativePrice{ConfigOptions<bool>{.key = "LimNegZero", .name = "Set 0 On Negative Price", .category = "Limiter", .defaultValue = false, .sortOrder = 11}};
     Config<float> RS232PublishPeriod{ConfigOptions<float>{.key = "LimiterRS485P", .name = "RS485 Publish Period (s)", .category = "Limiter", .defaultValue = 2.0f, .sortOrder = 12}};
 
+    Config<float> reserveOffSoc{ConfigOptions<float>{.key = "resOff", .name = "Reserve OFF SOC (%)", .category = "Limiter", .defaultValue = 2.0f, .sortOrder = 20}};
+    Config<float> reserveOnSoc{ConfigOptions<float>{.key = "resOn", .name = "Reserve ON SOC (%)", .category = "Limiter", .defaultValue = 10.0f, .sortOrder = 21}};
+    Config<bool> mosManualMode{ConfigOptions<bool>{.key = "mosMan", .name = "MOS Hand Mode", .category = "Limiter", .defaultValue = true, .sortOrder = 23}};
+    Config<bool> inverterEnabled{ConfigOptions<bool>{.key = "invEn", .name = "Inverter Enabled", .category = "Limiter", .defaultValue = true, .sortOrder = 24}};
+    Config<float> priceComfort{ConfigOptions<float>{.key = "priceC", .name = "Price Comfort (EUR/kWh)", .category = "Limiter", .defaultValue = 0.25f, .sortOrder = 25}};
+    Config<float> priceDeadband{ConfigOptions<float>{.key = "priceDb", .name = "Price Deadband (EUR/kWh)", .category = "Limiter", .defaultValue = 0.06f, .sortOrder = 26}};
+
+    Config<String> priceScheduleInputTopic{ConfigOptions<String>{.key = "fcTopic", .name = "Price Schedule Topic", .category = "MQTT-Topics", .defaultValue = String("homeassistant/sensor/electricity_price/schedule"), .sortOrder = 54}};
+    Config<String> pvScheduleInputTopic{ConfigOptions<String>{.key = "pvTopic", .name = "PV Forecast Topic", .category = "MQTT-Topics", .defaultValue = String("homeassistant/sensor/solar_forecast/shed/schedule"), .sortOrder = 55}};
+    Config<float> forecastPriceFactor{ConfigOptions<float>{.key = "fcPriceF", .name = "Forecast Price Factor", .category = "Limiter", .defaultValue = 0.93137255f, .sortOrder = 27}};
+
     void attachTo(ConfigManagerClass &cfg)
     {
+        cfg.addSetting(&forecastPriceFactor);
+        cfg.addSetting(&priceScheduleInputTopic);
+        cfg.addSetting(&pvScheduleInputTopic);
         cfg.addSetting(&enableController);
         cfg.addSetting(&maxOutput);
+        cfg.addSetting(&idleOutput);
+        cfg.addSetting(&sbtTimeout);
         cfg.addSetting(&minOutput);
         cfg.addSetting(&inputCorrectionOffset);
-        cfg.addSetting(&smoothingSize);
-        cfg.addSetting(&usePidSmoothing);
         cfg.addSetting(&pidKp);
         cfg.addSetting(&pidKi);
         cfg.addSetting(&pidKd);
         cfg.addSetting(&forceMinOnNegativePrice);
         cfg.addSetting(&setZeroOnNegativePrice);
         cfg.addSetting(&RS232PublishPeriod);
+        cfg.addSetting(&reserveOffSoc);
+        cfg.addSetting(&reserveOnSoc);
+        cfg.addSetting(&mosManualMode);
+        cfg.addSetting(&inverterEnabled);
+        cfg.addSetting(&priceComfort);
+        cfg.addSetting(&priceDeadband);
     }
 };
 
@@ -235,21 +278,15 @@ struct TempSettings
 };
 #endif
 
-#if FEATURE_ANY_I2C
+#if FEATURE_OLED_DISPLAY_ENABLED
 struct I2CSettings
 {
-    Config<int> sdaPin{ConfigOptions<int>{.key = "I2CSDA", .name = "SDA Pin", .category = "I2C", .defaultValue = 21, .sortOrder = 1}};
-    Config<int> sclPin{ConfigOptions<int>{.key = "I2CSCL", .name = "SCL Pin", .category = "I2C", .defaultValue = 22, .sortOrder = 2}};
-    Config<int> busFreq{ConfigOptions<int>{.key = "I2CFreq", .name = "Bus Frequency (Hz)", .category = "I2C", .defaultValue = 400000, .sortOrder = 3}};
 #if FEATURE_OLED_DISPLAY_ENABLED
     Config<int> displayAddr{ConfigOptions<int>{.key = "I2CDisp", .name = "Display Address", .category = "I2C", .defaultValue = 0x3C, .sortOrder = 4}};
 #endif
 
     void attachTo(ConfigManagerClass &cfg)
     {
-        cfg.addSetting(&sdaPin);
-        cfg.addSetting(&sclPin);
-        cfg.addSetting(&busFreq);
 #if FEATURE_OLED_DISPLAY_ENABLED
         cfg.addSetting(&displayAddr);
 #endif
@@ -318,7 +355,7 @@ LimiterSettings limiterSettings;
 #if FEATURE_BME280_ENABLED
 TempSettings tempSettings;
 #endif
-#if FEATURE_ANY_I2C
+#if FEATURE_OLED_DISPLAY_ENABLED
 I2CSettings i2cSettings;
 #endif
 #if FEATURE_FAN_ENABLED
@@ -352,7 +389,6 @@ static constexpr int OLED_RESET_PIN = 4; // keep legacy wiring default
 Adafruit_SSD1306 display(OLED_WIDTH, OLED_HEIGHT, &Wire, OLED_RESET_PIN);
 #endif
 
-Smoother *powerSmoother = nullptr; // there is a memory allocation in setup, better use a pointer here
 
 // MQTT and runtime state
 int currentGridImportW = 0;        // signed grid power: positive import, negative export
@@ -372,6 +408,10 @@ static String mqttBaseTopic;
 static String topicPublishSetValueW;
 static String topicPublishCalculatedValueW;
 static String topicPublishGridImportW;
+static String topicPublishPlanningConfig;
+static String topicPublishPlanningState;
+static String topicPublishDischargeBudget;
+static String topicPublishChargePlan;
 #if FEATURE_BME280_ENABLED
 static String topicPublishTempC;
 static String topicPublishHumidityPct;
@@ -425,6 +465,7 @@ static cm::MQTTManager &mqtt = cm::MQTTManager::instance();
 static cm::MQTTManager::Settings &mqttSettings = mqtt.settings();
 static cm::IOManager ioManager;
 static cm::AlarmManager alarmManager;
+static sbt::Service sbtInputs;
 
 #if FEATURE_FAN_ENABLED
 static constexpr char IO_FAN_ID[] = "fan_relay";
@@ -445,11 +486,44 @@ struct PidControllerState
 };
 
 static PidControllerState pidController;
-static bool lastLimiterModeWasPid = false;
-static int lastSmootherRequestedSize = -1;
+static control::PreparedSettings preparedSettings;
+static control::RuntimeState preparedState;
+static bool preparedSettingsLoaded = false;
+static control::CurrentControl currentControl;
+static control::CurrentDecision currentDecision;
+static control::TelemetryAge telemetryAge;
+static control::FuturePrices futurePrices;
+static control::PvForecast pvForecast;
+static String pvScheduleTopic;
+static bool pvScheduleSubscribed = false;
+static control::FuturePlan futurePlan;
+static control::DischargeBudgetPublication dischargeBudget;
+static control::ChargePlanPublication chargePlan;
+static String priceScheduleTopic;
+static bool priceScheduleSubscribed = false;
+static float forecastPriceFactor = 0.93f;
+static bool currentDecisionAvailable = false;
+static int lastIssuedCommandW = 0;
+static int lastMockCommandW = 0;
+// Regulator state stays in the pre-correction domain; wire/log values stay corrected.
+static int lastIssuedBaseCommandW = 0;
+static int lastMockBaseCommandW = 0;
+static bool lastIssuedCommandKnown = false;
 static int lastNegativePriceOverrideTarget = -1;
 static NegativePriceSettingPreference lastNegativePriceSettingPreference = NegativePriceSettingPreference::None;
 static bool normalizingNegativePriceSettings = false;
+
+#if CM_ENABLE_LOGGING && CM_ENABLE_VERBOSE_LOGGING
+struct ControlLogSnapshot
+{
+    control::CurrentInputs inputs;
+    float gridW = 0, inverterW = 0;
+    bool gridFresh = false, inverterFresh = false;
+    int minW = 0, maxW = 0, offsetW = 0;
+    uint32_t atMs = 0;
+};
+static ControlLogSnapshot controlLog;
+#endif
 
 #pragma endregion configurationn variables
 
@@ -472,7 +546,33 @@ void setup()
     ConfigManager.setVersion(VERSION);
     ConfigManager.setSettingsPassword(SETTINGS_PASSWORD);
     ConfigManager.setCustomCss(GLOBAL_THEME_OVERRIDE, sizeof(GLOBAL_THEME_OVERRIDE) - 1);
-    ConfigManager.enableBuiltinSystemProvider();
+    // Preserve system consumers without registering the former System live card.
+    ConfigManager.getRuntime().addRuntimeProvider("system", [](JsonObject &data) {
+        const uint32_t total = ESP.getHeapSize(), free = ESP.getFreeHeap(), largest = ESP.getMaxAllocHeap();
+        const auto heap = sil::heapSnapshot(total, free, largest);
+        data["freeHeap"] = heap.free; data["usedHeap"] = heap.used;
+        data["totalHeap"] = total; data["heapFragmentation"] = heap.fragmentation;
+        data["minFreeHeap"] = ESP.getMinFreeHeap(); data["largestBlock"] = largest;
+        data["resetReason"] = static_cast<int>(esp_reset_reason());
+        const bool connected = WiFi.status() == WL_CONNECTED;
+        data["wifiConnected"] = connected;
+        data["rssi"] = connected ? WiFi.RSSI() : 0;
+        data["localIP"] = connected ? WiFi.localIP().toString() : String("0.0.0.0");
+        data["gateway"] = connected ? WiFi.gatewayIP().toString() : String("0.0.0.0");
+        data["routerMAC"] = connected ? WiFi.BSSIDstr() : String("00:00:00:00:00:00");
+        data["channel"] = connected ? WiFi.channel() : 0;
+        data["cpuFreqMHz"] = ESP.getCpuFreqMHz(); data["flashSize"] = ESP.getFlashChipSize();
+        data["otaActive"] = ConfigManager.getOTAManager().isActive();
+        data["otaHasPassword"] = ConfigManager.getOTAManager().hasPassword();
+        data["mqttEnabled"] = mqttSettings.enableMQTT.get(); data["mqttConnected"] = mqtt.isConnected();
+        data["mqttReconnects"] = mqtt.getReconnectCount();
+        const time_t now = time(nullptr);
+        if (now > 1600000000) {
+            tm local; localtime_r(&now, &local); char text[24];
+            strftime(text, sizeof(text), "%Y-%m-%d %H:%M:%S", &local);
+            data["dateTime"] = text;
+        }
+    }, 0);
 
     coreSettings.attachWiFi(ConfigManager);
     attachSystemSettings();
@@ -485,15 +585,11 @@ void setup()
 
     ConfigManager.checkSettingsForErrors();
     ConfigManager.loadAll();
+    refreshPreparedSettings();
     normalizeNegativePriceSettings(NegativePriceSettingPreference::None, true, true);
     syncStoredCodeVersion();
     delay(100);
     setupNetworkDefaults();
-#if defined(SIL_BENCH_TEST) && SIL_BENCH_TEST
-    // Keep bench firmware from driving the production inverter.
-    mqttSettings.enableMQTT.set(false);
-    rs485settings.enableRS485.set(false);
-#endif
     ioManager.begin();
 
     ConfigManager.startWebServer();
@@ -512,11 +608,6 @@ void setup()
 #endif
 
     cm::helpers::pulseWait(LED_BUILTIN, cm::helpers::PulseOutput::ActiveLevel::ActiveHigh, 3, 100);
-
-    if (!limiterSettings.usePidSmoothing.get())
-    {
-        ensurePowerSmoother(currentGridImportW);
-    }
 
     RS485begin();
 #if FEATURE_BME280_ENABLED
@@ -567,6 +658,7 @@ void loop()
 {
     ConfigManager.getWiFiManager().update();
     mqtt.loop();
+    sbtInputs.loop();
     publishMqttNow();
     handleRS485Scheduler();
 #if FEATURE_BME280_ENABLED
@@ -613,7 +705,7 @@ void setupGUI()
     ConfigManager.addSettingsPage("Temp", 70);
     ConfigManager.addSettingsGroup("Temp", "Temp", "Temp Settings", 70);
 #endif
-#if FEATURE_ANY_I2C
+#if FEATURE_OLED_DISPLAY_ENABLED
     ConfigManager.addSettingsPage("I2C", 80);
     ConfigManager.addSettingsGroup("I2C", "I2C", "I2C Settings", 80);
 #endif
@@ -635,92 +727,121 @@ void setupGUI()
     ConfigManager.addSettingsGroup("I/O", "I/O", "I/O Settings", 130);
 
     // region sensor fields BME280
-#if FEATURE_BME280_ENABLED
-    auto sensors = ConfigManager.liveGroup("sensors")
-                       .page("Limiter", 10)
-                       .card("Sensors", 10)
-                       .group("Sensor Readings", 10);
+#if FEATURE_BME280_ENABLED && !SIL_DEACTIVATE_BME280_CARD
+    ConfigManager.addLivePage("Temperature Sensor", 10);
+    ConfigManager.addLiveCard("Temperature Sensor", "Sensors", 10);
+    ConfigManager.addLiveGroup("Temperature Sensor", "Sensors", "Sensor Readings", 10);
+    sil::CompactLiveGroup sensors(ConfigManager.getRuntime(), "sensors", "Temperature Sensor", "Sensors", "Sensor Readings");
 
-    sensors.value("temp", []()
-                  { return roundf(temperature * 10.0f) / 10.0f; })
-        .label("Temperature")
-        .unit("°C")
-        .precision(1)
-        .order(2);
+    sensors.value<RuntimeFloatMeta>("temp", []()
+                  { return roundf(temperature * 10.0f) / 10.0f; },
+        "Temperature", "\xC2\xB0" "C", 1, 2);
 
-    sensors.value("hum", []()
-                  { return roundf(Humidity * 10.0f) / 10.0f; })
-        .label("Humidity")
-        .unit("%")
-        .precision(1)
-        .order(11);
+    sensors.value<RuntimeFloatMeta>("hum", []()
+                  { return roundf(Humidity * 10.0f) / 10.0f; },
+        "Humidity", "%", 1, 11);
 
-    sensors.value("dew", []()
-                  { return roundf(Dewpoint * 10.0f) / 10.0f; })
-        .label("Dewpoint")
-        .unit("°C")
-        .precision(1)
-        .order(12);
+    sensors.value<RuntimeFloatMeta>("dew", []()
+                  { return roundf(Dewpoint * 10.0f) / 10.0f; },
+        "Dewpoint", "\xC2\xB0" "C", 1, 12);
 
-    sensors.value("pressure", []()
-                  { return roundf(Pressure * 10.0f) / 10.0f; })
-        .label("Pressure")
-        .unit("hPa")
-        .precision(1)
-        .order(13);
+    sensors.value<RuntimeFloatMeta>("pressure", []()
+                  { return roundf(Pressure * 10.0f) / 10.0f; },
+        "Pressure", "hPa", 1, 13);
+#endif
+#if FEATURE_BME280_ENABLED && !SIL_DEACTIVATE_BME280_CARD
+    if(!sensors.valid()) lmg.logTag(LL::Error, "GUI", "Sensor fields unavailable");
 #endif
     // endregion sensor fields
 
     // region Limiter
-    auto limiter = ConfigManager.liveGroup("Limiter")
-                       .page("Limiter", 20)
-                       .card("Limiter", 20)
-                       .group("Limiter Status", 20);
+    ConfigManager.addLivePage("Limiter", 20);
+    ConfigManager.addLiveCard("Limiter", "Limiter", 20);
+    ConfigManager.addLiveGroup("Limiter", "Limiter", "Limiter Status", 20);
+    sil::CompactLiveGroup limiter(ConfigManager.getRuntime(), "Limiter", "Limiter", "Limiter", "Limiter Status");
 
-    limiter.value("enabled", []()
-                  { return limiterSettings.enableController.get(); })
-        .label("Limiter Enabled")
-        .order(1);
+    if (!sil::registerHeapMetadata(ConfigManager.getRuntime()))
+        lmg.logTag(LL::Error, "GUI", "Heap fields unavailable");
+    ConfigManager.getRuntime().addRuntimeProvider("Limiter", [](JsonObject &data) {
+        const uint32_t total = ESP.getHeapSize(), free = ESP.getFreeHeap(), largest = ESP.getMaxAllocHeap();
+        const auto heap = sil::heapSnapshot(total, free, largest);
+        data["usedHeap"] = heap.used; data["freeHeap"] = heap.free;
+        data["heapFragmentation"] = heap.fragmentation;
+    }, 40);
 
-    limiter.value("gridIn", []()
-                  { return currentGridImportW; })
-        .label("Grid Import")
-        .unit("W")
-        .precision(0)
-        .order(2);
+    ConfigManager.getRuntime().addRuntimeProvider("planning", [](JsonObject &data) {
+        data["pv_revision"] = pvForecast.revision();
+        data["pv_slots"] = pvForecast.slots();
+        data["pv_valid"] = pvForecast.valid(uint32_t(time(nullptr)));
+        data["pv_calibrated"] = pvForecast.calibrated();
+        data["pv_charge_limit_qualified"] = SIL_QUALIFIED_MPPT_MAX_CHARGE_A > 0;
+        data["pv_offered_wh"] = futurePlan.offeredPvWh;
+        data["pv_usable_wh"] = futurePlan.usablePvWh;
+    }, 50);
 
-    limiter.value("invSet", []()
-                  { return inverterSetValue; })
-        .label("Inverter Setpoint")
-        .unit("W")
-        .precision(0)
-        .order(3);
+    limiter.value<RuntimeBoolMeta>("enabled", []()
+                  { return limiterSettings.enableController.get(); },
+        "Limiter Enabled", "", 2, 1);
 
-    limiter.value("invCalc", []()
-                  { return inverterCalculatedValue; })
-        .label("Calculated Setpoint")
-        .unit("W")
-        .precision(0)
-        .order(4);
+    limiter.value<RuntimeFloatMeta>("gridIn", []()
+                  { return currentGridImportW; },
+        "Grid Import", "W", 0, 2);
 
-    limiter.value("solar", []()
-                  { return solarPowerW; })
-        .label("Solar power")
-        .unit("W")
-        .precision(0)
-        .order(5);
+    limiter.value<RuntimeIntMeta>("invSet", []()
+                  { return inverterSetValue; },
+        kRs485MockTransport ? "Mock Inverter Demand (no TX)" : "Requested Inverter Output (not ACK)", "W", 0, 3);
 
-    limiter.value("negPrice", []()
-                  { return negativePriceActive; })
-        .label("Negative Price")
-        .order(6);
+    limiter.value<RuntimeIntMeta>("invCalc", []()
+                  { return inverterCalculatedValue; },
+        "Calculated Setpoint", "W", 0, 4);
 
-    limiter.value("price", []()
-                  { return electricityPriceEurKwh; })
-        .label("Electricity Price")
-        .unit("EUR/kWh")
-        .precision(3)
-        .order(7);
+    limiter.value<RuntimeFloatMeta>("solar", []()
+                  {
+        float watts = 0;
+        return telemetryAge.read(control::TelemetryAge::Inverter, millis(), control::kGridAcStaleMs, watts)
+            ? double(watts) : NAN;
+    },
+        "Measured Inverter AC Output", "W", 0, 5);
+
+    limiter.value<RuntimeBoolMeta>("negPrice", []()
+                  { return negativePriceActive; },
+        "Negative Price", "", 2, 6);
+
+    limiter.value<RuntimeFloatMeta>("price", []()
+                  { return electricityPriceEurKwh; },
+        "Electricity Price", "EUR/kWh", 3, 7);
+    limiter.value<RuntimeFloatMeta>("pvPower", []()
+                  { return sbtInputs.liveMeasurement("victron/solar_power_w", millis()); },
+        "PV Solar Power (Victron)", "W", 0, 8);
+
+    limiter.value<RuntimeFloatMeta>("batteryPower", []()
+                  { return sbtInputs.liveMeasurement("bms/power_w", millis()); },
+        "Battery Power (+charge / -discharge)", "W", 0, 9);
+
+    limiter.value<RuntimeTextMeta>("priceBand", []()
+                  { return String(currentDecisionAvailable ? currentDecision.priceBand : "unknown"); },
+        "Current Price Band", "", 2, 10);
+
+    limiter.value<RuntimeBoolMeta>("forecastValid", []()
+                  { return currentDecisionAvailable && futurePlan.valid; },
+        "Future Price Plan Valid", "", 2, 11);
+
+    limiter.value<RuntimeTextMeta>("forecastStatus", []()
+                  { return String(currentDecisionAvailable ? futurePlan.reason : "startup"); },
+        "Future Price Plan Status", "", 2, 12);
+
+    limiter.value<RuntimeIntMeta>("forecastSlots", []()
+                  { return futurePrices.slots(); },
+        "Received Price Slots (15 min)", "", 0, 13);
+
+    limiter.value<RuntimeTextMeta>("controlReason", []()
+                  { return String(currentDecisionAvailable ? currentDecision.reason : "startup"); },
+        "Output Decision Reason", "", 2, 14);
+
+    limiter.value<RuntimeBoolMeta>("mockTransport", []()
+                  { return kRs485MockTransport; },
+        "Mock Transport (no hardware TX)", "", 2, 15);
+    if(!limiter.valid()) lmg.logTag(LL::Error, "GUI", "Runtime fields unavailable");
     // endregion Limiter
 
     // region relay outputs
@@ -947,13 +1068,23 @@ static const char *resetReasonToText(esp_reset_reason_t reason)
 
 static void setupMqtt()
 {
-    // Tasmota SENSOR payloads can exceed PubSubClient default packet size (~256B).
-    // Increase buffer to avoid silently dropped inbound messages.
-    mqtt.setBufferSize(1024);
+    // Full diagnostic schedule plus topic/header; CM checks allocation and publish errors.
+    mqtt.setBufferSize(control::DischargeBudget::kMqttPacketBytes);
 
     mqtt.attach(ConfigManager);
-    mqtt.addMQTTRuntimeProviderToGUI(ConfigManager, "mqtt");
+    // Keep MQTT settings/diagnostic values without the helper's implicit System card.
+    ConfigManager.getRuntime().addRuntimeProvider("mqtt", [](JsonObject &data) {
+        data["enabled"] = mqttSettings.enableMQTT.get();
+        data["wifi"] = WiFi.isConnected(); data["connected"] = mqtt.isConnected();
+        data["state"] = static_cast<int>(mqtt.getState());
+        data["reconnects"] = mqtt.getReconnectCount(); data["retry"] = mqtt.getCurrentRetry();
+        data["uptimeMs"] = mqtt.getUptime(); data["lastTopic"] = mqtt.getLastTopic();
+        data["lastPayload"] = mqtt.getLastPayload(); data["lastMsgAgeMs"] = mqtt.getLastMessageAgeMs();
+        data["grid_import_w"] = currentGridImportW; data["solar_power_w"] = solarPowerW;
+        data["negative_price"] = negativePriceActive; data["electricity_price"] = electricityPriceEurKwh;
+    }, 0);
     mqtt.addMqttSettingsToSettingsGroup(ConfigManager, "MQTT", "MQTT Settings", 40);
+    sbtInputs.attach(ConfigManager, mqtt);
 
     // Receive: signed grid power W (positive import, negative export)
     mqtt.addTopicReceiveInt(
@@ -993,6 +1124,25 @@ static void setupMqtt()
     mqtt.addMqttTopicToSettingsGroup(ConfigManager, "negative_price", "MQTT-Topics", "MQTT-Topics", "MQTT-Received", 52);
     mqtt.addMqttTopicToSettingsGroup(ConfigManager, "electricity_price", "MQTT-Topics", "MQTT-Topics", "MQTT-Received", 53);
 
+    telemetryAge.attach(ConfigManager);
+    mqtt.onMessage([](const char *topic, const byte *payload, unsigned int length)
+                   {
+        if (topic && priceScheduleTopic == topic) {
+            const char *result = futurePrices.receive(payload, length, uint32_t(time(nullptr)), millis());
+            if (strcmp(result, "pending") && strcmp(result, "duplicate"))
+                lmg.logTag(!strcmp(result, "accepted") || !strcmp(result, "withdrawn") ? LL::Info : LL::Warn,
+                    "FORECAST", "rx=%s rev=%lu slots=%u", result,
+                    static_cast<unsigned long>(futurePrices.revision()), futurePrices.slots());
+        } else if (topic && pvScheduleTopic == topic) {
+            const char *result = pvForecast.receive(payload, length, uint32_t(time(nullptr)), millis());
+            if (strcmp(result, "pending") && strcmp(result, "duplicate"))
+                lmg.logTag(!strcmp(result, "accepted") ? LL::Info : LL::Warn,
+                    "PV", "rx=%s rev=%lu slots=%u", result,
+                    static_cast<unsigned long>(pvForecast.revision()), pvForecast.slots());
+        } else telemetryAge.receive(topic, payload, length, millis());
+    });
+    mqtt.onDisconnected([]() { telemetryAge.reset(); priceScheduleSubscribed = false; pvScheduleSubscribed = false; });
+
     // Optional: show receive topics in runtime UI
     // mqtt.addMqttTopicToLiveGroup(ConfigManager, "grid_import_w", "mqtt", "MQTT-Received", "MQTT-Received", 1);
 
@@ -1010,7 +1160,7 @@ static void registerProjectSettings()
 #if FEATURE_BME280_ENABLED
     tempSettings.attachTo(ConfigManager);
 #endif
-#if FEATURE_ANY_I2C
+#if FEATURE_OLED_DISPLAY_ENABLED
     i2cSettings.attachTo(ConfigManager);
 #endif
 #if FEATURE_FAN_ENABLED
@@ -1026,10 +1176,46 @@ static void registerProjectSettings()
     rs485settings.attachTo(ConfigManager);
 }
 
+// Called once after load and on setting changes, never from the control cycle.
+// Invalid combinations remain visible as entered; future modules must require valid.
+static void refreshPreparedSettings()
+{
+    forecastPriceFactor = limiterSettings.forecastPriceFactor.get();
+    preparedSettings.idleOutputW = std::max(0, limiterSettings.idleOutput.get());
+    const int timeout = limiterSettings.sbtTimeout.get();
+    if (timeout < 1 || timeout > 9999) limiterSettings.sbtTimeout.set(180);
+    sbtInputs.configureTimeout(unsigned(limiterSettings.sbtTimeout.get()));
+    preparedSettings.reserveOffSocPercent = limiterSettings.reserveOffSoc.get();
+    preparedSettings.reserveOnSocPercent = limiterSettings.reserveOnSoc.get();
+    preparedSettings.mosManualMode = limiterSettings.mosManualMode.get();
+    preparedSettings.inverterEnabled = limiterSettings.inverterEnabled.get();
+    preparedSettings.priceComfortEurPerKwh = limiterSettings.priceComfort.get();
+    preparedSettings.priceDeadbandEurPerKwh = limiterSettings.priceDeadband.get();
+    preparedSettings.priceHysteresisEurPerKwh = preparedSettings.priceDeadbandEurPerKwh / 3.0f;
+    preparedSettings.valid = std::isfinite(preparedSettings.reserveOffSocPercent) &&
+        std::isfinite(preparedSettings.reserveOnSocPercent) &&
+        preparedSettings.reserveOffSocPercent >= 0.0f &&
+        preparedSettings.reserveOffSocPercent < preparedSettings.reserveOnSocPercent &&
+        preparedSettings.reserveOnSocPercent <= 100.0f &&
+        std::isfinite(preparedSettings.priceComfortEurPerKwh) &&
+        std::isfinite(preparedSettings.priceDeadbandEurPerKwh) &&
+        preparedSettings.priceDeadbandEurPerKwh >= 0.0f;
+    preparedState.recalculationDirty = true;
+    preparedSettingsLoaded = true;
+}
+
 static void configureLimiterSettingsBehavior()
 {
-    limiterSettings.smoothingSize.showIfFunc = []()
-    { return !limiterSettings.usePidSmoothing.get(); };
+    // Preparation only: callbacks cache settings; no planner or actuator is enabled.
+    limiterSettings.idleOutput.setCallback([](int) { refreshPreparedSettings(); });
+    limiterSettings.sbtTimeout.setCallback([](int) { refreshPreparedSettings(); });
+    limiterSettings.reserveOffSoc.setCallback([](float) { refreshPreparedSettings(); });
+    limiterSettings.reserveOnSoc.setCallback([](float) { refreshPreparedSettings(); });
+    limiterSettings.mosManualMode.setCallback([](bool) { refreshPreparedSettings(); });
+    limiterSettings.inverterEnabled.setCallback([](bool) { refreshPreparedSettings(); });
+    limiterSettings.priceComfort.setCallback([](float) { refreshPreparedSettings(); });
+    limiterSettings.priceDeadband.setCallback([](float) { refreshPreparedSettings(); });
+    limiterSettings.forecastPriceFactor.setCallback([](float) { refreshPreparedSettings(); });
 
     limiterSettings.forceMinOnNegativePrice.setCallback([](bool enabled)
                                                         {
@@ -1186,10 +1372,19 @@ static void setupNetworkDefaults()
 #endif
     }
 
+#if defined(SIL_MOCK_TRANSPORT) && SIL_MOCK_TRANSPORT
+    // Mock images publish under a test identity even when production defaults exist.
+    mqttSettings.publishTopicBase.set("SILTest");
+    mqttSettings.clientId.set("SolarInverterLimiter-Test");
+#endif
+
+    // Test firmware keeps the existing device OTA credential.
+#if !defined(SIL_MOCK_TRANSPORT) || !SIL_MOCK_TRANSPORT
     if (systemSettings.otaPassword.get() != OTA_PASSWORD)
     {
         systemSettings.otaPassword.save(OTA_PASSWORD);
     }
+#endif
 
 #if defined(WIFI_FILTER_MAC_PRIORITY)
     if (wifiRoamingSettings.preferredApMac.get().isEmpty())
@@ -1333,6 +1528,12 @@ static void updateMqttTopics()
     topicPublishSetValueW = mqttBaseTopic + "/SetValue";
     topicPublishCalculatedValueW = mqttBaseTopic + "/CalculatedValue";
     topicPublishGridImportW = mqttBaseTopic + "/GetValue";
+    topicPublishPlanningConfig = mqttBaseTopic + "/Planning/Config";
+    topicPublishPlanningState = mqttBaseTopic + "/Planning/State";
+    topicPublishDischargeBudget = mqttBaseTopic + "/Planning/DischargeBudget";
+    topicPublishChargePlan = mqttBaseTopic + "/Planning/ChargePlan";
+    dischargeBudget.topicChanged();
+    chargePlan.topicChanged();
 #if FEATURE_BME280_ENABLED
     topicPublishTempC = mqttBaseTopic + "/Temperature";
     topicPublishHumidityPct = mqttBaseTopic + "/Humidity";
@@ -1340,18 +1541,146 @@ static void updateMqttTopics()
 #endif
 }
 
+struct JsonNumberText
+{
+    char text[16];
+    JsonNumberText(float value, int decimals)
+    {
+        if (std::isfinite(value))
+            snprintf(text, sizeof(text), "%.*f", decimals, value);
+        else
+            snprintf(text, sizeof(text), "null");
+    }
+};
+
+// Payloads are formatted on the stack so each publish needs one heap allocation.
+static String buildPlanningConfigPayload()
+{
+    char payload[224];
+    snprintf(payload, sizeof(payload),
+             "{\"v\":1,\"valid\":%s,\"resOff\":%s,\"resOn\":%s,\"mosMan\":%s,\"invEn\":%s,"
+             "\"priceC\":%s,\"priceDb\":%s,\"hystDb\":%s,\"fcPriceF\":%s}",
+             preparedSettings.valid ? "true" : "false",
+             JsonNumberText(preparedSettings.reserveOffSocPercent, 4).text,
+             JsonNumberText(preparedSettings.reserveOnSocPercent, 4).text,
+             preparedSettings.mosManualMode ? "true" : "false",
+             preparedSettings.inverterEnabled ? "true" : "false",
+             JsonNumberText(preparedSettings.priceComfortEurPerKwh, 4).text,
+             JsonNumberText(preparedSettings.priceDeadbandEurPerKwh, 4).text,
+             JsonNumberText(preparedSettings.priceHysteresisEurPerKwh, 4).text,
+             JsonNumberText(forecastPriceFactor, 6).text);
+    return String(payload);
+}
+
+static String buildPlanningStatePayload()
+{
+    if (!currentDecisionAvailable)
+        return "{\"v\":1,\"strategy\":null,\"reason\":null,\"limitW\":null,\"chargeW\":null,\"reserveOk\":null,\"allocWh\":null}";
+    char payload[512];
+    snprintf(payload, sizeof(payload),
+             "{\"v\":1,\"strategy\":\"%s\",\"reason\":\"%s\",\"limitW\":%d,\"chargeW\":%s,\"reserveOk\":%s%s,"
+             "\"forecast\":%s,\"forecastReason\":\"%s\",\"revision\":%lu,\"allocWh\":%s,\"availableWh\":%s,"
+             "\"shortfallWh\":%s,\"batteryMaxW\":%d,\"targetUTC\":%lu}",
+             currentDecision.strategy, currentDecision.reason, currentDecision.ceilingW,
+             currentDecision.chargeTargetValid ? JsonNumberText(currentDecision.chargeTargetW, 1).text : "null",
+             currentDecision.reserveKnown ? (currentDecision.reserveAllowed ? "true" : "false") : "null",
+             kRs485MockTransport ? ",\"mock\":true" : "",
+             futurePlan.valid ? "true" : "false", futurePlan.reason,
+             static_cast<unsigned long>(futurePrices.revision()),
+             futurePlan.valid ? JsonNumberText(futurePlan.reservedWh, 1).text : "null",
+             futurePlan.valid ? JsonNumberText(futurePlan.availableWh, 1).text : "null",
+             futurePlan.valid ? JsonNumberText(futurePlan.shortfallWh, 1).text : "null",
+             futurePlan.batteryCeilingW, static_cast<unsigned long>(futurePlan.targetAt));
+    return String(payload);
+}
+
 static void publishMqttNow()
 {
+    dischargeBudget.connection(mqtt.isConnected());
+    chargePlan.connection(mqtt.isConnected());
     if (!mqtt.isConnected())
     {
         return;
     }
 
-    updateMqttTopics();
+    // CM allocates a key String per lazy publish check; avoid doing that on every loop pass.
+    static uint32_t lastPublishCheckMs = 0;
+    static uint32_t lastTopicCheckMs = 0;
+    const uint32_t nowMs = millis();
+    if (uint32_t(nowMs - lastPublishCheckMs) < 250UL)
+    {
+        return;
+    }
+    lastPublishCheckMs = nowMs;
+    if (mqttBaseTopic.isEmpty() || uint32_t(nowMs - lastTopicCheckMs) >= 5000UL)
+    {
+        lastTopicCheckMs = nowMs;
+        updateMqttTopics();
+    }
 
+    static uint32_t nextScheduleSubscribeMs = 0;
+    const String &inputTopic = limiterSettings.priceScheduleInputTopic.get();
+    if (priceScheduleTopic != inputTopic) {
+        if (priceScheduleSubscribed && !mqtt.unsubscribe(priceScheduleTopic.c_str()))
+            lmg.logTag(LL::Warn, "FORECAST", "old topic unsubscribe failed");
+        priceScheduleSubscribed = false;
+        futurePrices.clear();
+        futurePlan = control::FuturePlan{};
+        priceScheduleTopic = inputTopic;
+        nextScheduleSubscribeMs = 0;
+        if (inputTopic.isEmpty() || inputTopic.indexOf('+') >= 0 || inputTopic.indexOf('#') >= 0)
+            lmg.logTag(LL::Warn, "FORECAST", "invalid input topic; subscription disabled");
+    }
+    const bool scheduleTopicValid = !priceScheduleTopic.isEmpty() &&
+        priceScheduleTopic.indexOf('+') < 0 && priceScheduleTopic.indexOf('#') < 0;
+    if (scheduleTopicValid && !priceScheduleSubscribed && (nextScheduleSubscribeMs == 0 ||
+        static_cast<int32_t>(nowMs - nextScheduleSubscribeMs) >= 0)) {
+        nextScheduleSubscribeMs = nowMs + 5000UL;
+        priceScheduleSubscribed = mqtt.subscribe(priceScheduleTopic.c_str(), 1);
+        lmg.logTag(priceScheduleSubscribed ? LL::Info : LL::Warn, "FORECAST", "subscribe=%d topic=%s",
+            priceScheduleSubscribed, priceScheduleTopic.c_str());
+    }
+    static uint32_t nextPvSubscribeMs = 0;
+    const String &pvTopic = limiterSettings.pvScheduleInputTopic.get();
+    if (pvScheduleTopic != pvTopic) {
+        if (pvScheduleSubscribed) mqtt.unsubscribe(pvScheduleTopic.c_str());
+        pvScheduleSubscribed = false;
+        pvForecast.clear();
+        pvScheduleTopic = pvTopic;
+        nextPvSubscribeMs = 0;
+    }
+    const bool pvTopicValid = !pvScheduleTopic.isEmpty() && pvScheduleTopic.length() <= 128 &&
+        pvScheduleTopic.indexOf('+') < 0 && pvScheduleTopic.indexOf('#') < 0;
+    if (pvTopicValid && !pvScheduleSubscribed && (!nextPvSubscribeMs ||
+        static_cast<int32_t>(nowMs - nextPvSubscribeMs) >= 0)) {
+        nextPvSubscribeMs = nowMs + 5000UL;
+        pvScheduleSubscribed = mqtt.subscribe(pvScheduleTopic.c_str(), 1);
+    }
+    if (dischargeBudget.publishDue(nowMs))
+    {
+        const size_t bytes = dischargeBudget.snapshot.serialize(dischargeBudget.payload, sizeof(dischargeBudget.payload));
+        const bool fits = control::DischargeBudget::packetFits(topicPublishDischargeBudget.length(), bytes);
+        // A failed buffer allocation, serialization or send affects only this diagnostic.
+        const bool sent = fits && mqtt.publishRaw(topicPublishDischargeBudget.c_str(), dischargeBudget.payload, false);
+        dischargeBudget.published(sent, nowMs);
+        if (!sent) lmg.logTag(LL::Warn, "FORECAST", "budget publish failed; retry 5s");
+    }
+    if (chargePlan.publishDue(nowMs))
+    {
+        const size_t bytes = chargePlan.snapshot.serialize(chargePlan.payload, sizeof(chargePlan.payload));
+        const bool fits = control::ChargePlan::packetFits(topicPublishChargePlan.length(), bytes);
+        const bool sent = fits && mqtt.publishRaw(topicPublishChargePlan.c_str(), chargePlan.payload, false);
+        chargePlan.published(sent, nowMs);
+        if (!sent) lmg.logTag(LL::Warn, "FORECAST", "charge plan publish failed; retry 5s");
+    }
     mqtt.publishExtraTopicLazy("setvalue_w", topicPublishSetValueW.c_str(), []() { return String(inverterSetValue); }, false);
     mqtt.publishExtraTopicLazy("calculated_w", topicPublishCalculatedValueW.c_str(), []() { return String(inverterCalculatedValue); }, false);
     mqtt.publishExtraTopicLazy("grid_import_w", topicPublishGridImportW.c_str(), []() { return String(currentGridImportW); }, false);
+    if (preparedSettingsLoaded)
+    {
+        mqtt.publishExtraTopicLazy("planning_config", topicPublishPlanningConfig.c_str(), []() { return buildPlanningConfigPayload(); }, false);
+        mqtt.publishExtraTopicLazy("planning_state", topicPublishPlanningState.c_str(), []() { return buildPlanningStatePayload(); }, false);
+    }
 #if FEATURE_BME280_ENABLED
     mqtt.publishExtraTopicLazy("temperature_c", topicPublishTempC.c_str(), []() { return String(temperature); }, false);
     mqtt.publishExtraTopicLazy("humidity_pct", topicPublishHumidityPct.c_str(), []() { return String(Humidity); }, false);
@@ -1450,61 +1779,6 @@ static bool timeReached(unsigned long now, unsigned long target)
     return target == 0 || static_cast<long>(now - target) >= 0;
 }
 
-static bool ensurePowerSmoother(int initialValue)
-{
-    if (powerSmoother != nullptr)
-    {
-        if (!powerSmoother->isReady())
-        {
-            delete powerSmoother;
-            powerSmoother = nullptr;
-        }
-        else
-        {
-            return true;
-        }
-    }
-
-    const int requestedSize = limiterSettings.smoothingSize.get();
-    powerSmoother = new (std::nothrow) Smoother(requestedSize);
-    if (powerSmoother == nullptr || !powerSmoother->isReady())
-    {
-        delete powerSmoother;
-        powerSmoother = nullptr;
-        lastSmootherRequestedSize = -1;
-        lmg.logTag(LL::Warn, "SMOOTH", "Buffer allocation failed");
-        return false;
-    }
-
-    lastSmootherRequestedSize = requestedSize;
-    powerSmoother->fillBufferOnStart(initialValue);
-    return true;
-}
-
-static bool updatePowerSmootherSizeIfNeeded(int initialValue)
-{
-    if (!ensurePowerSmoother(initialValue) || powerSmoother == nullptr)
-    {
-        return false;
-    }
-
-    const int requestedSize = limiterSettings.smoothingSize.get();
-    if (requestedSize == lastSmootherRequestedSize)
-    {
-        return powerSmoother->isReady();
-    }
-
-    const int previousSize = powerSmoother->size();
-    powerSmoother->setBufferSize(requestedSize);
-    lastSmootherRequestedSize = requestedSize;
-    if (powerSmoother->size() != previousSize)
-    {
-        powerSmoother->fillBufferOnStart(initialValue);
-    }
-
-    return powerSmoother->isReady();
-}
-
 static void handleRS485Scheduler()
 {
     if (!rs485TickDue)
@@ -1575,6 +1849,39 @@ void cb_RS485Listener()
     rs485TickDue = true;
 }
 
+static void issueInverterCommand(int watts, int maximumW, int outputOffsetW, int minimumW = 0)
+{
+    const int baseWatts = control::correctOutputCommand(watts, 0, maximumW);
+    watts = control::correctOutputCommand(baseWatts, outputOffsetW, maximumW);
+    minimumW = constrain(minimumW, 0, max(0, maximumW));
+    if (minimumW > 0 && (currentDecision.ceilingW < minimumW || watts < minimumW))
+    {
+        currentDecision.strategy = "minimum";
+        currentDecision.reason = "minimum_output";
+        currentDecision.reserveAllowed = true;
+        currentDecision.pvOnly = false;
+        currentDecision.chargeTargetValid = false;
+        currentDecision.chargeTargetW = 0;
+    }
+    watts = max(watts, minimumW);
+    inverterSetValue = watts;
+    if (kRs485MockTransport)
+    {
+        lastMockBaseCommandW = baseWatts;
+        lastMockCommandW = watts;
+        lmg.logTag(LL::Info, "MOCK", "[MOCKED!] demand=%dW reason=%s band=%s limit=%dW; no hardware TX",
+            watts, currentDecision.reason, currentDecision.priceBand, currentDecision.ceilingW);
+        return;
+    }
+    sendToRS485(static_cast<uint16_t>(watts));
+    if (rs485settings.enableRS485.get())
+    {
+        lastIssuedBaseCommandW = baseWatts;
+        lastIssuedCommandW = watts;
+        lastIssuedCommandKnown = true;
+    }
+}
+
 static void processRS485Tick()
 {
     int configuredMin = limiterSettings.minOutput.get();
@@ -1586,25 +1893,14 @@ static void processRS485Tick()
         configuredMax = tmp;
     }
 
-    const bool usePidSmoothing = limiterSettings.usePidSmoothing.get();
-    if (usePidSmoothing != lastLimiterModeWasPid)
-    {
-        resetPidController();
-        if (!usePidSmoothing && ensurePowerSmoother(currentGridImportW))
-        {
-            powerSmoother->fillBufferOnStart(currentGridImportW);
-        }
-        lastLimiterModeWasPid = usePidSmoothing;
-    }
-
-    if (!usePidSmoothing)
-    {
-        updatePowerSmootherSizeIfNeeded(currentGridImportW);
-    }
-
+    const uint32_t nowMs = millis();
+    float measuredGridW = 0, measuredInverterW = 0, measuredPrice = 0;
+    const bool gridFresh = telemetryAge.read(control::TelemetryAge::Grid, nowMs, control::kGridAcStaleMs, measuredGridW);
+    const bool inverterFresh = telemetryAge.read(control::TelemetryAge::Inverter, nowMs, control::kGridAcStaleMs, measuredInverterW);
+    const bool priceFresh = telemetryAge.read(control::TelemetryAge::Price, nowMs, 1200000UL, measuredPrice);
     const int offset = limiterSettings.inputCorrectionOffset.get();
-    const int currentInverterOutputW = solarPowerW;
-    const int signedGridPowerW = currentGridImportW;
+    const int currentInverterOutputW = static_cast<int>(measuredInverterW);
+    const int signedGridPowerW = static_cast<int>(measuredGridW);
     const int gridImportW = max(signedGridPowerW, 0);
     const int gridExportW = max(-signedGridPowerW, 0);
     const bool negativePriceForceMinEnabled = limiterSettings.forceMinOnNegativePrice.get();
@@ -1628,54 +1924,249 @@ static void processRS485Tick()
     int pidClampedBaseTarget = 0;
     int pidInput = 0;
 
-    if (negativePriceOverrideTarget >= 0)
+    const auto source = sbtInputs.controlSnapshot(nowMs);
+    control::CurrentInputs inputs;
+    inputs.sourcesWithinGrace = source.sourcesWithinGrace;
+    inputs.alarmRestricted = source.alarmRestricted;
+    inputs.bmsValid = source.bmsValid;
+    inputs.batteryDischargeIntentAvailable = source.batteryDischargeIntentAvailable;
+    inputs.batteryChargeAvailable = source.batteryChargeAvailable;
+    inputs.softwareMosLockOnly = source.softwareMosLockOnly;
+    inputs.chargerFault = source.chargerFault;
+    inputs.householdW = measuredInverterW + measuredGridW;
+    inputs.chargerValid = source.chargerValid;
+    inputs.metersValid = gridFresh && inverterFresh;
+    inputs.priceValid = priceFresh;
+    inputs.soc = source.soc;
+    inputs.batteryW = source.batteryW;
+    inputs.chargerW = source.chargerW;
+    inputs.price = measuredPrice;
+    inputs.bmsSequence = source.bmsSequence;
+    inputs.chargerSequence = source.chargerSequence;
+    const uint32_t utc = uint32_t(time(nullptr));
+    const bool capturePlans = dischargeBudget.captureDue(nowMs) || chargePlan.captureDue(nowMs);
+    control::DischargeBudget *budgetTrace = capturePlans ? &dischargeBudget.snapshot : nullptr;
+    futurePlan = futurePrices.plan(utc, nowMs, preparedSettings,
+        source.bmsValid, source.soc, source.batteryW, source.fullCapacityAh,
+        source.bmsSequence, priceFresh, measuredPrice,
+        currentControl.expensivePrice(preparedSettings, priceFresh, measuredPrice),
+        forecastPriceFactor, configuredMax, &pvForecast,
+        source.chargerValid && source.batteryChargeConfirmed ? source.chargerVoltageV * SIL_QUALIFIED_MPPT_MAX_CHARGE_A : 0.0f, budgetTrace);
+    if (budgetTrace) dischargeBudget.captured(nowMs);
+    else if (dischargeBudget.invalidationDue(futurePlan.valid))
     {
-        resetPidController();
-        inverterCalculatedValue = negativePriceOverrideTarget;
+        dischargeBudget.snapshot.reset(utc, futurePrices.revision(), pvForecast.revision());
+        dischargeBudget.snapshot.finish(false, futurePlan.reason);
+        dischargeBudget.captured(nowMs);
     }
-    else if (usePidSmoothing)
+    inputs.futureValid = futurePlan.valid;
+    inputs.futureBatteryCeilingW = futurePlan.batteryCeilingW;
+    inputs.futureChargeTargetW = futurePlan.chargeTargetW;
+    inputs.futureReason = futurePlan.reason;
+    currentDecision = currentControl.update(preparedSettings, inputs,
+        limiterSettings.enableController.get(), kRs485MockTransport || rs485settings.enableRS485.get(),
+        configuredMax, kRs485MockTransport ? lastMockBaseCommandW : lastIssuedBaseCommandW, nowMs);
+    // This projection consumes the decision but never participates in PID, MOS or inverter commands.
+    control::ChargePlanInputs projection;
+    projection.controlEnabled = preparedSettings.inverterEnabled &&
+        (kRs485MockTransport || rs485settings.enableRS485.get()) &&
+        (limiterSettings.enableController.get() || !source.batteryDischargeIntentAvailable);
+    projection.sourcesQualified = preparedSettings.valid && inputs.sourcesWithinGrace &&
+        inputs.bmsValid && inputs.chargerValid && inputs.priceValid && inputs.metersValid && source.batteryChargeStateKnown &&
+        !inputs.chargerFault && (!inputs.alarmRestricted || inputs.softwareMosLockOnly) &&
+        (!projection.controlEnabled || !currentDecision.direct);
+    projection.chargeAvailable = source.batteryChargeAvailable;
+    projection.soc = source.soc;
+    projection.fullCapacityAh = source.fullCapacityAh;
+    projection.maxChargeW = source.chargerVoltageV * SIL_QUALIFIED_MPPT_MAX_CHARGE_A;
+    projection.currentChargerW = source.chargerW;
+    projection.priceFactor = forecastPriceFactor;
+    if (capturePlans)
     {
-        pidBaseTarget = currentInverterOutputW + signedGridPowerW + offset;
-        pidClampedBaseTarget = constrain(pidBaseTarget, configuredMin, configuredMax);
-        pidInput = pidController.initialized ? static_cast<int>(roundf(pidController.output)) : pidClampedBaseTarget;
-        inverterCalculatedValue = computePidStabilizedTarget(pidBaseTarget, configuredMin, configuredMax);
+        chargePlan.snapshot.project(utc, preparedSettings, futurePlan, futurePrices, pvForecast,
+            currentDecision, dischargeBudget.snapshot, projection);
+        chargePlan.captured(nowMs);
     }
-    else if (powerSmoother != nullptr && powerSmoother->isReady())
+    else if (chargePlan.invalidationDue(futurePlan.valid && projection.sourcesQualified))
     {
-        inverterCalculatedValue = powerSmoother->smooth(currentGridImportW);
+        chargePlan.snapshot.reset(utc, futurePrices.revision(), pvForecast.revision());
+        chargePlan.snapshot.finish(false, futurePlan.valid ? "sources_missing" : futurePlan.reason);
+        chargePlan.captured(nowMs);
     }
-    else
-    {
-        inverterCalculatedValue = configuredMax;
-        lmg.logTag(LL::Warn, "RS485", "Smoother not initialized -> fallback to MAX");
-    }
+    currentDecisionAvailable = true;
+    // Only qualified discharge intent may lift economic/PV preservation limits.
+    // Stops, reserve, source grace/recovery and discharge-unavailable paths retain precedence.
+    const int outputMinimumW = currentDecision.minimumOverrideAllowed && !currentDecision.direct &&
+        negativePriceOverrideTarget < 0 && limiterSettings.enableController.get()
+        ? constrain(configuredMin, 0, max(0, configuredMax)) : 0;
 
     if (negativePriceOverrideTarget >= 0)
     {
-        inverterSetValue = negativePriceOverrideTarget;
-        sendToRS485(static_cast<uint16_t>(inverterSetValue));
+        resetPidController();
+        inverterCalculatedValue = min(negativePriceOverrideTarget, currentDecision.ceilingW);
+        currentDecision.ceilingW = inverterCalculatedValue;
+        currentDecision.strategy = "negative_price";
+        currentDecision.reason = "negative_price_override";
+        currentDecision.chargeTargetValid = false;
     }
-    else if (limiterSettings.enableController.get())
+    else if (currentDecision.direct)
     {
-        const int correctedValue = usePidSmoothing ? inverterCalculatedValue : inverterCalculatedValue + offset;
-        inverterSetValue = constrain(correctedValue, configuredMin, configuredMax);
-        sendToRS485(static_cast<uint16_t>(inverterSetValue));
+        resetPidController();
+        inverterCalculatedValue = currentDecision.ceilingW;
+    }
+    else
+    {
+        pidBaseTarget = currentInverterOutputW + signedGridPowerW;
+        const int effectiveCeiling = max(outputMinimumW, constrain(currentDecision.ceilingW, 0, configuredMax));
+        const int effectiveMin = min(configuredMin, effectiveCeiling);
+        pidClampedBaseTarget = constrain(pidBaseTarget, effectiveMin, effectiveCeiling);
+        pidInput = pidController.initialized ? static_cast<int>(roundf(pidController.output)) : pidClampedBaseTarget;
+        inverterCalculatedValue = computePidStabilizedTarget(pidBaseTarget, effectiveMin, effectiveCeiling);
+    }
+    if (negativePriceOverrideTarget >= 0)
+    {
+        inverterSetValue = min(negativePriceOverrideTarget, currentDecision.ceilingW);
+        issueInverterCommand(inverterSetValue, configuredMax, offset);
+    }
+    else if (currentDecision.direct)
+    {
+        inverterSetValue = constrain(currentDecision.ceilingW, 0, configuredMax);
+        resetPidController();
+        issueInverterCommand(inverterSetValue, configuredMax, offset);
+    }
+    else if (limiterSettings.enableController.get() || currentDecision.pvOnly)
+    {
+        const int correctedValue = inverterCalculatedValue;
+        const int ceiling = max(outputMinimumW, constrain(currentDecision.ceilingW, 0, configuredMax));
+        const int effectiveMin = min(configuredMin, ceiling);
+        inverterSetValue = constrain(correctedValue, effectiveMin, ceiling);
+        issueInverterCommand(inverterSetValue, configuredMax, offset, outputMinimumW);
         lmg.logTag(LL::Trace, "RS485", "Controller enabled -> set inverter to %d W (calc=%d, corr=%d)", inverterSetValue, inverterCalculatedValue, correctedValue);
-        if (usePidSmoothing)
-        {
-            lmg.logTag(LL::Trace, "PID", "inv=%d gridSigned=%d gridIn=%d gridOut=%d off=%d base=%d clamp=%d in=%d out=%d min=%d max=%d set=%d",
-                       currentInverterOutputW, signedGridPowerW, gridImportW, gridExportW, offset, pidBaseTarget, pidClampedBaseTarget,
-                       pidInput, inverterCalculatedValue, configuredMin, configuredMax, inverterSetValue);
-        }
+        lmg.logTag(LL::Trace, "PID", "inv=%d gridSigned=%d gridIn=%d gridOut=%d off=%d base=%d clamp=%d in=%d out=%d min=%d max=%d set=%d",
+                   currentInverterOutputW, signedGridPowerW, gridImportW, gridExportW, offset, pidBaseTarget, pidClampedBaseTarget,
+                   pidInput, inverterCalculatedValue, configuredMin, configuredMax, inverterSetValue);
     }
     else
     {
         inverterSetValue = configuredMax;
         resetPidController();
         lmg.logTag(LL::Info, "RS485", "Controller disabled -> using MAX output");
-        sendToRS485(static_cast<uint16_t>(inverterSetValue));
+        issueInverterCommand(inverterSetValue, configuredMax, offset);
     }
+
+#if CM_ENABLE_LOGGING && CM_ENABLE_VERBOSE_LOGGING
+    controlLog.inputs = inputs;
+    controlLog.gridW = measuredGridW;
+    controlLog.inverterW = measuredInverterW;
+    controlLog.gridFresh = gridFresh;
+    controlLog.inverterFresh = inverterFresh;
+    controlLog.minW = configuredMin;
+    controlLog.maxW = configuredMax;
+    controlLog.offsetW = offset;
+    controlLog.atMs = nowMs;
+    verboseLogging();
+#endif
 }
+
+#if CM_ENABLE_LOGGING && CM_ENABLE_VERBOSE_LOGGING
+static void verboseLogging()
+{
+    const auto &inputs = controlLog.inputs;
+    static const char *lastReason = nullptr, *lastBand = nullptr;
+    static int lastSetW = -1;
+    const bool boundaryChanged = inverterSetValue != lastSetW &&
+        (inverterSetValue == 0 || inverterSetValue == controlLog.maxW);
+    if (!lastReason || strcmp(lastReason, currentDecision.reason) != 0 ||
+        strcmp(lastBand, currentDecision.priceBand) != 0 || boundaryChanged)
+    {
+        lmg.logTag(LL::Info, "CTRL-STEP", "set=%dW limit=%dW strategy=%s reason=%s band=%s",
+            inverterSetValue, currentDecision.ceilingW, currentDecision.strategy,
+            currentDecision.reason, currentDecision.priceBand);
+        lmg.logTag(LL::Info, "CTRL-STEP", "valid grid/inv/bms/charger/price=%d/%d/%d/%d/%d mqtt=%d neg=%d",
+            controlLog.gridFresh, controlLog.inverterFresh, inputs.bmsValid, inputs.chargerValid,
+            inputs.priceValid, mqtt.isConnected(), negativePriceActive);
+        lmg.logTag(LL::Info, "CTRL-STEP", "grid=%+.1fW invAC=%.1fW batt=%+.1fW charger=%.1fW calc=%dW maxAlloc=%lu",
+            controlLog.gridFresh ? controlLog.gridW : NAN, controlLog.inverterFresh ? controlLog.inverterW : NAN,
+            inputs.bmsValid ? inputs.batteryW : NAN, inputs.chargerValid ? inputs.chargerW : NAN,
+            inverterCalculatedValue, static_cast<unsigned long>(ESP.getMaxAllocHeap()));
+    }
+    lastReason = currentDecision.reason;
+    lastBand = currentDecision.priceBand;
+    lastSetW = inverterSetValue;
+
+    static bool logged = false;
+    static uint32_t lastLogMs = 0;
+    const float publishSec = mqttSettings.publishIntervalSec.get();
+    // Match the MQTT period, but never flood logs in publish-on-change mode.
+    const double intervalMs = std::isfinite(publishSec) && publishSec > 10.0f
+        ? double(publishSec) * 1000.0 : 10000.0;
+    if (logged && uint32_t(controlLog.atMs - lastLogMs) < intervalMs)
+        return;
+    logged = true;
+    lastLogMs = controlLog.atMs;
+
+    const auto diagnostics = sbtInputs.diagnosticSnapshot(controlLog.atMs);
+    const auto sample = [&diagnostics](unsigned i) -> double {
+        return i < sbt::channelCount && (diagnostics.validMask & (uint32_t(1) << i))
+                   ? diagnostics.values[i] : NAN;
+    };
+    // Verbose-only diagnostics use the existing visible Info sink. Trace is
+    // intentionally filtered by setupLogging, independently of these flags.
+    lmg.logTag(LL::Info, "CTRL", "---------- snapshot ms=%lu mock=%d ----------",
+        static_cast<unsigned long>(controlLog.atMs), kRs485MockTransport);
+    lmg.logTag(LL::Info, "CTRL-IN", "grid(GetValue)=%+.1fW valid=%d invAC=%+.1fW valid=%d price=%.4f valid=%d neg=%d",
+        controlLog.gridFresh ? controlLog.gridW : NAN, controlLog.gridFresh,
+        controlLog.inverterFresh ? controlLog.inverterW : NAN, controlLog.inverterFresh,
+        inputs.priceValid ? inputs.price : NAN, inputs.priceValid, negativePriceActive);
+    lmg.logTag(LL::Info, "CTRL-CFG", "lim=%d inv=%d rs485=%d min/max=%d/%d offset=%d mosMan=%d",
+        limiterSettings.enableController.get(), preparedSettings.inverterEnabled, rs485settings.enableRS485.get(),
+        controlLog.minW, controlLog.maxW, controlLog.offsetW, preparedSettings.mosManualMode);
+    lmg.logTag(LL::Info, "CTRL-CFG", "resOff/On=%g/%g priceC/db/hys=%g/%g/%g",
+        preparedSettings.reserveOffSocPercent, preparedSettings.reserveOnSocPercent,
+        preparedSettings.priceComfortEurPerKwh,
+        preparedSettings.priceDeadbandEurPerKwh, preparedSettings.priceHysteresisEurPerKwh);
+    lmg.logTag(LL::Info, "CTRL-PRICE", "band=%s cheap<=%.4f expensive>=%.4f hyst=%.4f EUR/kWh",
+        currentDecision.priceBand, preparedSettings.priceComfortEurPerKwh - preparedSettings.priceDeadbandEurPerKwh,
+        preparedSettings.priceComfortEurPerKwh + preparedSettings.priceDeadbandEurPerKwh,
+        preparedSettings.priceHysteresisEurPerKwh);
+    lmg.logTag(LL::Info, "FORECAST", "valid=%d reason=%s factor=%.6f rev=%lu slots=%u nextPrice=%.4f",
+        futurePlan.valid, futurePlan.reason, forecastPriceFactor,
+        static_cast<unsigned long>(futurePrices.revision()), futurePrices.slots(),
+        futurePlan.valid ? futurePlan.nextPrice : NAN);
+    lmg.logTag(LL::Info, "FORECAST", "avail/reserve/shortfall=%.1f/%.1f/%.1fWh batteryMax=%dW charge=%.1fW targetUTC=%lu",
+        futurePlan.availableWh, futurePlan.reservedWh, futurePlan.shortfallWh,
+        futurePlan.batteryCeilingW, futurePlan.chargeTargetW, static_cast<unsigned long>(futurePlan.targetAt));
+    lmg.logTag(LL::Info, "CTRL-OUT", "strategy=%s reason=%s ceiling=%d chargeW=%.1f reserve=%s",
+        currentDecision.strategy, currentDecision.reason, currentDecision.ceilingW,
+        currentDecision.chargeTargetValid ? currentDecision.chargeTargetW : NAN,
+        currentDecision.reserveKnown ? (currentDecision.reserveAllowed ? "allowed" : "blocked") : "unknown");
+    lmg.logTag(LL::Info, "CTRL-CMD", "demand=%.1fW calc=%dW set=%dW lastAttempt=%.0fW (not ACK)",
+        inputs.metersValid ? double(controlLog.inverterW) + controlLog.gridW : NAN,
+        inverterCalculatedValue, inverterSetValue, lastIssuedCommandKnown ? double(lastIssuedCommandW) : NAN);
+    lmg.logTag(LL::Info, "CTRL-CMD", "mockDemand=%.0fW bmsValid=%d chargerValid=%d mqtt=%d",
+        kRs485MockTransport ? double(lastMockCommandW) : NAN,
+        inputs.bmsValid, inputs.chargerValid, mqtt.isConnected());
+    // maxAlloc is the largest contiguous block; web responses fail when it drops.
+    lmg.logTag(LL::Info, "HEAP", "free=%lu min=%lu maxAlloc=%lu",
+        static_cast<unsigned long>(ESP.getFreeHeap()), static_cast<unsigned long>(ESP.getMinFreeHeap()),
+        static_cast<unsigned long>(ESP.getMaxAllocHeap()));
+    lmg.logTag(LL::Info, "BMS", "----------");
+    lmg.logTag(LL::Info, "BMS", "fresh=%d seq=%lu why=%s soc=%.1f%% p=%+.1fW v=%.2fV i=%+.2fA",
+        diagnostics.fresh[0], static_cast<unsigned long>(diagnostics.sequence[0]), diagnostics.reason[0],
+        sample(2), sample(5), sample(3), sample(4));
+    lmg.logTag(LL::Info, "BMS", "charge=%g discharge=%g allowC=%g allowD=%g alarm=%.0f prot=%s",
+        sample(0), sample(1), sample(8), sample(9), sample(14), diagnostics.protectionValid ? diagnostics.protection : "NA");
+    lmg.logTag(LL::Info, "BMS", "tempMin/Max=%.1f/%.1f cellMin/Max=%.3f/%.3f delta=%.3f remain/fullAh=%.1f/%.1f cells/sensors=%.0f/%.0f",
+        sample(25), sample(10), sample(11), sample(12), sample(13), sample(6), sample(7), sample(26), sample(27));
+    lmg.logTag(LL::Info, "VICTRON", "----------");
+    lmg.logTag(LL::Info, "VICTRON", "fresh=%d seq=%lu why=%s solar=%.1fW battV=%.2fV chargeI=%.2fA chargerDC=%.1fW",
+        diagnostics.fresh[1], static_cast<unsigned long>(diagnostics.sequence[1]), diagnostics.reason[1],
+        sample(15), sample(18), sample(19), inputs.chargerValid ? inputs.chargerW : NAN);
+    lmg.logTag(LL::Info, "VICTRON", "loadI=%.2fA state=%s err=%.0f yield=%.1fWh pvV/pvA/battW=UNSUPPORTED",
+        sample(21), diagnostics.chargeStateValid ? diagnostics.chargeState : "NA", sample(23), sample(24));
+    lmg.logTag(LL::Info, "CTRL", "---------- end ----------");
+}
+#endif
 
 void testRS232()
 {
@@ -1699,7 +2190,7 @@ void testRS232()
 void SetupStartTemperatureMeasuring()
 {
     // init BME280 for temperature and humidity sensor
-    bme280.setAddress(BME280_ADDRESS, i2cSettings.sdaPin.get(), i2cSettings.sclPin.get());
+    bme280.setAddress(BME280_ADDRESS, kI2cSda, kI2cScl);
     bool isStatus = bme280.begin(
         bme280.BME280_STANDBY_0_5,
         bme280.BME280_FILTER_16,
@@ -1708,6 +2199,7 @@ void SetupStartTemperatureMeasuring()
         bme280.BME280_OVERSAMPLING_16,
         bme280.BME280_OVERSAMPLING_1,
         bme280.BME280_MODE_NORMAL);
+    Wire.setClock(kI2cHz);
     if (!isStatus)
     {
         bme280Initialized = false;
@@ -1823,8 +2315,8 @@ static void handleDisplayPowerScheduler()
 
 void SetupStartDisplay()
 {
-    Wire.begin(i2cSettings.sdaPin.get(), i2cSettings.sclPin.get());
-    Wire.setClock(i2cSettings.busFreq.get());
+    Wire.begin(kI2cSda, kI2cScl);
+    Wire.setClock(kI2cHz);
 
     const uint8_t address = static_cast<uint8_t>(i2cSettings.displayAddr.get());
     if (!display.begin(SSD1306_SWITCHCAPVCC, address))
@@ -2047,4 +2539,3 @@ void EvaluateHeater(float currentTemperature)
     setHeaterRelay(heaterLatchedState);
 }
 #endif
-

@@ -1,0 +1,52 @@
+# SIL 5.4.0 isolated preview only; install after integration and owner approval.
+# Merge these entries into mqtt.sensor. Do not replace existing production sensors.
+# Both entities consume diagnostics only; there are no actuator command topics.
+# Non-retained diagnostics expire after 180 seconds, matching the chart freshness guard.
+mqtt:
+  sensor:
+    - name: SIL Test Charge Plan
+      unique_id: sil_test_charge_plan
+      default_entity_id: sensor.sil_test_charge_plan
+      state_topic: SILTest/COM7/Planning/ChargePlan
+      value_template: "{{ 'ready' if value_json.valid | default(false) else 'invalid' }}"
+      json_attributes_topic: SILTest/COM7/Planning/ChargePlan
+      json_attributes:
+        - v
+        - valid
+        - reason
+        - kind
+        - g
+        - r
+        - pv
+        - t
+        - d
+        - n
+        - target
+        - unmetWh
+        - w
+        - s
+      availability_topic: SILTest/COM7/System-Info/status
+      payload_available: online
+      payload_not_available: offline
+      expire_after: 180
+    - name: SIL Test Discharge Budget
+      unique_id: sil_test_discharge_budget
+      default_entity_id: sensor.sil_test_discharge_budget
+      state_topic: SILTest/COM7/Planning/DischargeBudget
+      value_template: "{{ 'ready' if value_json.valid | default(false) else 'invalid' }}"
+      json_attributes_topic: SILTest/COM7/Planning/DischargeBudget
+      json_attributes:
+        - v
+        - valid
+        - reason
+        - g
+        - r
+        - pv
+        - t
+        - d
+        - n
+        - w
+      availability_topic: SILTest/COM7/System-Info/status
+      payload_available: online
+      payload_not_available: offline
+      expire_after: 180

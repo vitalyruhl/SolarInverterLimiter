@@ -1,61 +1,47 @@
+# SolarInverterLimiter TODO
 
-# ToDo SolarInverterLimiter
+The [control-planning baseline](control-planning/README.md) owns battery-control decisions. This file tracks implementation work; it does not define a second strategy. [Implementation follow-ups](control-planning/implementation-follow-ups.md) retain details consolidated from the older strategy/TODO drafts. Firmware implementation and hardware acceptance are still separate.
 
-Goal: Refactor the codebase to the new ConfigManager structure, then synchronize HomeAssistant configs, then modernize Logging/MQTT modules and structure them for reuse across projects.
+## P1 - Complete the existing telemetry receiver increment
 
-Legend:
-- [CURRENT] = currently in progress
-- [NEXT] = next reasonable step
-- [BLOCKED] = waiting for decision/info
-- [COMPLETED] = done
+- [CURRENT] Review and finish the existing uncommitted SBT receiver/UI work against its implementation and acceptance evidence. The 5.1.3 emergency-only path uses the shared SBT gate; physical acceptance remains pending.
+- [NEXT] Reconcile the receiver's earlier 15-second freshness contract with the planned BMS/Victron policy; do not assume the planning constants are already deployed.
 
-## P0 (critical) – Anglicize the project (repo-wide)
+## P1 - Implement the approved battery control plan
 
-- no critical features
+- [NEXT] Preserve the proven grid PID; remove the legacy smoother and only its exclusive settings/state/UI fields. Validate persisted-setting handling and measure flash/RAM/payload savings.
+- [NEXT] Implement protection-first arbitration, shared startup/recovery, explicit inverter enable, existing limiter bypass and negative-price zero.
+- [NEXT] Implement the bounded energy/price planner, reserve OFF/ON 2%/10%, adjustable battery power band and charge-target/PV ceiling. Use the current baseline for price classes, source-loss precedence and ownership.
+- [NEXT] Add separate economic ceiling ramp constants, initially 50 W/s up and down, optionally exposed later if resources permit. Do not ramp every demand-PID response; restrictive PV/load/protection/stop changes bypass the economic ramp. Reuse RS485 publication timing and actuator-command anti-windup tracking.
+- [CURRENT] Validate the shared SBT gate and one-shot emergency both-off path. The earlier separate Hand/Auto proposal is superseded; retain `mosMan` only for stored-setting compatibility. No economic/reserve MOS switching or automatic ON.
+- [NEXT] Use the qualified CM development revision and warning/main-alarm callbacks. Record exact test versions; publish a release only after actual agreed HITL acceptance.
 
-## P0 (critical) – ConfigManager refactor (functional, buildable)
+## P1 - HA telemetry and cooling
 
-- no critical features for CM
+- [NEXT] Expand the SolarLimiter card with selected/effective strategy, decision reason, desired/sent/measured power, active limits, reserve/allocation, price quality/next transition and source ages as implemented.
+- [NEXT] Show the shared MOS gate, SIL emergency request, actual MOS feedback and pending/blocked/failed status distinctly. The Allow controls follow actual MOS feedback.
+- [NEXT] Add independent battery-driven fan demand alongside BME280, using the accepted OR/hysteresis/failure policy. Keep the existing relay fan-only.
+- [NEXT] Decode native JBD cycle count in SBT, verify its meaning, publish it, and add it to the HA BMS card without redundant polling.
 
-## P1 (high) – Update HomeAssistant YAML to the new structure
+## P1 - Qualification and UART transition
 
-## P1 (high) – Reduce firmware flash usage
+- [COMPLETED] The owner accepted manual HA charge/discharge Allow operation on 2026-10-16. This does not qualify automatic MOS recovery.
+- [NEXT] Keep manual access available while SIL automation is unfinished. Compare telemetry stability, source ages, heap, stack and cycle time after the separately qualified BMS/Victron UART migration. Existing readback fluctuation is accepted; its cause and resource gains remain unproven.
+- [NEXT] Execute the replay and hardware-acceptance scenarios in the [follow-ups](control-planning/implementation-follow-ups.md#implementation-acceptance-sequence), with hardware actions separately authorized.
 
-- [NEXT] Evaluate OLED display stack replacement
-	- Current assessment: replacing `Adafruit SSD1306` + `Adafruit GFX` is likely worth about 12-16 KB Flash and 1024 B RAM with a text-only OLED library
-	- Alternative assessment: a lighter graphics/text library with similar layout is likely worth about 6-10 KB Flash
-	- Current display usage is mostly text plus a simple frame, so a smaller display stack should preserve user-visible behavior
-	- Bigger flash savings are more likely in the embedded ConfigManager WebUI, but that is a separate larger effort
+## P1 - Independent firmware-size work
 
-## P1 (high) – Add asymmetric inverter setpoint ramp limiting
+- [NEXT] Evaluate replacing Adafruit SSD1306 + Adafruit GFX while preserving the current mostly text display and frame. Older unmeasured estimates were 12-16 KB flash and 1024 B RAM for a text-only library, or 6-10 KB flash for a lighter graphics/text library. Establish comparable builds before accepting any saving.
+- [LATER] Evaluate embedded ConfigManager WebUI size separately; do not combine that larger change with the battery-control implementation by default.
 
-- [NEXT] Add an asymmetric slew-rate / ramp limiter after the PID or setpoint calculation
-	- Apply the limiter after the calculated target setpoint is clamped to `minInverterPower` and `maxInverterPower`
-	- Use separate configurable settings instead of hardcoded values:
-		- `maxSetpointRiseWattsPerSecond`
-		- `maxSetpointFallWattsPerSecond`
-	- Rising setpoint should be slower
-	- Falling setpoint should be faster
-	- This is an output conditioning layer after the PID / setpoint calculation, not a replacement for PID tuning
-	- Why this is useful:
-		- fast down-ramp reduces the risk of unwanted feed-in when consumption drops
-		- slow up-ramp avoids reacting too aggressively to short consumption spikes
-	- Suggested flow:
-		```text
-		calculatedTarget = calculateSetpointOrPidOutput(...)
-		clampedTarget = clamp(calculatedTarget, minInverterPower, maxInverterPower)
-		limitedSetpoint = applyAsymmetricRampLimit(
-		    clampedTarget,
-		    previousSetpoint,
-		    maxSetpointRiseWattsPerSecond,
-		    maxSetpointFallWattsPerSecond,
-		    deltaTimeSeconds
-		)
-		```
-	- Validation notes for later:
-		- verify that setpoint drops quickly when a large load switches off
-		- verify that setpoint rises gradually when load increases
-		- verify that short spikes do not immediately pull the inverter setpoint up
-		- verify that zero-feed-in behavior is improved or at least not degraded
-		- keep the logic non-blocking
-		- preserve existing PID / setpoint calculation behavior when both ramp settings are disabled or set high enough
+## Later - Grid charging and optional planning inputs
+
+- [LATER] Prepare a separate absent/disabled grid-charger capability; never reuse the fan relay or choose an unverified pin. Qualify charger hardware, interlocks and metering before activation; update HA energy provenance when grid charging is introduced.
+- [LATER] Consider compact HA-supplied load profiles or an external optimizer only if measured benefit justifies the extra complexity. Neither is required for the first controller.
+
+## Later - PV forecast calibration after observation
+
+- [DEFERRED] Keep the current forecast/calibration implementation unchanged and collect a few weeks of quality observations before evaluating further changes. The owner reports that the neighboring house shades part of the panels late in the day under the low winter sun. A single all-day correction factor can incorrectly reduce the forecast for an unshaded morning.
+- [BASELINE] `calibrate()` in [shed_forecast_core.py](home-assistant/shed_forecast_core.py) uses the median actual/original forecast ratio from the last 30 completed days and requires at least 14 eligible days. It does not use a year-long median. Preserve the existing qualification/exclusion rules and neutral unqualified behavior during observation.
+- [LATER] Compare a rolling 14-21-day window with greater weight on recent observations, a time-dependent/hourly correction, and preferably solar elevation/azimuth with a building-horizon profile. These are options for later evaluation; the window, weights and model are not accepted implementation parameters.
+- [LATER] Any later calibration must exclude full-battery operation, disabled charge MOS, outages and curtailment/current limiting from learned PV-efficiency losses. Distinguish unavailable or restricted production from actual shade; retain the existing conservative evidence requirements. Evaluate the observed seasonal/time-of-day pattern after the collection period before proposing implementation.

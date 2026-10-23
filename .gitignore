@@ -1,4 +1,5 @@
 .pio
+/.local/
 .vscode/.browse.c_cpp.db*
 .vscode/c_cpp_properties.json
 .vscode/launch.json
@@ -12,3 +13,4 @@ src/secret/wifiSecret.h
 src/salt.h
 
 secrets.h
+.codegraphy/*

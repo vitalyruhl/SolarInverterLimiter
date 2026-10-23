@@ -1,0 +1,54 @@
+# Append this list item to HA automations.yaml. No hardware writes.
+# Shared price source; consumers independently configure this input topic.
+- id: sil_publish_price_schedule
+  alias: SIL - publish future electricity prices
+  description: Publish EPEX quarter-hour prices with provider-unknown provenance; SIL applies its own factor.
+  triggers:
+    - trigger: homeassistant
+      event: start
+    - trigger: state
+      entity_id: sensor.epex_spot_data_total_price_2
+      attribute: data
+    - trigger: time_pattern
+      minutes: "/5"
+  variables:
+    schedule_topic: homeassistant/sensor/electricity_price/schedule
+    revision: "{{ as_timestamp(now()) | int }}"
+    start_utc: "{{ ((as_timestamp(now()) | int) // 900) * 900 }}"
+    prices: >-
+      {% set rows = namespace(items=[]) %}
+      {% for entry in state_attr('sensor.epex_spot_data_total_price_2', 'data') or [] %}
+        {% set s = as_timestamp(entry.get('start_time'), 0) | int %}
+        {% set e = as_timestamp(entry.get('end_time'), 0) | int %}
+        {% set p = entry.get('price_per_kwh') %}
+        {% if s >= start_utc | int and s < (start_utc | int) + 259200 %}
+          {% set rows.items = rows.items + [{'s': s, 'e': e, 'p': p}] %}
+        {% endif %}
+      {% endfor %}
+      {% set ns = namespace(values=[], expected=start_utc | int, broken=false) %}
+      {% for row in rows.items | sort(attribute='s') %}
+        {% if not ns.broken %}
+          {% if row.s == ns.expected and row.e == row.s + 900
+                and is_number(row.p) and -2 <= row.p | float <= 10 %}
+            {% set ns.values = ns.values + [(row.p | float * 1000000) | round(0) | int] %}
+            {% set ns.expected = ns.expected + 900 %}
+          {% else %}
+            {% set ns.broken = true %}
+          {% endif %}
+        {% endif %}
+      {% endfor %}
+      {{ ns.values if ns.values | count >= 2 else [] }}
+  actions:
+    - repeat:
+        count: "{{ [1, ((prices | count + 23) // 24)] | max }}"
+        sequence:
+          - action: mqtt.publish
+            data:
+              topic: "{{ schedule_topic }}"
+              qos: 1
+              retain: false
+              payload: >-
+                {{ {'v': 1, 'r': revision | int, 't': start_utc | int,
+                    'n': prices | count, 'k': repeat.index - 1,
+                    'p': prices[(repeat.index - 1) * 24 : repeat.index * 24]} | to_json }}
+  mode: single

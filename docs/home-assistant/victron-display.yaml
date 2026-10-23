@@ -1,0 +1,75 @@
+# Display-only package. Merge MQTT sensors/templates into existing includes.
+# Never use these display fallbacks for control, calibration or Energy statistics.
+mqtt:
+  sensor:
+    - name: SBT Victron Error code last received
+      unique_id: sbt_victron_error_code_last_received
+      default_entity_id: sensor.sbt_victron_error_code_last_received
+      state_topic: SolarBatteryTelemetry/victron/last_valid/error_code
+      value_template: "{{ value_json.value if value_json.value is number and value_json.value >= 0 else 'unknown' }}"
+      json_attributes_topic: SolarBatteryTelemetry/victron/last_valid/error_code
+      json_attributes_template: "{{ {'received_at': value_json.received_at | default(none)} | to_json }}"
+    - name: SBT Victron Yield last received Wh
+      unique_id: sbt_victron_yield_last_received_wh
+      default_entity_id: sensor.sbt_victron_yield_last_received_wh
+      state_topic: SolarBatteryTelemetry/victron/last_valid/yield_today_wh
+      value_template: "{{ value_json.value if value_json.value is number and value_json.value >= 0 else 'unknown' }}"
+      unit_of_measurement: Wh
+      json_attributes_topic: SolarBatteryTelemetry/victron/last_valid/yield_today_wh
+      json_attributes_template: "{{ {'received_at': value_json.received_at | default(none)} | to_json }}"
+# Last-received MQTT entities deliberately have no availability/expiry or state_class.
+# They describe historical receipt, not current BLE measurement validity.
+template:
+  - sensor:
+      - name: SBT Victron Solar power display W
+        unique_id: sbt_victron_solar_power_display_w
+        unit_of_measurement: W
+        state: >-
+          {% set raw = states('sensor.sbt_victron_solar_power_w') %}
+          {% set live = is_state('binary_sensor.sbt_victron_availability', 'on') and states('sensor.sbt_victron_health') in ['fresh', 'ok'] and state_attr('sensor.sbt_victron_health', 'sample_age_ms') | int(4294967295) <= 30000 and is_number(raw) %}
+          {{ raw | float if live else 0 }}
+        attributes:
+          source_status: >-
+            {% set live = is_state('binary_sensor.sbt_victron_availability', 'on') and states('sensor.sbt_victron_health') in ['fresh', 'ok'] and state_attr('sensor.sbt_victron_health', 'sample_age_ms') | int(4294967295) <= 30000 and is_number(states('sensor.sbt_victron_solar_power_w')) %}
+            {{ 'Current BLE data' if live else 'No current BLE data; display fallback 0 W' }}
+      - name: SBT Victron Error code display
+        unique_id: sbt_victron_error_code_display
+        state: >-
+          {% set live = is_state('binary_sensor.sbt_victron_availability', 'on') and states('sensor.sbt_victron_health') in ['fresh', 'ok'] and state_attr('sensor.sbt_victron_health', 'sample_age_ms') | int(4294967295) <= 30000 %}
+          {% set last = states('sensor.sbt_victron_error_code_last_received') %}
+          {% set raw = states('sensor.sbt_victron_error_code') %}
+          {% set ts = state_attr('sensor.sbt_victron_error_code_last_received', 'received_at') | int(0) %}
+          {% set dated = ts > 0 and ts <= as_timestamp(now()) + 120 %}
+          {% if is_number(last) %}
+            {{ last }} ({{ 'current BLE' if live and dated and as_timestamp(now()) - ts <= 30 else 'stale; last received' }}; {{ as_local(as_datetime(ts)).strftime('%Y-%m-%d %H:%M:%S') if dated else 'receipt date unavailable' }})
+          {% elif live and is_number(raw) %}
+            {{ raw }} (current BLE; receipt date unavailable)
+          {% else %}
+            No retained valid error received
+          {% endif %}
+      - name: SBT Victron Yield last received display
+        unique_id: sbt_victron_yield_last_received_display
+        state: >-
+          {% set live = is_state('binary_sensor.sbt_victron_availability', 'on') and states('sensor.sbt_victron_health') in ['fresh', 'ok'] and state_attr('sensor.sbt_victron_health', 'sample_age_ms') | int(4294967295) <= 30000 %}
+          {% set last = states('sensor.sbt_victron_yield_last_received_wh') %}
+          {% set raw = states('sensor.sbt_victron_yield_today_wh') %}
+          {% set ts = state_attr('sensor.sbt_victron_yield_last_received_wh', 'received_at') | int(0) %}
+          {% set dated = ts > 0 and ts <= as_timestamp(now()) + 120 %}
+          {% if is_number(last) %}
+            {{ last }} Wh ({{ 'current BLE' if live and dated and as_timestamp(now()) - ts <= 30 else 'stale; last received' }}; {{ as_local(as_datetime(ts)).strftime('%Y-%m-%d %H:%M:%S') if dated else 'receipt date unavailable' }})
+          {% elif live and is_number(raw) %}
+            {{ raw }} Wh (current BLE; receipt date unavailable)
+          {% else %}
+            No retained valid yield received
+          {% endif %}
+      - name: SBT Victron Yield today display kWh
+        unique_id: sbt_victron_yield_today_display_kwh
+        unit_of_measurement: kWh
+        availability: >-
+          {% set ts = state_attr('sensor.sbt_victron_yield_last_received_wh', 'received_at') | int(0) %}
+          {{ is_number(states('sensor.sbt_victron_yield_last_received_wh')) and ts > 0 and ts <= as_timestamp(now()) + 120 and as_local(as_datetime(ts)).date() == now().date() }}
+        state: "{{ states('sensor.sbt_victron_yield_last_received_wh') | float(0) / 1000 }}"
+        attributes:
+          source_status: >-
+            {% set live = is_state('binary_sensor.sbt_victron_availability', 'on') and states('sensor.sbt_victron_health') in ['fresh', 'ok'] and state_attr('sensor.sbt_victron_health', 'sample_age_ms') | int(4294967295) <= 30000 %}
+            {{ 'Last received today; current BLE' if live else 'Last received today; stale, no current BLE' }}

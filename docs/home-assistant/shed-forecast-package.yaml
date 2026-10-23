@@ -1,0 +1,16 @@
+# Append this automation once; copy shed_forecast.py into /config/pyscript/
+# and shed_forecast_core.py into /config/pyscript/modules/.
+# Existing Pyscript installation is required; this package adds no permissions.
+# The existing shared price producer remains separate and unchanged in ownership.
+automation:
+  - id: shed_publish_pv_forecast
+    alias: Shed - snapshot and publish PV forecast
+    description: Publish bounded raw PV offers and conservative calibration metadata; no hardware control.
+    triggers:
+      - trigger: homeassistant
+        event: start
+      - trigger: time_pattern
+        minutes: /5
+    actions:
+      - action: pyscript.shed_forecast_publish
+    mode: single

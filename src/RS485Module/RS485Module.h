@@ -6,6 +6,12 @@
 #include <Arduino.h>
 #include "ConfigManager.h"
 
+#if defined(SIL_MOCK_TRANSPORT) && SIL_MOCK_TRANSPORT
+inline constexpr bool kRs485MockTransport = true;
+#else
+inline constexpr bool kRs485MockTransport = false;
+#endif
+
 struct RS485_Settings
 {
     // Serial2 is used for RS485 communication
