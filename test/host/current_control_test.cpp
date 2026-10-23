@@ -3,6 +3,99 @@
 #include <cstring>
 #include <iostream>
 using namespace control;
+// [MOCKED!] Synthetic source samples exercise the production decision logic without device I/O.
+static CurrentInputs qualifiedStorageInputs() {
+  CurrentInputs in;
+  in.bmsValid = in.batteryChargeAvailable = in.batteryDischargeIntentAvailable = true;
+  in.chargerValid = in.metersValid = in.priceValid = true;
+  in.soc = 50; in.chargerW = 300; in.householdW = 1000; in.price = .25f;
+  in.futureValid = true; in.futureReason = "forecast_hold";
+  return in;
+}
+
+static CurrentDecision qualifyStorage(CurrentControl &control, const PreparedSettings &cfg,
+                                      CurrentInputs &in, unsigned firstSequence = 1,
+                                      uint32_t started = 100) {
+  CurrentDecision out;
+  for (unsigned i = 0; i < 3; ++i) {
+    in.bmsSequence = in.chargerSequence = firstSequence + i;
+    out = control.update(cfg, in, true, true, 900, 270, started + i * 3000);
+  }
+  return out;
+}
+
+static void noUnplannedChargingFloor() {
+  PreparedSettings cfg; cfg.valid = true;
+  auto in = qualifiedStorageInputs(); CurrentControl control;
+  const auto out = qualifyStorage(control, cfg, in);
+  assert(out.chargeTargetValid && out.chargeTargetW == 0);
+  assert(out.ceilingW == 270);
+}
+
+static void reserveChargingUsesPriceAndSoc() {
+  for (bool releasedBefore : {false, true}) {
+    for (float soc : {1.9f, 2.0f, 2.1f, 5.9f, 6.0f, 6.1f}) {
+      for (float price : {.10f, .25f, .50f}) {
+        PreparedSettings cfg; cfg.valid = true;
+        cfg.reserveOffSocPercent = 2; cfg.reserveOnSocPercent = 6;
+        CurrentControl control; auto in = qualifiedStorageInputs();
+        if (releasedBefore) qualifyStorage(control, cfg, in);
+        in.soc = soc; in.price = price;
+        const auto out = qualifyStorage(control, cfg, in, 4, 10100);
+        const bool critical = soc <= 2 && price < .5f;
+        const bool refill = soc > 2 && soc < 6 && price == .10f;
+        const float target = critical ? 300.0f : (refill ? 150.0f : 0.0f);
+        assert(out.chargeTargetValid && out.chargeTargetW == target);
+        assert(out.reserveAllowed == (soc >= 6 || (releasedBefore && soc > 2)));
+        if (critical) assert(out.ceilingW == 0);
+        if (refill) assert(!std::strcmp(out.reason, "reserve_on_charge"));
+        if (soc <= 2) assert(!out.minimumOverrideAllowed);
+      }
+    }
+  }
+}
+
+static void economicChargingAddsToReservePolicy() {
+  PreparedSettings cfg; cfg.valid = true;
+  cfg.reserveOffSocPercent = 2; cfg.reserveOnSocPercent = 6;
+  for (float soc : {1.9f, 4.0f, 50.0f}) {
+    CurrentControl control; auto in = qualifiedStorageInputs();
+    in.soc = soc; in.price = .10f;
+    in.futureChargeTargetW = 400; in.futureReason = "forecast_charge";
+    const auto out = qualifyStorage(control, cfg, in);
+    assert(out.chargeTargetValid && out.chargeTargetW == 400);
+    assert(out.ceilingW == 0);
+  }
+}
+
+static void criticalReserveResetsPriorPositiveFeedback() {
+  PreparedSettings cfg; cfg.valid = true;
+  cfg.reserveOffSocPercent = 2; cfg.reserveOnSocPercent = 6;
+  CurrentControl control; auto in = qualifiedStorageInputs();
+  in.batteryW = 1000;
+  assert(qualifyStorage(control, cfg, in).ceilingW > 0);
+  in.soc = 1.9f;
+  const auto out = qualifyStorage(control, cfg, in, 4, 10100);
+  assert(out.chargeTargetW == 300 && out.ceilingW == 0);
+}
+
+static void halfReserveChargingEndsAtReserveOn() {
+  PreparedSettings cfg; cfg.valid = true;
+  cfg.reserveOffSocPercent = 2; cfg.reserveOnSocPercent = 6;
+  CurrentControl control; auto in = qualifiedStorageInputs();
+  in.batteryW = 500; in.futureChargeTargetW = 400;
+  qualifyStorage(control, cfg, in);
+  in.soc = 4; in.price = .10f; in.batteryW = 100;
+  in.futureChargeTargetW = 0;
+  const auto half = qualifyStorage(control, cfg, in, 4, 10100);
+  assert(half.chargeTargetW == 150 && half.ceilingW <= 270);
+  assert(half.reserveAllowed && half.minimumOverrideAllowed);
+  in.soc = 6;
+  const auto released = qualifyStorage(control, cfg, in, 7, 20100);
+  assert(released.reserveAllowed && released.chargeTargetW == 0);
+  assert(std::strcmp(released.reason, "reserve_on_charge"));
+}
+
 static void recoveryRestartsDynamicsAtHeldCommand() {
   for (bool economic : {true, false}) {
     PreparedSettings cfg;cfg.valid=true;
@@ -194,6 +287,9 @@ static void capabilityChangesDiscardOldBatteryDynamics() {
 }
 
 int main() {
+  noUnplannedChargingFloor(); reserveChargingUsesPriceAndSoc(); economicChargingAddsToReservePolicy();
+  criticalReserveResetsPriorPositiveFeedback();
+  halfReserveChargingEndsAtReserveOn();
   chargeOnlyHonorsFutureStorage(); chargeOnlyPriorityAndRecovery(); manualChargeBlockingDoesNotReserveUnavailableStorage(); capabilityChangesDiscardOldBatteryDynamics();
   missingBmsCanFollowFreshPv();
   batteryUnavailablePvOnly();

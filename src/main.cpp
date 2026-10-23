@@ -114,7 +114,7 @@ static constexpr uint32_t kI2cHz = 400000;
 #endif
 
 #ifndef VERSION
-#define VERSION "5.2.0"
+#define VERSION "5.3.0"
 #endif
 
 enum class NegativePriceSettingPreference : uint8_t
@@ -222,7 +222,6 @@ struct LimiterSettings
 
     Config<float> reserveOffSoc{ConfigOptions<float>{.key = "resOff", .name = "Reserve OFF SOC (%)", .category = "Limiter", .defaultValue = 2.0f, .sortOrder = 20}};
     Config<float> reserveOnSoc{ConfigOptions<float>{.key = "resOn", .name = "Reserve ON SOC (%)", .category = "Limiter", .defaultValue = 10.0f, .sortOrder = 21}};
-    Config<int> batteryPowerDeadband{ConfigOptions<int>{.key = "pwrDb", .name = "Battery Power Deadband (W)", .category = "Limiter", .defaultValue = 50, .sortOrder = 22}};
     Config<bool> mosManualMode{ConfigOptions<bool>{.key = "mosMan", .name = "MOS Hand Mode", .category = "Limiter", .defaultValue = true, .sortOrder = 23}};
     Config<bool> inverterEnabled{ConfigOptions<bool>{.key = "invEn", .name = "Inverter Enabled", .category = "Limiter", .defaultValue = true, .sortOrder = 24}};
     Config<float> priceComfort{ConfigOptions<float>{.key = "priceC", .name = "Price Comfort (EUR/kWh)", .category = "Limiter", .defaultValue = 0.25f, .sortOrder = 25}};
@@ -251,7 +250,6 @@ struct LimiterSettings
         cfg.addSetting(&RS232PublishPeriod);
         cfg.addSetting(&reserveOffSoc);
         cfg.addSetting(&reserveOnSoc);
-        cfg.addSetting(&batteryPowerDeadband);
         cfg.addSetting(&mosManualMode);
         cfg.addSetting(&inverterEnabled);
         cfg.addSetting(&priceComfort);
@@ -1186,7 +1184,6 @@ static void refreshPreparedSettings()
     sbtInputs.configureTimeout(unsigned(limiterSettings.sbtTimeout.get()));
     preparedSettings.reserveOffSocPercent = limiterSettings.reserveOffSoc.get();
     preparedSettings.reserveOnSocPercent = limiterSettings.reserveOnSoc.get();
-    preparedSettings.batteryPowerDeadbandW = limiterSettings.batteryPowerDeadband.get();
     preparedSettings.mosManualMode = limiterSettings.mosManualMode.get();
     preparedSettings.inverterEnabled = limiterSettings.inverterEnabled.get();
     preparedSettings.priceComfortEurPerKwh = limiterSettings.priceComfort.get();
@@ -1197,7 +1194,6 @@ static void refreshPreparedSettings()
         preparedSettings.reserveOffSocPercent >= 0.0f &&
         preparedSettings.reserveOffSocPercent < preparedSettings.reserveOnSocPercent &&
         preparedSettings.reserveOnSocPercent <= 100.0f &&
-        preparedSettings.batteryPowerDeadbandW > 0 &&
         std::isfinite(preparedSettings.priceComfortEurPerKwh) &&
         std::isfinite(preparedSettings.priceDeadbandEurPerKwh) &&
         preparedSettings.priceDeadbandEurPerKwh >= 0.0f;
@@ -1212,7 +1208,6 @@ static void configureLimiterSettingsBehavior()
     limiterSettings.sbtTimeout.setCallback([](int) { refreshPreparedSettings(); });
     limiterSettings.reserveOffSoc.setCallback([](float) { refreshPreparedSettings(); });
     limiterSettings.reserveOnSoc.setCallback([](float) { refreshPreparedSettings(); });
-    limiterSettings.batteryPowerDeadband.setCallback([](int) { refreshPreparedSettings(); });
     limiterSettings.mosManualMode.setCallback([](bool) { refreshPreparedSettings(); });
     limiterSettings.inverterEnabled.setCallback([](bool) { refreshPreparedSettings(); });
     limiterSettings.priceComfort.setCallback([](float) { refreshPreparedSettings(); });
@@ -1558,12 +1553,11 @@ static String buildPlanningConfigPayload()
 {
     char payload[224];
     snprintf(payload, sizeof(payload),
-             "{\"v\":1,\"valid\":%s,\"resOff\":%s,\"resOn\":%s,\"pwrDb\":%d,\"mosMan\":%s,\"invEn\":%s,"
+             "{\"v\":1,\"valid\":%s,\"resOff\":%s,\"resOn\":%s,\"mosMan\":%s,\"invEn\":%s,"
              "\"priceC\":%s,\"priceDb\":%s,\"hystDb\":%s,\"fcPriceF\":%s}",
              preparedSettings.valid ? "true" : "false",
              JsonNumberText(preparedSettings.reserveOffSocPercent, 4).text,
              JsonNumberText(preparedSettings.reserveOnSocPercent, 4).text,
-             preparedSettings.batteryPowerDeadbandW,
              preparedSettings.mosManualMode ? "true" : "false",
              preparedSettings.inverterEnabled ? "true" : "false",
              JsonNumberText(preparedSettings.priceComfortEurPerKwh, 4).text,
@@ -1841,10 +1835,21 @@ void cb_RS485Listener()
     rs485TickDue = true;
 }
 
-static void issueInverterCommand(int watts, int maximumW, int outputOffsetW)
+static void issueInverterCommand(int watts, int maximumW, int outputOffsetW, int minimumW = 0)
 {
     const int baseWatts = control::correctOutputCommand(watts, 0, maximumW);
     watts = control::correctOutputCommand(baseWatts, outputOffsetW, maximumW);
+    minimumW = constrain(minimumW, 0, max(0, maximumW));
+    if (minimumW > 0 && (currentDecision.ceilingW < minimumW || watts < minimumW))
+    {
+        currentDecision.strategy = "minimum";
+        currentDecision.reason = "minimum_output";
+        currentDecision.reserveAllowed = true;
+        currentDecision.pvOnly = false;
+        currentDecision.chargeTargetValid = false;
+        currentDecision.chargeTargetW = 0;
+    }
+    watts = max(watts, minimumW);
     inverterSetValue = watts;
     if (kRs485MockTransport)
     {
@@ -1947,6 +1952,11 @@ static void processRS485Tick()
         limiterSettings.enableController.get(), kRs485MockTransport || rs485settings.enableRS485.get(),
         configuredMax, kRs485MockTransport ? lastMockBaseCommandW : lastIssuedBaseCommandW, nowMs);
     currentDecisionAvailable = true;
+    // Only qualified discharge intent may lift economic/PV preservation limits.
+    // Stops, reserve, source grace/recovery and discharge-unavailable paths retain precedence.
+    const int outputMinimumW = currentDecision.minimumOverrideAllowed && !currentDecision.direct &&
+        negativePriceOverrideTarget < 0 && limiterSettings.enableController.get()
+        ? constrain(configuredMin, 0, max(0, configuredMax)) : 0;
 
     if (negativePriceOverrideTarget >= 0)
     {
@@ -1965,7 +1975,7 @@ static void processRS485Tick()
     else
     {
         pidBaseTarget = currentInverterOutputW + signedGridPowerW;
-        const int effectiveCeiling = constrain(currentDecision.ceilingW, 0, configuredMax);
+        const int effectiveCeiling = max(outputMinimumW, constrain(currentDecision.ceilingW, 0, configuredMax));
         const int effectiveMin = min(configuredMin, effectiveCeiling);
         pidClampedBaseTarget = constrain(pidBaseTarget, effectiveMin, effectiveCeiling);
         pidInput = pidController.initialized ? static_cast<int>(roundf(pidController.output)) : pidClampedBaseTarget;
@@ -1985,10 +1995,10 @@ static void processRS485Tick()
     else if (limiterSettings.enableController.get() || currentDecision.pvOnly)
     {
         const int correctedValue = inverterCalculatedValue;
-        const int ceiling = constrain(currentDecision.ceilingW, 0, configuredMax);
+        const int ceiling = max(outputMinimumW, constrain(currentDecision.ceilingW, 0, configuredMax));
         const int effectiveMin = min(configuredMin, ceiling);
         inverterSetValue = constrain(correctedValue, effectiveMin, ceiling);
-        issueInverterCommand(inverterSetValue, configuredMax, offset);
+        issueInverterCommand(inverterSetValue, configuredMax, offset, outputMinimumW);
         lmg.logTag(LL::Trace, "RS485", "Controller enabled -> set inverter to %d W (calc=%d, corr=%d)", inverterSetValue, inverterCalculatedValue, correctedValue);
         lmg.logTag(LL::Trace, "PID", "inv=%d gridSigned=%d gridIn=%d gridOut=%d off=%d base=%d clamp=%d in=%d out=%d min=%d max=%d set=%d",
                    currentInverterOutputW, signedGridPowerW, gridImportW, gridExportW, offset, pidBaseTarget, pidClampedBaseTarget,
@@ -2069,9 +2079,9 @@ static void verboseLogging()
     lmg.logTag(LL::Info, "CTRL-CFG", "lim=%d inv=%d rs485=%d min/max=%d/%d offset=%d mosMan=%d",
         limiterSettings.enableController.get(), preparedSettings.inverterEnabled, rs485settings.enableRS485.get(),
         controlLog.minW, controlLog.maxW, controlLog.offsetW, preparedSettings.mosManualMode);
-    lmg.logTag(LL::Info, "CTRL-CFG", "resOff/On=%g/%g pwrDb=%d priceC/db/hys=%g/%g/%g",
+    lmg.logTag(LL::Info, "CTRL-CFG", "resOff/On=%g/%g priceC/db/hys=%g/%g/%g",
         preparedSettings.reserveOffSocPercent, preparedSettings.reserveOnSocPercent,
-        preparedSettings.batteryPowerDeadbandW, preparedSettings.priceComfortEurPerKwh,
+        preparedSettings.priceComfortEurPerKwh,
         preparedSettings.priceDeadbandEurPerKwh, preparedSettings.priceHysteresisEurPerKwh);
     lmg.logTag(LL::Info, "CTRL-PRICE", "band=%s cheap<=%.4f expensive>=%.4f hyst=%.4f EUR/kWh",
         currentDecision.priceBand, preparedSettings.priceComfortEurPerKwh - preparedSettings.priceDeadbandEurPerKwh,

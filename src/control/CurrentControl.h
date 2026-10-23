@@ -38,6 +38,7 @@ struct CurrentInputs {
 struct CurrentDecision {
     int ceilingW = 0;
     bool pvOnly = false; // Always use the household PID, including with Limiter OFF.
+    bool minimumOverrideAllowed = false; // Qualified discharge intent and released reserve; economics may yield to configured MIN.
     bool direct = false; // A fallback/stop/bypass decision, not a demand request.
     bool reserveKnown = false;
     bool reserveAllowed = false;
@@ -118,6 +119,7 @@ public:
                 qualified_ = qualifying_ = false; pairs_ = 0;
                 pauseDynamics();
                 out = lastApproved_;
+                out.minimumOverrideAllowed = false;
                 out.direct = false;
                 out.ceilingW = std::max(0, std::min({out.ceilingW, int(maximum), heldCommandW}));
                 out.chargeTargetValid = false;
@@ -135,7 +137,8 @@ public:
         if (!qualify(in, now)) {
             pauseDynamics();
             if (approved_ && in.sourcesWithinGrace && !(reserveKnown_ && !reserveAllowed_)) {
-                out = lastApproved_; out.direct = false;
+                out = lastApproved_;
+                out.minimumOverrideAllowed = false; out.direct = false;
                 out.ceilingW = std::max(0, std::min({out.ceilingW, int(maximum), heldCommandW}));
                 out.chargeTargetValid = false; out.reason = "source_recovery";
                 return out;
@@ -143,10 +146,19 @@ public:
             out.direct = true; out.reason = "recovery";
             return out;
         }
-        if (dischargeAvailable && out.reserveAllowed && (in.futureValid ? in.futureBatteryCeilingW > 0 : band_ == Expensive)) {
+        out.minimumOverrideAllowed = dischargeAvailable && out.reserveAllowed;
+        const bool reserveOffCharging = chargeAvailable && price &&
+            in.soc <= cfg.reserveOffSocPercent && band_ != Expensive;
+        const bool reserveOnCharging = chargeAvailable && price &&
+            in.soc > cfg.reserveOffSocPercent && in.soc < cfg.reserveOnSocPercent && band_ == Cheap;
+        const bool reserveCharging = reserveOffCharging || reserveOnCharging;
+        const float reserveChargeW = reserveOffCharging ? in.chargerW :
+            (reserveOnCharging ? in.chargerW * 0.5f : 0.0f);
+        if (!reserveCharging && dischargeAvailable && out.reserveAllowed &&
+            (in.futureValid ? in.futureBatteryCeilingW > 0 : band_ == Expensive)) {
             const float economicTarget = in.futureValid
                 ? clamp(float(in.futureBatteryCeilingW) +
-                    clamp(in.chargerW - cfg.batteryPowerDeadbandW, 0, maximum) * kDischargeEfficiency, 0, maximum)
+                    clamp(in.chargerW, 0, maximum) * kDischargeEfficiency, 0, maximum)
                 : maximum;
             piActive_ = false; integral_ = 0;
             if (!economicActive_) {
@@ -176,13 +188,19 @@ public:
             return approve(out);
         }
         out.strategy = "preserve";
-        out.reason = !out.reserveAllowed ? "reserve" :
+        out.reason = reserveOffCharging ? "reserve_off_charge" :
+            (reserveOnCharging ? "reserve_on_charge" : (!out.reserveAllowed ? "reserve" :
             (in.futureValid ? in.futureReason :
-             (band_ == Unknown ? "price_missing" : (band_ == Cheap ? "cheap" : "comfort")));
+             (band_ == Unknown ? "price_missing" : (band_ == Cheap ? "cheap" : "comfort")))));
         out.chargeTargetValid = true;
-        out.chargeTargetW = in.futureValid
-            ? std::max(float(cfg.batteryPowerDeadbandW), in.futureChargeTargetW)
-            : float(cfg.batteryPowerDeadbandW);
+        // Reserve and economic charging share one target; neither counts the same energy twice.
+        out.chargeTargetW = std::max(reserveChargeW,
+            in.futureValid ? std::max(0.0f, in.futureChargeTargetW) : 0.0f);
+        if (reserveOffCharging) {
+            piActive_ = false; integral_ = 0;
+            out.ceilingW = 0;
+            return approve(out);
+        }
         const float upper = clamp(in.chargerW * kDischargeEfficiency, 0, maximum);
         const float feedforward = clamp((in.chargerW - out.chargeTargetW) * kDischargeEfficiency, 0, upper);
         const float error = (in.batteryW - out.chargeTargetW) * kDischargeEfficiency;
@@ -197,7 +215,7 @@ public:
         if (lastPiSequence_ != in.bmsSequence) {
             const float sampleDt = clamp(float(uint32_t(now - lastSampleAt_)) * 0.001f, 0, 10);
             lastSampleAt_ = now; lastPiSequence_ = in.bmsSequence;
-            const bool demandLimited = float(heldCommandW) + cfg.batteryPowerDeadbandW < ceiling_;
+            const bool demandLimited = float(heldCommandW) < ceiling_;
             const float next = clamp(integral_ + kPvKiPerSecond * error * sampleDt, -maximum, maximum);
             const float candidate = feedforward + kPvKp * error + next;
             // No positive windup while the house PID requests less than this ceiling.
@@ -265,7 +283,7 @@ private:
         pauseDynamics();
     }
     CurrentDecision stop(CurrentDecision out, const char *reason) {
-        resetDynamics(); out.direct = true; out.reason = reason;
+        resetDynamics(); out.minimumOverrideAllowed = false; out.direct = true; out.reason = reason;
         return out;
     }
 };

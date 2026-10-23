@@ -38,3 +38,10 @@ The [control-planning baseline](control-planning/README.md) owns battery-control
 
 - [LATER] Prepare a separate absent/disabled grid-charger capability; never reuse the fan relay or choose an unverified pin. Qualify charger hardware, interlocks and metering before activation; update HA energy provenance when grid charging is introduced.
 - [LATER] Consider compact HA-supplied load profiles or an external optimizer only if measured benefit justifies the extra complexity. Neither is required for the first controller.
+
+## Later - PV forecast calibration after observation
+
+- [DEFERRED] Keep the current forecast/calibration implementation unchanged and collect a few weeks of quality observations before evaluating further changes. The owner reports that the neighboring house shades part of the panels late in the day under the low winter sun. A single all-day correction factor can incorrectly reduce the forecast for an unshaded morning.
+- [BASELINE] `calibrate()` in [shed_forecast_core.py](home-assistant/shed_forecast_core.py) uses the median actual/original forecast ratio from the last 30 completed days and requires at least 14 eligible days. It does not use a year-long median. Preserve the existing qualification/exclusion rules and neutral unqualified behavior during observation.
+- [LATER] Compare a rolling 14-21-day window with greater weight on recent observations, a time-dependent/hourly correction, and preferably solar elevation/azimuth with a building-horizon profile. These are options for later evaluation; the window, weights and model are not accepted implementation parameters.
+- [LATER] Any later calibration must exclude full-battery operation, disabled charge MOS, outages and curtailment/current limiting from learned PV-efficiency losses. Distinguish unavailable or restricted production from actual shade; retain the existing conservative evidence requirements. Evaluate the observed seasonal/time-of-day pattern after the collection period before proposing implementation.

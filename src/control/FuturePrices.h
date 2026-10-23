@@ -101,6 +101,7 @@ public:
                     uint32_t sequence, bool currentPriceValid, float currentPrice, bool currentExpensive,
                     float factor, int maximumW, const PvForecast *pv = nullptr, float qualifiedMaxChargeW = 0, DischargeBudget *trace = nullptr) {
         FuturePlan out;
+        (void)currentExpensive; // Price-band classification is not an economic admission gate.
         if (trace) trace->reset(utc, activeRevision_, pv ? pv->revision() : 0);
         const bool energyValid = bmsValid && std::isfinite(fullAh) && fullAh > 0 && fullAh <= 389 &&
             std::isfinite(soc) && soc >= 0 && soc <= 100 && std::isfinite(batteryW);
@@ -144,10 +145,9 @@ public:
         if (!cacheValid_ || cacheFirst_ != first || cachePriceRevision_ != activeRevision_ ||
             cachePv_ != pv || cachePvRevision_ != pvRevision || cachePvValid_ != pvValid ||
             cachePrice_ != currentPrice || cacheFactor_ != factor || cacheMaximumW_ != maximumW ||
-            cacheExpensive_ != currentExpensive || cacheChargeCapW_ != chargeCapW ||
-            cacheComfort_ != cfg.priceComfortEurPerKwh || cacheDeadband_ != cfg.priceDeadbandEurPerKwh ||
+            cacheChargeCapW_ != chargeCapW ||
             cacheReserve_ != cfg.reserveOffSocPercent || uint32_t(ms - cacheAt_) >= kReplanMs)
-            rebuild(first, end, utc, ms, cfg, currentPrice, currentExpensive, factor, maximumW, pv, chargeCapW);
+            rebuild(first, end, utc, ms, cfg, currentPrice, factor, maximumW, pv, chargeCapW);
 
         const float elapsedHours = float(utc - (activeStart_ + first * 900UL)) / 3600.0f;
         out.offeredPvWh = std::max(0.0f, cacheOfferWh_ - cacheFirstOfferW_ * elapsedHours);
@@ -168,11 +168,10 @@ public:
         for (unsigned j = 0; j < end - first; ++j) {
             const unsigned i = order_[j];
             const float p = price(i);
-            if (!eligible(i, first, p, currentPrice, currentExpensive, cfg)) continue;
+            if (!eligible(i, first, p, currentPrice)) continue;
             const uint32_t start = activeStart_ + i * 900UL;
             const float hours = float(start + 900UL - (i == first ? utc : start)) / 3600.0f;
-            const float load = p >= cfg.priceComfortEurPerKwh + 2 * cfg.priceDeadbandEurPerKwh
-                ? float(maximumW) : std::min(float(maximumW), float(kPlanningLoadW));
+            const float load = std::min(float(maximumW), float(kPlanningLoadW));
             const float need = std::max(0.0f, load) * hours;
             const float pvCredit = i == first ? 0 : std::min(pvBudget, need);
             pvBudget -= pvCredit; out.usablePvWh += pvCredit;
@@ -209,18 +208,17 @@ private:
         if (trace) trace->finish(out.valid, out.reason);
         return out;
     }
-    static bool eligible(unsigned i, unsigned first, float p, float currentPrice,
-                         bool expensive, const PreparedSettings &cfg) {
-        if (p < 0 || (i == first ? !expensive : p < cfg.priceComfortEurPerKwh + cfg.priceDeadbandEurPerKwh)) return false;
-        return i == first || !expensive || p >= currentPrice + kMinimumBenefitEurPerKwh;
+    static bool eligible(unsigned i, unsigned first, float p, float currentPrice) {
+        // Held energy has already paid acquisition losses/cycle costs. Defer its
+        // current use only for a materially better future price; flat/cheaper slots cannot hoard it.
+        return p > 0 && (i == first || p >= currentPrice + kMinimumBenefitEurPerKwh);
     }
     void rebuild(unsigned first, unsigned end, uint32_t utc, uint32_t ms, const PreparedSettings &cfg,
-                 float currentPrice, bool expensive, float factor, int maximumW, const PvForecast *pv, int chargeCapW) {
+                 float currentPrice, float factor, int maximumW, const PvForecast *pv, int chargeCapW) {
         cacheFirst_ = first; cachePriceRevision_ = activeRevision_; cachePv_ = pv;
         cachePvRevision_ = pv ? pv->revision() : 0; cachePvValid_ = pv && pv->valid(utc);
-        cachePrice_ = currentPrice; cacheFactor_ = factor; cacheMaximumW_ = maximumW; cacheExpensive_ = expensive;
-        cacheChargeCapW_ = chargeCapW; cacheComfort_ = cfg.priceComfortEurPerKwh;
-        cacheDeadband_ = cfg.priceDeadbandEurPerKwh; cacheReserve_ = cfg.reserveOffSocPercent;
+        cachePrice_ = currentPrice; cacheFactor_ = factor; cacheMaximumW_ = maximumW;
+        cacheChargeCapW_ = chargeCapW; cacheReserve_ = cfg.reserveOffSocPercent;
         cacheAt_ = ms; cacheValid_ = true; ++planningBuilds_;
         const unsigned count = end - first;
         const auto price = [&](unsigned i) { return i == first ? currentPrice : float(active_[i]) * .000001f * factor; };
@@ -228,7 +226,7 @@ private:
         std::sort(order_, order_ + count, [&](unsigned a, unsigned b) { return price(a) == price(b) ? a < b : price(a) > price(b); });
         cacheFirstFuture_ = count;
         for (unsigned i = first + 1; i < end; ++i)
-            if (eligible(i, first, price(i), currentPrice, expensive, cfg)) { cacheFirstFuture_ = i - first; break; }
+            if (eligible(i, first, price(i), currentPrice)) { cacheFirstFuture_ = i - first; break; }
         cacheOfferWh_ = cacheFirstOfferW_ = cacheFirstStorageW_ = 0;
         cachePvBeforeTarget_ = cachePvValid_ && cacheFirstFuture_ < count; pvPrefixWh_[0] = 0;
         bool continuousOffer = true;
@@ -263,9 +261,9 @@ private:
     uint32_t cachePriceRevision_ = 0, cachePvRevision_ = 0, cacheAt_ = 0, planningBuilds_ = 0;
     unsigned cacheFirst_ = 0, cacheFirstFuture_ = 0;
     int cacheMaximumW_ = 0, cacheChargeCapW_ = 0;
-    float cachePrice_ = 0, cacheFactor_ = 0, cacheComfort_ = 0, cacheDeadband_ = 0, cacheReserve_ = 0;
+    float cachePrice_ = 0, cacheFactor_ = 0, cacheReserve_ = 0;
     float cacheOfferWh_ = 0, cacheFirstOfferW_ = 0, cacheFirstStorageW_ = 0;
-    bool cacheValid_ = false, cachePvValid_ = false, cachePvBeforeTarget_ = false, cacheExpensive_ = false;
+    bool cacheValid_ = false, cachePvValid_ = false, cachePvBeforeTarget_ = false;
     JsonArena arena_;
 };
 } // namespace control

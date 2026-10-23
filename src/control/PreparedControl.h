@@ -48,7 +48,6 @@ struct PreparedSettings {
     int idleOutputW = 500;
     float reserveOffSocPercent = 2.0f;
     float reserveOnSocPercent = 10.0f;
-    int batteryPowerDeadbandW = 50;
     bool mosManualMode = true;
     bool inverterEnabled = true;
     float priceComfortEurPerKwh = 0.25f;

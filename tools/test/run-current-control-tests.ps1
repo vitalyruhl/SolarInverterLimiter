@@ -17,7 +17,7 @@ $decisionEnd = $source.IndexOf('#if CM_ENABLE_LOGGING && CM_ENABLE_VERBOSE_LOGGI
 if ($decisionStart -lt 0 -or $decisionEnd -le $decisionStart) { throw 'Production command extraction boundary missing' }
 $command = $source.Substring($decisionStart, $decisionEnd - $decisionStart)
 if (!$command.Contains('issueInverterCommand') -or !$command.Contains('currentDecision.pvOnly')) { throw 'Production command extraction incomplete' }
-$issueSource = [regex]::Match($source, '(?s)static void issueInverterCommand\(int watts, int maximumW, int outputOffsetW\)\r?\n\{.*?(?=static void processRS485Tick\(\)\r?\n\{)')
+$issueSource = [regex]::Match($source, '(?s)static void issueInverterCommand\(int watts, int maximumW, int outputOffsetW, int minimumW = 0\)\r?\n\{.*?(?=static void processRS485Tick\(\)\r?\n\{)')
 if (!$issueSource.Success -or !$issueSource.Value.Contains('correctOutputCommand')) { throw 'Production issue function extraction missing' }
 $heldSource = [regex]::Match($source, 'configuredMax, ([^\r\n]+), nowMs\);')
 if (!$heldSource.Success) { throw 'Production held-command extraction missing' }
