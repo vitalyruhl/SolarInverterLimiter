@@ -18,12 +18,15 @@ class BuildEnvironment(dict):
     def __init__(self, root):
         super().__init__(PIOENV="usb", BUILD_FLAGS="-DCM_ENABLE_LIVE_UI=0 -DCM_ENABLE_SETTINGS_UI=1 -DCM_ENABLE_LOGGING=0")
         self.root = root
+        self.development = False
 
     def subst(self, key):
         return str(self.root / ".pio/libdeps") if key == "$PROJECT_LIBDEPS_DIR" else str(self.root)
 
     def GetProjectOption(self, key, default=None):
-        return ["vitaly.ruhl/ESP32 Configuration Manager@4.9.0"] if key == "lib_deps" else default
+        if key == "lib_deps":
+            return ["file://../ConfigurationsManager"] if self.development else ["vitaly.ruhl/ESP32 Configuration Manager@4.9.0"]
+        return default
 
     def Replace(self, **kwargs):
         self.update(kwargs)
@@ -89,6 +92,20 @@ def source_fingerprint(root, features):
     def test_wrong_registry_owner_is_rejected_before_ui_build(self):
         (self.library / '.piopm').write_text(json.dumps({'version':'4.9.0','spec':{'owner':'other'}}))
         with self.assertRaisesRegex(RuntimeError, 'registry'):
+            self.run_hook()
+        self.assertEqual(self.calls, [])
+
+    def test_explicit_local_development_package_is_version_checked(self):
+        self.environment.development = True
+        (self.library / "library.json").write_text(json.dumps({"name": "ESP32 Configuration Manager", "version": "4.9.1"}))
+        (self.library / "src/ConfigManager.h").write_text('#define CONFIGMANAGER_VERSION "4.9.1"')
+        (self.library / "webui/package.json").write_text(json.dumps({"version": "4.9.1"}))
+        self.run_hook()
+        self.assertEqual(len(self.calls), 1)
+
+    def test_local_development_wrong_version_is_rejected(self):
+        self.environment.development = True
+        with self.assertRaisesRegex(RuntimeError, 'manifest|version'):
             self.run_hook()
         self.assertEqual(self.calls, [])
 

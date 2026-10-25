@@ -1,5 +1,33 @@
 # ESP32 RS485 Solar Inverter Limiter
 
+## Runtime hardening candidate 5.4.1
+
+This development candidate uses the adjacent unpublished CM 4.9.1 source package
+through an explicit consumer-local `file://` dependency. Before building, run
+`python tools/prepare_cm_development.py` to create the bounded package under
+`.local/cm-hardening-package`; this excludes development caches and Git data.
+Settings-only UI and
+disabled generic verbose logging remain required. Bounded MQTT receives assemble
+over loop iterations with a 30-second first-byte deadline; reconnect keeps already
+accepted price/PV plans within their original validity. Numeric conversion and
+control arithmetic fail closed on invalid or unrepresentable values. Synchronous
+smart-roaming scans are disabled in SIL to avoid pausing control.
+
+Serial `[I] DIAG` records expose stage timing, loop gaps, heap/stack reserve and
+transport failures every five seconds. A small RTC record retains the last stage
+for the next boot when RTC memory survives the reset. The non-retained
+`<base>/Diagnostics/Runtime` topic and ESP System-Info report reset evidence;
+WiFi System-Info omits duplicate ESP uptime. A hardware reset still loses the
+in-memory price/PV plans. Mock builds suppress RS485 and BMS emergency writes and
+must use isolated MQTT inputs/outputs. USB fixture port is COM8.
+
+Focused host/build checks and bounded COM8 observations are recorded in the
+[acceptance report](docs/acceptance/2026-10-25-mqtt-runtime-hardening.md).
+The owner-authorized frozen 5.4.1 image was installed by production OTA on
+2026-10-25 at 15:04 UTC; version, Settings-only profile and all 74 settings were
+verified after reboot. Long-term stability, extra MQTT reconnects and the
+offline WiFi-stage latency remain open observations.
+
 ## Charging-intent preview (5.4.0)
 
 The new diagnostic charge projection shows when the currently recognized policy deliberately withholds PV for the battery; a separate series exposes expected sunlight. It projects the existing economic request and reserve full/half policy without changing controller decisions, MOS commands or NVS. Blue/DC withholding is distinct from the existing red/AC discharge allowance and is not a complete future inverter SetValue. Missing forecast intervals remain unknown. See the [wire contract](docs/control-planning/mqtt-schedule-contract.md#charge-intent-projection-output-v1-540-test-candidate) and [implementation plan](docs/superpowers/plans/2026-10-23-charge-intent-projection.md). After isolated COM8 acceptance, the owner authorized production OTA; the frozen real-transport image was installed and version 5.4.0 verified with Live disabled, Settings enabled and all captured setting values preserved.

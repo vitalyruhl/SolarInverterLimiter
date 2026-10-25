@@ -13,6 +13,7 @@
 
 #include "ConfigManager.h"
 #include "runtime/CompactLiveMetadata.h"
+#include "runtime/RuntimeDiagnostics.h"
 
 #include "core/CoreSettings.h"
 #include "core/CoreWiFiServices.h"
@@ -27,6 +28,7 @@
 #include "control/CurrentControl.h"
 #include "control/OutputCorrection.h"
 #include "control/TelemetryAge.h"
+#include "control/NumericSafety.h"
 #include "control/FuturePrices.h"
 #include "control/PvForecast.h"
 #include "control/ChargePlan.h"
@@ -115,8 +117,10 @@ static constexpr uint32_t kI2cHz = 400000;
 #endif
 
 #ifndef VERSION
-#define VERSION "5.4.0"
+#define VERSION "5.4.1"
 #endif
+
+static sil::RuntimeDiagnostics runtimeDiagnostics;
 
 enum class NegativePriceSettingPreference : uint8_t
 {
@@ -407,6 +411,7 @@ float Pressure = 0.0;              // current pressure in hPa
 static String mqttBaseTopic;
 static String topicPublishSetValueW;
 static String topicPublishCalculatedValueW;
+static String topicPublishRuntimeDiagnostics;
 static String topicPublishGridImportW;
 static String topicPublishPlanningConfig;
 static String topicPublishPlanningState;
@@ -534,6 +539,7 @@ static ControlLogSnapshot controlLog;
 void setup()
 {
     Serial.begin(115200);
+    runtimeDiagnostics.begin(VERSION, kRs485MockTransport);
     ensureNvsReady();
 
     setupLogging();
@@ -594,7 +600,8 @@ void setup()
 
     ConfigManager.startWebServer();
 
-    ConfigManager.enableSmartRoaming(true);
+    // The synchronous smart-roaming scan can suspend control for up to ten seconds.
+    ConfigManager.enableSmartRoaming(false);
     ConfigManager.setRoamingThreshold(-75);
     ConfigManager.setRoamingCooldown(30);
     ConfigManager.setRoamingImprovement(10);
@@ -656,11 +663,18 @@ static bool ensureNvsReady()
 
 void loop()
 {
+    runtimeDiagnostics.loop();
+    runtimeDiagnostics.enter(sil::RuntimeStage::Wifi);
     ConfigManager.getWiFiManager().update();
+    runtimeDiagnostics.enter(sil::RuntimeStage::Mqtt);
     mqtt.loop();
+    runtimeDiagnostics.enter(sil::RuntimeStage::Sbt);
     sbtInputs.loop();
+    runtimeDiagnostics.enter(sil::RuntimeStage::Publish);
     publishMqttNow();
+    runtimeDiagnostics.enter(sil::RuntimeStage::Control);
     handleRS485Scheduler();
+    runtimeDiagnostics.enter(sil::RuntimeStage::Sensors);
 #if FEATURE_BME280_ENABLED
     const bool temperatureUpdated = handleTemperatureScheduler();
 #else
@@ -670,6 +684,7 @@ void loop()
     ioManager.update();
 
     // Services managed by ConfigManager.
+    runtimeDiagnostics.enter(sil::RuntimeStage::Config);
     ConfigManager.handleClient();
     alarmManager.update();
 
@@ -692,6 +707,8 @@ void loop()
 #endif
     }
 #endif
+    runtimeDiagnostics.report(mqtt.getBoundedIoStats(), futurePrices.revision(), pvForecast.revision());
+    runtimeDiagnostics.enter(sil::RuntimeStage::Idle);
     delay(10);
 }
 
@@ -1294,6 +1311,27 @@ static bool hasValidStationCredentials(const String &ssid, const String &passwor
     return true;
 }
 
+#if defined(SIL_MOCK_TRANSPORT) && SIL_MOCK_TRANSPORT
+static bool mockMqttIsIsolated()
+{
+    const char *prefix = "SILHardening/COM8/in/";
+    if (mqttSettings.server.get() != "192.168.2.220" || mqttSettings.port.get() != 18884 ||
+        !limiterSettings.priceScheduleInputTopic.get().startsWith(prefix) ||
+        !limiterSettings.pvScheduleInputTopic.get().startsWith(prefix)) return false;
+    auto *sbtRoot = static_cast<Config<String> *>(ConfigManager.findSettingByKeyHint("MQTT-Topics", "SBTInputRoot"));
+    if (!sbtRoot || !sbtRoot->get().startsWith(prefix)) return false;
+    for (const char *id : {"grid_import_w", "solar_power_w", "negative_price", "electricity_price"}) {
+        uint32_t hash = 2166136261u;
+        for (const char *p = id; *p; ++p) { hash ^= uint8_t(*p); hash *= 16777619u; }
+        char hint[16];
+        snprintf(hint, sizeof(hint), "MQTTRT_%08X", unsigned(hash));
+        auto *topic = static_cast<Config<String> *>(ConfigManager.findSettingByKeyHint("MQTT-Topics", hint));
+        if (!topic || !topic->get().startsWith(prefix)) return false;
+    }
+    return true;
+}
+#endif
+
 static void setupNetworkDefaults()
 {
     const String currentSsid = wifiSettings.wifiSsid.get();
@@ -1373,9 +1411,13 @@ static void setupNetworkDefaults()
     }
 
 #if defined(SIL_MOCK_TRANSPORT) && SIL_MOCK_TRANSPORT
-    // Mock images publish under a test identity even when production defaults exist.
-    mqttSettings.publishTopicBase.set("SILTest");
-    mqttSettings.clientId.set("SolarInverterLimiter-Test");
+    // Never connect a newly flashed mock to production using inherited/default NVS.
+    mqttSettings.publishTopicBase.set("SILHardening/COM8/out");
+    mqttSettings.clientId.set("SILHardening-COM8-device");
+    if (!mockMqttIsIsolated()) {
+        mqttSettings.enableMQTT.set(false);
+        Serial.println("[W] [MOCKED!] MQTT disabled: fixture isolation incomplete");
+    }
 #endif
 
     // Test firmware keeps the existing device OTA credential.
@@ -1527,6 +1569,7 @@ static void updateMqttTopics()
     mqttBaseTopic = base;
     topicPublishSetValueW = mqttBaseTopic + "/SetValue";
     topicPublishCalculatedValueW = mqttBaseTopic + "/CalculatedValue";
+    topicPublishRuntimeDiagnostics = mqttBaseTopic + "/Diagnostics/Runtime";
     topicPublishGridImportW = mqttBaseTopic + "/GetValue";
     topicPublishPlanningConfig = mqttBaseTopic + "/Planning/Config";
     topicPublishPlanningState = mqttBaseTopic + "/Planning/State";
@@ -1675,6 +1718,7 @@ static void publishMqttNow()
     }
     mqtt.publishExtraTopicLazy("setvalue_w", topicPublishSetValueW.c_str(), []() { return String(inverterSetValue); }, false);
     mqtt.publishExtraTopicLazy("calculated_w", topicPublishCalculatedValueW.c_str(), []() { return String(inverterCalculatedValue); }, false);
+    mqtt.publishExtraTopicLazy("runtime_diag", topicPublishRuntimeDiagnostics.c_str(), []() { return runtimeDiagnostics.mqttPayload(); }, false);
     mqtt.publishExtraTopicLazy("grid_import_w", topicPublishGridImportW.c_str(), []() { return String(currentGridImportW); }, false);
     if (preparedSettingsLoaded)
     {
@@ -1701,6 +1745,12 @@ static int computePidStabilizedTarget(int baseTarget, int configuredMin, int con
 {
     const unsigned long nowMs = millis();
     float dtSeconds = limiterSettings.RS232PublishPeriod.get();
+    if (!std::isfinite(dtSeconds) || !std::isfinite(limiterSettings.pidKp.get()) ||
+        !std::isfinite(limiterSettings.pidKi.get()) || !std::isfinite(limiterSettings.pidKd.get()))
+    {
+        resetPidController();
+        return 0;
+    }
 
     if (pidController.initialized)
     {
@@ -1730,6 +1780,11 @@ static int computePidStabilizedTarget(int baseTarget, int configuredMin, int con
                         limiterSettings.pidKd.get() * derivative;
 
     const float candidateOutput = pidController.output + delta;
+    if (!std::isfinite(candidateOutput))
+    {
+        resetPidController();
+        return 0;
+    }
     const float clampedOutput = constrain(candidateOutput, static_cast<float>(configuredMin), static_cast<float>(configuredMax));
 
     if (candidateOutput == clampedOutput ||
@@ -1744,7 +1799,13 @@ static int computePidStabilizedTarget(int baseTarget, int configuredMin, int con
     pidController.previousError = error;
     pidController.lastUpdateMs = nowMs;
 
-    return static_cast<int>(roundf(pidController.output));
+    int result = 0;
+    if (!control::checkedFloatToInt(roundf(pidController.output), result))
+    {
+        resetPidController();
+        return 0;
+    }
+    return result;
 }
 
 //----------------------------------------
@@ -1788,6 +1849,7 @@ static void handleRS485Scheduler()
 
     rs485TickDue = false;
     processRS485Tick();
+    runtimeDiagnostics.controlCompleted();
 }
 
 #if FEATURE_BME280_ENABLED
@@ -1895,14 +1957,15 @@ static void processRS485Tick()
 
     const uint32_t nowMs = millis();
     float measuredGridW = 0, measuredInverterW = 0, measuredPrice = 0;
-    const bool gridFresh = telemetryAge.read(control::TelemetryAge::Grid, nowMs, control::kGridAcStaleMs, measuredGridW);
-    const bool inverterFresh = telemetryAge.read(control::TelemetryAge::Inverter, nowMs, control::kGridAcStaleMs, measuredInverterW);
+    int currentInverterOutputW = 0, signedGridPowerW = 0;
+    const bool gridFresh = telemetryAge.read(control::TelemetryAge::Grid, nowMs, control::kGridAcStaleMs, measuredGridW) &&
+        control::checkedFloatToInt(measuredGridW, signedGridPowerW);
+    const bool inverterFresh = telemetryAge.read(control::TelemetryAge::Inverter, nowMs, control::kGridAcStaleMs, measuredInverterW) &&
+        control::checkedFloatToInt(measuredInverterW, currentInverterOutputW);
     const bool priceFresh = telemetryAge.read(control::TelemetryAge::Price, nowMs, 1200000UL, measuredPrice);
     const int offset = limiterSettings.inputCorrectionOffset.get();
-    const int currentInverterOutputW = static_cast<int>(measuredInverterW);
-    const int signedGridPowerW = static_cast<int>(measuredGridW);
     const int gridImportW = max(signedGridPowerW, 0);
-    const int gridExportW = max(-signedGridPowerW, 0);
+    const int gridExportW = control::nonnegativeExportMagnitude(signedGridPowerW);
     const bool negativePriceForceMinEnabled = limiterSettings.forceMinOnNegativePrice.get();
     const bool negativePriceSetZeroEnabled = !negativePriceForceMinEnabled && limiterSettings.setZeroOnNegativePrice.get();
     const bool negativePriceMinActive = negativePriceActive && negativePriceForceMinEnabled;
@@ -2016,12 +2079,20 @@ static void processRS485Tick()
     }
     else
     {
-        pidBaseTarget = currentInverterOutputW + signedGridPowerW;
+        pidBaseTarget = control::saturatingAdd(currentInverterOutputW, signedGridPowerW);
         const int effectiveCeiling = max(outputMinimumW, constrain(currentDecision.ceilingW, 0, configuredMax));
         const int effectiveMin = min(configuredMin, effectiveCeiling);
         pidClampedBaseTarget = constrain(pidBaseTarget, effectiveMin, effectiveCeiling);
-        pidInput = pidController.initialized ? static_cast<int>(roundf(pidController.output)) : pidClampedBaseTarget;
+        pidInput = pidClampedBaseTarget;
+        if (pidController.initialized && !control::checkedFloatToInt(roundf(pidController.output), pidInput)) resetPidController();
         inverterCalculatedValue = computePidStabilizedTarget(pidBaseTarget, effectiveMin, effectiveCeiling);
+        if (!pidController.initialized) {
+            currentDecision.direct = true;
+            currentDecision.minimumOverrideAllowed = false;
+            currentDecision.chargeTargetValid = false;
+            currentDecision.ceilingW = 0;
+            currentDecision.reason = "pid_invalid";
+        }
     }
     if (negativePriceOverrideTarget >= 0)
     {

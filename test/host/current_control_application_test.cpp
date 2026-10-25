@@ -1,5 +1,6 @@
 #include "control/CurrentControl.h"
 #include "control/OutputCorrection.h"
+#include "control/NumericSafety.h"
 #include <algorithm>
 #include <cassert>
 #include <climits>
@@ -312,7 +313,25 @@ static void minimumPreservesMaxAndNegativeOverrides(){
  limiterSettings.enableController.value=false;applyDecision();assert(issued==900);
 }
 
+static void invalidPidArithmeticStopsWithoutConversionOverflow(){
+ // [MOCKED!] Corrupt numeric settings; execute the extracted production PID.
+ const float kp=limiterSettings.pidKp.value;
+ limiterSettings.pidKp.value=NAN;resetPidController();
+ assert(computePidStabilizedTarget(500,0,900)==0);
+ assert(!pidController.initialized);
+ configuredMin=700;configuredMax=900;offset=0;negativePriceOverrideTarget=-1;
+ limiterSettings.enableController.value=true;
+ currentDecision={};currentDecision.ceilingW=900;currentDecision.minimumOverrideAllowed=true;
+ applyDecision();assert(issued==0&&currentDecision.direct);
+ configuredMin=0;
+ limiterSettings.pidKp.value=kp;
+ resetPidController();
+ assert(computePidStabilizedTarget(INT_MAX,0,INT_MAX)==0);
+ assert(!pidController.initialized);
+}
+
 int main(){
+ invalidPidArithmeticStopsWithoutConversionOverflow();
  minimumNeverOverridesRestrictions();
  minimumPermissionDoesNotSurviveSourceGrace();
  minimumPreservesMaxAndNegativeOverrides();
