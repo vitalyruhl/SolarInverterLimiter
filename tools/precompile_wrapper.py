@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Build and verify the pinned registry CM WebUI inside this consumer's libdeps."""
+"""Verify the explicit CM package and build its Settings-only consumer WebUI."""
 
 import hashlib
 import importlib.util
@@ -16,34 +16,48 @@ Import("env")
 # Use the compiler-aware archiver for size-saving link-time optimization.
 env.Replace(AR="xtensa-esp32-elf-gcc-ar", RANLIB="xtensa-esp32-elf-gcc-ranlib")
 
-requirement = "vitaly.ruhl/ESP32 Configuration Manager@4.9.0"
+registry_requirement = "vitaly.ruhl/ESP32 Configuration Manager@4.9.0"
+development_requirements = ("file://../ConfigurationsManager", "file://.local/cm-hardening-package")
 dependencies = env.GetProjectOption("lib_deps", [])
 if isinstance(dependencies, str):
     dependencies = dependencies.splitlines()
-if [value.strip() for value in dependencies].count(requirement) != 1:
-    raise RuntimeError(f"Select the pinned registry dependency: {requirement}")
+selected = [value.strip() for value in dependencies]
+development_matches = [item for item in development_requirements if selected.count(item) == 1]
+development = len(development_matches) == 1
+requirement = development_matches[0] if development else registry_requirement
+expected_version = "4.9.1" if development else "4.9.0"
+if selected.count(requirement) != 1 or len(development_matches) > 1 or (development and registry_requirement in selected):
+    raise RuntimeError(f"Select exactly one explicit CM dependency: {requirement}")
 
 libdeps_dir = Path(env.subst("$PROJECT_LIBDEPS_DIR")).resolve() / env["PIOENV"]
 library_dir = (libdeps_dir / "ESP32 Configuration Manager").resolve()
 if not library_dir.is_relative_to(libdeps_dir.resolve()):
-    raise RuntimeError("ConfigManager must be a consumer-local registry package, not a source symlink.")
+    raise RuntimeError("ConfigManager must be a consumer-local package, not a source symlink.")
 try:
     provenance = json.loads((library_dir / ".piopm").read_text(encoding="utf-8"))
 except (OSError, ValueError) as error:
     raise RuntimeError("ConfigManager registry provenance missing or invalid.") from error
-if provenance.get("version") != "4.9.0" or provenance.get("spec", {}).get("owner") != "vitaly.ruhl":
+if not development and (provenance.get("version") != "4.9.0" or provenance.get("spec", {}).get("owner") != "vitaly.ruhl"):
     raise RuntimeError("ConfigManager registry owner/version does not match the pinned requirement.")
 metadata = json.loads((library_dir / "library.json").read_text(encoding="utf-8"))
-if metadata.get("name") != "ESP32 Configuration Manager" or metadata.get("version") != "4.9.0":
-    raise RuntimeError("ConfigManager registry manifest does not match the pinned requirement.")
+if metadata.get("name") != "ESP32 Configuration Manager" or metadata.get("version") != expected_version:
+    raise RuntimeError("ConfigManager manifest version does not match the explicit requirement.")
 header = (library_dir / "src/ConfigManager.h").read_text(encoding="utf-8")
 match = re.search(r'^#define\s+CONFIGMANAGER_VERSION\s+"([^\"]+)"', header, re.MULTILINE)
 web_version = json.loads((library_dir / "webui/package.json").read_text(encoding="utf-8")).get("version")
-if not match or match.group(1) != "4.9.0" or web_version != "4.9.0":
-    raise RuntimeError("ConfigManager registry version mirrors disagree.")
+if not match or match.group(1) != expected_version or web_version != expected_version:
+    raise RuntimeError("ConfigManager version mirrors disagree.")
+if development:
+    source = (Path(env.subst("$PROJECT_DIR")) / "../ConfigurationsManager/src/mqtt").resolve()
+    # A cached local package must not silently omit a later reviewed transport fix.
+    if source.exists():
+        for original in source.rglob("*.h"):
+            copied = library_dir / "src/mqtt" / original.relative_to(source)
+            if not copied.is_file() or copied.read_bytes() != original.read_bytes():
+                raise RuntimeError("Local CM package is stale; refresh the explicit development dependency before building.")
 
-# Reuse the published flag resolver and UI builder; never use the adjacent checkout
-# or modify PlatformIO's shared downloaded-package cache.
+# Build only the consumer-local package; never modify PlatformIO's shared cache
+# or the adjacent development checkout while generating embedded UI assets.
 resolver = importlib.util.spec_from_file_location("sil_cm_webui_features", library_dir / "tools/webui_features.py")
 features_module = importlib.util.module_from_spec(resolver)
 resolver.loader.exec_module(features_module)
@@ -71,4 +85,5 @@ asset_sha256 = hashlib.sha256(asset.read_bytes()).hexdigest()
 if (cached.get("fingerprint") != fingerprint or cached.get("features") != features or
         cached.get("header_sha256") != asset_sha256):
     raise RuntimeError("Generated ConfigManager WebUI source, flags or asset hash disagree.")
-print(f"[I] Registry CM 4.9.0; WebUI Live=0 Settings=1; asset={asset_sha256}")
+kind = "LOCAL DEVELOPMENT" if development else "Registry"
+print(f"[I] {kind} CM {expected_version}; WebUI Live=0 Settings=1; asset={asset_sha256}")

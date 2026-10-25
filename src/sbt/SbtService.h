@@ -101,7 +101,13 @@ class Service {
             const bool send = receiver_.takeEmergencyOff(millis(),utc > 0 ? static_cast<uint64_t>(utc) : 0,
                 requestId,payload,sizeof(payload));
             xSemaphoreGive(mutex_);
-            if (send) mqtt_->publishRaw((root_ + "/" + Receiver::emergencyOffTopic()).c_str(),payload,false);
+            if (send) {
+#if defined(SIL_MOCK_TRANSPORT) && SIL_MOCK_TRANSPORT
+                Serial.println("[I] [MOCKED!] BMS emergency TX suppressed");
+#else
+                mqtt_->publishRaw((root_ + "/" + Receiver::emergencyOffTopic()).c_str(),payload,false);
+#endif
+            }
         }
     }
 

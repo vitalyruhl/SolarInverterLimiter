@@ -1,7 +1,9 @@
 #pragma once
 #include "ConfigManager.h"
 #include "JsonArena.h"
+#include "NumericSafety.h"
 #include <ArduinoJson.h>
+#include <cerrno>
 #include <cmath>
 #include <cstdlib>
 #include <cstring>
@@ -43,7 +45,7 @@ public:
             portENTER_CRITICAL(&mux_);
             stamps_[i].valid = false;
             portEXIT_CRITICAL(&mux_);
-            if (!length || length > 1024) continue;
+            if (!length || length > 1024 || std::memchr(payload, 0, length)) continue;
             float parsed = 0;
             if (!parse(i, reinterpret_cast<const char *>(payload), length, parsed)) continue;
             portENTER_CRITICAL(&mux_);
@@ -58,16 +60,41 @@ private:
         while (begin < end && isSpace(*begin)) ++begin;
         while (end > begin && isSpace(end[-1])) --end;
     }
-    // Mirrors CM receive conversion: strict number, integers truncated like String::toInt.
+    static bool decimalNumber(const char *text) {
+        const char *p = text;
+        while (isSpace(*p)) ++p;
+        if (*p == '+' || *p == '-') ++p;
+        bool digits = false;
+        while (*p >= '0' && *p <= '9') { digits = true; ++p; }
+        if (*p == '.') {
+            ++p;
+            while (*p >= '0' && *p <= '9') { digits = true; ++p; }
+        }
+        if (!digits) return false;
+        if (*p == 'e' || *p == 'E') {
+            ++p;
+            if (*p == '+' || *p == '-') ++p;
+            const char *exponent = p;
+            while (*p >= '0' && *p <= '9') ++p;
+            if (p == exponent) return false;
+        }
+        while (isSpace(*p)) ++p;
+        return !*p;
+    }
+    // CM text integers use the decimal prefix ("1e3" becomes 1); JSON numbers
+    // use their numeric value. Validate the full text and both integer ranges.
     static bool convertText(unsigned i, const char *text, float &out) {
+        if (!decimalNumber(text)) return false;
         char *end = nullptr;
         const double number = std::strtod(text, &end);
         while (end && isSpace(*end)) ++end;
         if (end == text || !end || *end || !std::isfinite(number)) return false;
         if (i == Price) { out = float(number); return std::isfinite(out); }
-        if (number < INT32_MIN || number > INT32_MAX) return false;
-        out = float(std::atol(text));
-        return true;
+        if (number < double(INT_MIN) || number > double(INT_MAX)) return false;
+        errno = 0;
+        const long prefix = std::strtol(text, nullptr, 10);
+        if (errno == ERANGE) return false;
+        return checkedIntegerToFloat(double(prefix), out);
     }
     bool parse(unsigned i, const char *data, unsigned length, float &out) {
         const char *begin = data, *end = data + length;
@@ -116,14 +143,16 @@ private:
         JsonVariantConst value = doc.as<JsonVariantConst>();
         for (unsigned s = 0; s < segmentCount; ++s) value = value[segments[s]];
         if (value.isNull() || value.is<bool>()) return false;
-        if (value.is<const char *>()) return convertText(i, value.as<const char *>(), out);
+        if (value.is<const char *>()) {
+            const JsonString text = value.as<JsonString>();
+            if (std::strlen(text.c_str()) != text.size()) return false;
+            return convertText(i, text.c_str(), out);
+        }
         if (!value.is<double>()) return false;
         const double number = value.as<double>();
         if (!std::isfinite(number)) return false;
         if (i == Price) { out = float(number); return std::isfinite(out); }
-        if (number < INT32_MIN || number > INT32_MAX) return false;
-        out = float(long(number));
-        return true;
+        return checkedIntegerToFloat(number, out);
     }
     struct Stamp { uint32_t at = 0; float value = 0; bool valid = false; };
     mutable portMUX_TYPE mux_ = portMUX_INITIALIZER_UNLOCKED;
