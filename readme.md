@@ -1,11 +1,95 @@
 # ESP32 RS485 Solar Inverter Limiter
 
-## Runtime hardening candidate 5.4.1
+## WiFi power-save checkpoint 5.4.3
 
-This development candidate uses the adjacent unpublished CM 4.9.1 source package
-through an explicit consumer-local `file://` dependency. Before building, run
-`python tools/prepare_cm_development.py` to create the bounded package under
-`.local/cm-hardening-package`; this excludes development caches and Git data.
+Companion CM implementation checkpoint: `801e3cf76dc0c8801a4176241a600aa92be9336f`
+(on `fix/mqtt-session-recovery`). The version-specific archived inputs below,
+including their original manifests, remain the exact firmware dependency source.
+
+The installed consumer selects frozen CM 4.10.0 through the explicit URI
+`file://.local/cm-wifi-sleep-4.10.0-package`. Build and dependency outputs use
+`.pio/wifi-sleep-5.4.3`. The owner-authorized OTA was accepted on 2026-10-25 at
+20:20:52.937270 UTC. Identity, version, Settings-only profile and inactive OTA
+were verified, with all 74 previous settings preserved and only WiFiPowerSave
+added. The accepted binary SHA256 is
+`fc9df288d6bb51c9994c1e8a1057b795d0d187705fb25c95f1d1ae2b3bfc7aba`.
+
+The ignored 188-file source package has manifest SHA256
+`f54c592f118b9615926cd15d13ec0eeedecd2af3fdb4985acb69c94a4d74a081`.
+The exact source ZIP and original manifest are tracked under `dependencies/cm/`,
+including the original LICENSE. This is a historical **WiFi-only** reproduction
+snapshot: native NONE with BLE controller initialization has a known classic
+ESP32 platform incompatibility addressed later by CM 4.10.1. Do not treat this
+4.10.0 archive as BLE acceptance. The current CM 4.10.1 checkout cannot replace it.
+The preparation helper expects a matching CM 4.10.0 checkout and must not be run
+against current 4.10.1 sources. No Registry publication is implied. Later
+documentation notes do not change the frozen package or accepted firmware.
+
+From the repository root, restore the exact source package before building:
+
+```powershell
+$archive = 'dependencies/cm/cm-4.10.0-source.zip'
+$expected = '524b6c084529a1cd9339874b4137bc80f648ee507d73b34d0e3c41dac7fb43c3'
+if ((Get-FileHash -Algorithm SHA256 -LiteralPath $archive).Hash.ToLowerInvariant() -ne $expected) { throw 'CM archive hash mismatch' }
+$destination = '.local/cm-wifi-sleep-4.10.0-package'
+if (Test-Path -LiteralPath $destination) { throw 'Preserve the existing package; choose a clean checkout for restore' }
+Expand-Archive -LiteralPath $archive -DestinationPath $destination
+```
+
+The ZIP contains exactly the 188 manifest entries plus `manifest.sha`. Its
+roundtrip was hash-verified before this checkpoint; the build wrapper verifies
+the full extracted package again. The companion `.zip.sha256` and external
+`.manifest.sha` preserve the archive digest and original source manifest.
+
+CM adds exactly one persistent WiFi setting, `WiFiPowerSave` (default false).
+Loaded values apply before initial connection; an existing explicit value remains
+authoritative. SIL does not add a direct `WiFi.setSleep()` override. Rollout
+comparison must allow this one new setting while preserving all previous values.
+
+The wrapper verifies the complete frozen source manifest and every immutable
+consumer source before and after UI generation, including core/WiFi sources and
+`src/html_content.cpp`. Only the generated `src/html_content.h`, `webui/dist/`
+and explicitly scoped tool caches may differ in the consumed copy. Settings-only
+source/feature/header-hash proof remains mandatory. This does not establish that
+WiFi sleep caused the observed MQTT interruptions. Focused host checks, real/mock
+builds and bounded device checks completed; the fixture recovered fresh accepted
+plans after a TX expiry while control continued and heap integrity remained valid.
+The TX stall still occurred with native sleep OFF, so MQTT cause and long-term
+stability remain open.
+
+## Historical MQTT recovery checkpoint 5.4.2
+
+This historical checkpoint used the bounded local CM 4.9.2 development package.
+Its original package and artifacts are retained privately; the current preparation
+helper targets 4.10.0 instead. A fixed-memory transmit FIFO handles temporary send pressure
+and short writes without immediately reconnecting. Its oldest pending bytes have
+a five-second limit; fatal socket errors, expiry, and overflow still close the
+connection. A closed session never transfers pending application bytes to the next.
+
+Serial diagnostics and `<base>/Diagnostics/Runtime` now include cumulative RX and
+TX transport counters, distinguishing temporary pressure from fatal failures.
+`<base>/Planning/Config.maxOutputW` reports the actual configured `LimiterMaxW`
+without changing that setting. It can provide the configured reference for a
+dashboard discharge axis. Existing planning/source-safety decisions are unchanged.
+Invalid charge projections still publish `valid=false` and empty arrays; they do
+not authorize use of stale source data.
+
+Host characterization does not prove cancellation of already queued TCP bytes.
+The observed delayed CONNECT/session replacement remains a separate field issue.
+The focused host checks, real/mock builds, and bounded COM8 pretest passed. The
+owner-authorized frozen 5.4.2 image was installed at 17:42:46 UTC on 2026-10-25.
+Post-reboot identity, Settings-only profile, inactive OTA, and all 74 settings
+were verified. This is a bounded observation, not a long-term stability claim.
+Subsequent production monitoring recorded two TX expiries and renewed MQTT
+connections while ESP uptime and valid plans continued. The availability defect
+therefore remains open despite the verified improvement under transient pressure.
+
+## Historical runtime hardening checkpoint 5.4.1
+
+This historical checkpoint used an unpublished CM 4.9.1 source package through
+an explicit consumer-local `file://` dependency at `.local/cm-hardening-package`.
+Its original package and artifacts are retained privately; the current helper
+cannot reconstruct this historical version from the current CM checkout.
 Settings-only UI and
 disabled generic verbose logging remain required. Bounded MQTT receives assemble
 over loop iterations with a 30-second first-byte deadline; reconnect keeps already

@@ -117,7 +117,7 @@ static constexpr uint32_t kI2cHz = 400000;
 #endif
 
 #ifndef VERSION
-#define VERSION "5.4.1"
+#define VERSION "5.4.3"
 #endif
 
 static sil::RuntimeDiagnostics runtimeDiagnostics;
@@ -1599,10 +1599,10 @@ struct JsonNumberText
 // Payloads are formatted on the stack so each publish needs one heap allocation.
 static String buildPlanningConfigPayload()
 {
-    char payload[224];
+    char payload[256];
     snprintf(payload, sizeof(payload),
              "{\"v\":1,\"valid\":%s,\"resOff\":%s,\"resOn\":%s,\"mosMan\":%s,\"invEn\":%s,"
-             "\"priceC\":%s,\"priceDb\":%s,\"hystDb\":%s,\"fcPriceF\":%s}",
+             "\"priceC\":%s,\"priceDb\":%s,\"hystDb\":%s,\"fcPriceF\":%s,\"maxOutputW\":%d}",
              preparedSettings.valid ? "true" : "false",
              JsonNumberText(preparedSettings.reserveOffSocPercent, 4).text,
              JsonNumberText(preparedSettings.reserveOnSocPercent, 4).text,
@@ -1611,7 +1611,7 @@ static String buildPlanningConfigPayload()
              JsonNumberText(preparedSettings.priceComfortEurPerKwh, 4).text,
              JsonNumberText(preparedSettings.priceDeadbandEurPerKwh, 4).text,
              JsonNumberText(preparedSettings.priceHysteresisEurPerKwh, 4).text,
-             JsonNumberText(forecastPriceFactor, 6).text);
+             JsonNumberText(forecastPriceFactor, 6).text, limiterSettings.maxOutput.get());
     return String(payload);
 }
 
@@ -1718,7 +1718,7 @@ static void publishMqttNow()
     }
     mqtt.publishExtraTopicLazy("setvalue_w", topicPublishSetValueW.c_str(), []() { return String(inverterSetValue); }, false);
     mqtt.publishExtraTopicLazy("calculated_w", topicPublishCalculatedValueW.c_str(), []() { return String(inverterCalculatedValue); }, false);
-    mqtt.publishExtraTopicLazy("runtime_diag", topicPublishRuntimeDiagnostics.c_str(), []() { return runtimeDiagnostics.mqttPayload(); }, false);
+    mqtt.publishExtraTopicLazy("runtime_diag", topicPublishRuntimeDiagnostics.c_str(), []() { return runtimeDiagnostics.mqttPayload(mqtt.getBoundedIoStats()); }, false);
     mqtt.publishExtraTopicLazy("grid_import_w", topicPublishGridImportW.c_str(), []() { return String(currentGridImportW); }, false);
     if (preparedSettingsLoaded)
     {

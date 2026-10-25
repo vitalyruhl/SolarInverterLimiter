@@ -27,19 +27,23 @@ public:
         const uint32_t now = millis();
         if (!progress_.reportDue(now)) return;
         const IPAddress ip = WiFi.localIP();
-        Serial.printf("[I] DIAG ms=%lu boot=%lu reset=%lu ip=%u.%u.%u.%u gap=%lu peak=%s stage_ms=%lu control_age=%lu heap=%u min=%u block=%u stack=%u integrity=%u rx_to=%lu rx_bad=%lu rx_big=%lu tx_fail=%lu conn_fail=%lu price_rev=%lu pv_rev=%lu\n",
+        Serial.printf("[I] DIAG ms=%lu boot=%lu reset=%lu ip=%u.%u.%u.%u gap=%lu peak=%s stage_ms=%lu control_age=%lu heap=%u min=%u block=%u stack=%u integrity=%u rx_to=%lu rx_bad=%lu rx_big=%lu tx_fail=%lu conn_fail=%lu txBackpressure=%lu txPartialWrites=%lu txTimeouts=%lu txOverflows=%lu price_rev=%lu pv_rev=%lu\n",
             ulong(now), ulong(retainedProgress.bootCount), ulong(reset_), unsigned(ip[0]), unsigned(ip[1]), unsigned(ip[2]), unsigned(ip[3]), ulong(progress_.maxLoopGapMs()),
             stageName(progress_.peakStage()), ulong(progress_.maxStageMs()), ulong(now - retainedProgress.controlAtMs),
             unsigned(ESP.getFreeHeap()), unsigned(ESP.getMinFreeHeap()), unsigned(ESP.getMaxAllocHeap()),
             unsigned(uxTaskGetStackHighWaterMark(nullptr)), unsigned(heap_caps_check_integrity_all(false)),
             ulong(stats.rxTimeouts), ulong(stats.rxMalformed), ulong(stats.rxOversize), ulong(stats.txFailures),
-            ulong(stats.connectFailures), ulong(priceRevision), ulong(pvRevision));
+            ulong(stats.connectFailures), ulong(stats.txBackpressure), ulong(stats.txPartialWrites),
+            ulong(stats.txTimeouts), ulong(stats.txOverflows), ulong(priceRevision), ulong(pvRevision));
     }
-    String mqttPayload() const {
-        char out[224];
-        snprintf(out, sizeof(out), "{\"boot\":%lu,\"resetReason\":%lu,\"previousStage\":\"%s\",\"previousStageMs\":%lu,\"maxLoopMs\":%lu,\"maxStageMs\":%lu}",
+    template<class Stats> String mqttPayload(const Stats &stats) const {
+        char out[512];
+        snprintf(out, sizeof(out), "{\"boot\":%lu,\"resetReason\":%lu,\"previousStage\":\"%s\",\"previousStageMs\":%lu,\"maxLoopMs\":%lu,\"maxStageMs\":%lu,\"rxTimeouts\":%lu,\"rxMalformed\":%lu,\"rxOversize\":%lu,\"txFailures\":%lu,\"connectFailures\":%lu,\"txBackpressure\":%lu,\"txPartialWrites\":%lu,\"txTimeouts\":%lu,\"txOverflows\":%lu}",
             ulong(retainedProgress.bootCount), ulong(reset_), previous_.valid ? stageName(previous_.stage) : "unknown",
-            ulong(previous_.stageAtMs), ulong(progress_.maxLoopGapMs()), ulong(progress_.maxStageMs()));
+            ulong(previous_.stageAtMs), ulong(progress_.maxLoopGapMs()), ulong(progress_.maxStageMs()),
+            ulong(stats.rxTimeouts), ulong(stats.rxMalformed), ulong(stats.rxOversize), ulong(stats.txFailures),
+            ulong(stats.connectFailures), ulong(stats.txBackpressure), ulong(stats.txPartialWrites),
+            ulong(stats.txTimeouts), ulong(stats.txOverflows));
         return String(out);
     }
 private:
