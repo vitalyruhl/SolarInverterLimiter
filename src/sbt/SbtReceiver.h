@@ -82,6 +82,7 @@ public:
   }
   bool alarmRestricted() const { return alarmRestricted_; }
   bool softwareMosLockOnly() const { return dischargeRestrictionBits_ == (1u << 12); }
+  bool genuineAlarmRestricted() const { return ((dischargeRestrictionBits_ | chargeRestrictionBits_) & ~(1u << 12)) != 0; }
   // An open discharge MOS is physical feedback, not a veto on the visible inverter intent.
   bool batteryDischargeIntentAvailable(uint32_t now) const {
     return valid("bms/alarm_bits", now) && valid("bms/discharge_enabled", now) &&

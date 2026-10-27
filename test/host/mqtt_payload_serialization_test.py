@@ -19,13 +19,14 @@ using String = std::string;
 '''
 
 
-def compile_run(source):
+def compile_run(source, extra_flags=()):
     # Keep generated executables within the consumer's existing local build tree.
     with tempfile.TemporaryDirectory(prefix="payload-", dir=REPO / ".pio") as tmp:
         source_path, executable = Path(tmp) / "test.cpp", Path(tmp) / "test.exe"
         source_path.write_text(BASE + source, encoding="utf-8")
         result = subprocess.run(
             [str(CLANG), "-std=c++17", "-Wall", "-Wextra", "-Werror",
+             *extra_flags,
              str(source_path), "-o", str(executable)],
             text=True, capture_output=True, timeout=30)
         if result.returncode:
@@ -47,6 +48,7 @@ struct Stats {
  uint32_t rxTimeouts=0, rxMalformed=0, rxOversize=0, txFailures=0, connectFailures=0;
  uint32_t txBackpressure=0, txPartialWrites=0, txTimeouts=0, txOverflows=0;
 };
+uint32_t millis() { return UINT32_MAX; }
 struct { uint32_t bootCount=UINT32_MAX; } retainedProgress;
 const char* stageName(int) { return "control"; }
 struct Diagnostics {
@@ -54,6 +56,15 @@ struct Diagnostics {
  struct {
   uint32_t maxLoopGapMs() const { return UINT32_MAX; }
   uint32_t maxStageMs() const { return UINT32_MAX; }
+  int peakStage() const { return 0; }
+  uint32_t peakStageEndedAtMs() const { return UINT32_MAX; }
+  uint32_t controlAgeMs(uint32_t) const { return UINT32_MAX; }
+  uint32_t loops() const { return UINT32_MAX; }
+  int lastSlowStage() const { return 0; }
+  uint32_t lastSlowStageMs() const { return UINT32_MAX; }
+  uint32_t lastSlowStageEndedAtMs() const { return UINT32_MAX; }
+  uint32_t lastSlowLoopMs() const { return UINT32_MAX; }
+  uint32_t lastSlowLoopEndedAtMs() const { return UINT32_MAX; }
  } progress_;
  uint32_t reset_=UINT32_MAX;
  static unsigned long ulong(uint32_t value) { return static_cast<unsigned long>(value); }
@@ -80,7 +91,15 @@ int main() {
             self.assertEqual(row["boot"], 2**32-1)
             self.assertEqual(row["previousStage"], "control")
             self.assertEqual(row["maxStageMs"], 2**32-1)
-            self.assertLess(len(json.dumps(row, separators=(",", ":"))), 512)
+            for key in ("peakStageEndedAtMs", "controlAgeMs", "loops", "lastSlowStageMs",
+                        "lastSlowStageEndedAtMs", "lastSlowLoopMs", "lastSlowLoopEndedAtMs"):
+                self.assertEqual(row[key], 2**32-1)
+            self.assertEqual(row["peakStage"], "control")
+            self.assertEqual(row["lastSlowStage"], "control")
+            capacity = int(re.search(r"char out\[(\d+)\]", method)[1])
+            self.assertLess(len(json.dumps(row, separators=(",", ":"))), capacity)
+        # Every decimal field at UINT32_MAX and all stage strings at the maximum length.
+        self.assertEqual(len(json.dumps(rows[2], separators=(",", ":"))), 631)
         self.assertEqual(rows[3]["previousStage"], "unknown")
         stages = (REPO / "src/runtime/RuntimeProgress.h").read_text(encoding="utf-8")
         self.assertLessEqual(max(map(len, re.findall(r'return "([a-z]+)"', stages))), len("control"))
@@ -124,6 +143,14 @@ struct Diagnostics {
   uint32_t maxLoopGapMs() { return 1; }
   uint32_t maxStageMs() { return 1; }
   int peakStage() { return 0; }
+  uint32_t peakStageEndedAtMs() { return 101; }
+  uint32_t controlAgeMs(uint32_t now) { return now; }
+  uint32_t loops() { return 102; }
+  int lastSlowStage() { return 0; }
+  uint32_t lastSlowStageMs() { return 103; }
+  uint32_t lastSlowStageEndedAtMs() { return 104; }
+  uint32_t lastSlowLoopMs() { return 105; }
+  uint32_t lastSlowLoopEndedAtMs() { return 106; }
  } progress_;
  uint32_t reset_=0;
  static unsigned long ulong(uint32_t value) { return static_cast<unsigned long>(value); }
@@ -135,8 +162,47 @@ int main() { Diagnostics d; d.report(Stats{}, 12, 13); }
         for key, expected in {"rx_to": 1, "rx_bad": 2, "rx_big": 3, "tx_fail": 4,
                               "conn_fail": 5, "txBackpressure": 6, "txPartialWrites": 7,
                               "txTimeouts": 8, "txOverflows": 2**32-1,
-                              "price_rev": 12, "pv_rev": 13}.items():
+                              "price_rev": 12, "pv_rev": 13,
+                              "peak_at": 101, "loops": 102, "slow_stage_ms": 103,
+                              "slow_stage_at": 104, "slow_loop_ms": 105, "slow_loop_at": 106}.items():
             self.assertEqual(int(values[key]), expected)
+        self.assertEqual(values["slow_stage"], "control")
+
+    def test_runtime_serializer_reports_truncation_instead_of_partial_json(self):
+        source = (REPO / "src/runtime/RuntimeDiagnostics.h").read_text(encoding="utf-8")
+        start = source.index("    template<class Stats> String mqttPayload")
+        end = source.index("\n    }\nprivate:", start) + len("\n    }")
+        method = re.sub(r"char out\[\d+\]", "char out[8]", source[start:end])
+        rows = compile_run(r'''
+struct Stats {
+ uint32_t rxTimeouts=0, rxMalformed=0, rxOversize=0, txFailures=0, connectFailures=0;
+ uint32_t txBackpressure=0, txPartialWrites=0, txTimeouts=0, txOverflows=0;
+};
+uint32_t millis() { return 0; }
+struct { uint32_t bootCount=0; } retainedProgress;
+const char* stageName(int) { return "unknown"; }
+struct Diagnostics {
+ struct { bool valid=false; int stage=0; uint32_t stageAtMs=0; } previous_;
+ struct {
+  uint32_t maxLoopGapMs() const { return 0; }
+  uint32_t maxStageMs() const { return 0; }
+  int peakStage() const { return 0; }
+  uint32_t peakStageEndedAtMs() const { return 0; }
+  uint32_t controlAgeMs(uint32_t) const { return 0; }
+  uint32_t loops() const { return 0; }
+  int lastSlowStage() const { return 0; }
+  uint32_t lastSlowStageMs() const { return 0; }
+  uint32_t lastSlowStageEndedAtMs() const { return 0; }
+  uint32_t lastSlowLoopMs() const { return 0; }
+  uint32_t lastSlowLoopEndedAtMs() const { return 0; }
+ } progress_;
+ uint32_t reset_=0;
+ static unsigned long ulong(uint32_t value) { return static_cast<unsigned long>(value); }
+''' + method + r'''
+};
+int main() { Diagnostics d; std::cout << d.mqttPayload(Stats{}) << '\n'; }
+''', extra_flags=("-Wno-format-truncation",))  # Deliberately undersized formatter fault injection.
+        self.assertEqual(rows, [{"diagnosticError": "format"}])
 
     def test_planning_config_uses_current_physical_output_setting(self):
         source = (REPO / "src/main.cpp").read_text(encoding="utf-8")

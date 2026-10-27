@@ -18,7 +18,6 @@ constexpr uint32_t kReplanMs = 1800000UL;
 constexpr uint32_t kTariffSlotMs = 900000UL;
 constexpr uint8_t kLookAheadHours = 36;
 constexpr uint8_t kExpensiveFallbackHours = 3;
-constexpr uint16_t kPlanningLoadW = 650;
 constexpr uint8_t kAutomaticMosRetries = 0;
 constexpr float kDischargeEfficiency = 0.90f;
 constexpr float kRoundTripEfficiency = 0.90f;

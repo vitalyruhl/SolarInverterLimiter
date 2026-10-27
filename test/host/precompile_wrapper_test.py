@@ -16,7 +16,7 @@ sys.dont_write_bytecode = True
 
 ROOT = Path(__file__).resolve().parents[2]
 SCRIPT = ROOT / "tools/precompile_wrapper.py"
-DEVELOPMENT_URI = "file://.local/cm-wifi-sleep-4.10.0-package"
+DEVELOPMENT_URI = "file://.local/cm-wifi-recovery-4.10.3-final-package"
 
 
 class BuildEnvironment(dict):
@@ -120,17 +120,17 @@ def source_fingerprint(root, features):
 
     def prepare_development(self):
         self.environment.development = True
-        (self.library / "library.json").write_text(json.dumps({"name": "ESP32 Configuration Manager", "version": "4.10.0"}))
-        (self.library / "src/ConfigManager.h").write_text('#define CONFIGMANAGER_VERSION "4.10.0"')
-        (self.library / "webui/package.json").write_text(json.dumps({"version": "4.10.0"}))
-        (self.library / ".piopm").write_text(json.dumps({"version": "4.10.0", "spec": {"uri": DEVELOPMENT_URI}}))
+        (self.library / "library.json").write_text(json.dumps({"name": "ESP32 Configuration Manager", "version": "4.10.3"}))
+        (self.library / "src/ConfigManager.h").write_text('#define CONFIGMANAGER_VERSION "4.10.3"')
+        (self.library / "webui/package.json").write_text(json.dumps({"version": "4.10.3"}))
+        (self.library / ".piopm").write_text(json.dumps({"version": "4.10.3", "spec": {"uri": DEVELOPMENT_URI}}))
         for name in ("src/wifi/WiFiManager.cpp", "src/core/CoreSettings.h", "src/mqtt/MQTTManager.h", "src/html_content.cpp", "webui/dist/index.html"):
             path = self.library / name
             path.parent.mkdir(exist_ok=True, parents=True)
             path.write_text("// [MOCKED!] Immutable input or initial generated asset\n")
-        self.package = self.root / ".local/cm-wifi-sleep-4.10.0-package"
+        self.package = self.root / ".local/cm-wifi-recovery-4.10.3-final-package"
         shutil.copytree(self.library, self.package, ignore=shutil.ignore_patterns('.piopm'))
-        manifest = "# source_head=" + "a" * 40 + "\n# source_version=4.10.0\n"
+        manifest = "# source_head=" + "a" * 40 + "\n# source_version=4.10.3\n"
         manifest += "".join(hashlib.sha256(path.read_bytes()).hexdigest() + "  " + path.relative_to(self.package).as_posix() + "\n"
                             for path in sorted(self.package.rglob('*')) if path.is_file())
         (self.package / "manifest.sha").write_text(manifest)
@@ -182,7 +182,7 @@ def source_fingerprint(root, features):
 
     def test_development_provenance_must_match_selected_uri(self):
         self.prepare_development()
-        (self.library / ".piopm").write_text(json.dumps({"version": "4.10.0", "spec": {"uri": "file://../ConfigurationsManager"}}))
+        (self.library / ".piopm").write_text(json.dumps({"version": "4.10.3", "spec": {"uri": "file://../ConfigurationsManager"}}))
         with self.assertRaisesRegex(RuntimeError, "provenance"):
             self.run_hook()
         self.assertEqual(len(self.calls), 0)

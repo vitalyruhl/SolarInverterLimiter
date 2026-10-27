@@ -5,11 +5,11 @@ cards:
 - type: custom:apexcharts-card
   header:
     show: true
-    title: Test energy plan
+    title: Test energy plan (36 h)
     show_states: false
-  graph_span: 27h
+  graph_span: 39h
   span:
-    start: hour
+    start: minute
     offset: -3h
   now:
     show: true
@@ -30,12 +30,8 @@ cards:
       extremas: false
     data_generator: |
       const nowMs = Date.now();
-      const localNow = new Date(nowMs);
-      // Preserve the current UTC offset during the repeated local DST hour.
-      const hourStart = nowMs - localNow.getMinutes() * 60000 -
-        localNow.getSeconds() * 1000 - localNow.getMilliseconds();
-      const windowStart = hourStart - 3 * 60 * 60 * 1000;
-      const windowEnd = windowStart + 27 * 60 * 60 * 1000;
+      const windowStart = start.getTime();
+      const windowEnd = end.getTime();
       const a = entity?.attributes;
       if (entity?.state !== 'ready' || !a || a.valid !== true || a.v !== 1 ||
           !Number.isInteger(a.g) || !Number.isInteger(a.t) || a.d !== 900 ||
@@ -74,12 +70,8 @@ cards:
       extremas: false
     data_generator: |
       const nowMs = Date.now();
-      const localNow = new Date(nowMs);
-      // Preserve the current UTC offset during the repeated local DST hour.
-      const hourStart = nowMs - localNow.getMinutes() * 60000 -
-        localNow.getSeconds() * 1000 - localNow.getMilliseconds();
-      const windowStart = hourStart - 3 * 60 * 60 * 1000;
-      const windowEnd = windowStart + 27 * 60 * 60 * 1000;
+      const windowStart = start.getTime();
+      const windowEnd = end.getTime();
       const a = entity?.attributes;
       if (entity?.state !== 'ready' || !a || a.valid !== true || a.v !== 1 ||
           !Number.isInteger(a.g) || !Number.isInteger(a.t) || a.d !== 900 ||
@@ -115,18 +107,14 @@ cards:
     curve: stepline
     color: '#ffca28'
     opacity: 1
-    stroke_width: 2
+    stroke_width: 1
     extend_to: false
     show:
       extremas: false
     data_generator: |
       const nowMs = Date.now();
-      const localNow = new Date(nowMs);
-      // Preserve the current UTC offset during the repeated local DST hour.
-      const hourStart = nowMs - localNow.getMinutes() * 60000 -
-        localNow.getSeconds() * 1000 - localNow.getMilliseconds();
-      const windowStart = hourStart - 3 * 60 * 60 * 1000;
-      const windowEnd = windowStart + 27 * 60 * 60 * 1000;
+      const windowStart = start.getTime();
+      const windowEnd = end.getTime();
       const a = entity?.attributes;
       if (entity?.state !== 'ready' || !a || a.valid !== true || a.v !== 1 ||
           !Number.isInteger(a.g) || !Number.isInteger(a.t) || a.d !== 900 ||
@@ -166,12 +154,8 @@ cards:
       extremas: true
     data_generator: |
       const nowMs = Date.now();
-      const localNow = new Date(nowMs);
-      // Preserve the current UTC offset during the repeated local DST hour.
-      const hourStart = nowMs - localNow.getMinutes() * 60000 -
-        localNow.getSeconds() * 1000 - localNow.getMilliseconds();
-      const windowStart = hourStart - 3 * 60 * 60 * 1000;
-      const windowEnd = windowStart + 27 * 60 * 60 * 1000;
+      const windowStart = start.getTime();
+      const windowEnd = end.getTime();
       return (entity?.attributes?.data ?? [])
         .map(entry => [new Date(entry.start_time).getTime(), entry.price_per_kwh])
         .filter(([at, value]) => Number.isFinite(at) &&
@@ -194,6 +178,7 @@ cards:
       color: red
     - value: 0.5
       color: magenta
+    stroke_width: 1
   experimental:
     color_threshold: true
   yaxis:
@@ -236,6 +221,12 @@ cards:
       type: datetime
       labels:
         datetimeUTC: false
+    stroke:
+      width:
+      - 1
+      - 1
+      - 1
+      - 1
 - type: markdown
   content: |
     **Test preview: charging intent, not exact inverter commands.**

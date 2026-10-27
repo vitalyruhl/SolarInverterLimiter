@@ -10,16 +10,17 @@ namespace control {
 class PvForecast {
 public:
     static constexpr unsigned kSlots = 144, kChunk = 24;
-    void clear() { active_ = Snapshot{}; pending_ = Snapshot{}; parts_ = 0; poisoned_ = false; }
+    void clear() { if (active_.count) ++contentRevision_; active_ = Snapshot{}; pending_ = Snapshot{}; parts_ = 0; poisoned_ = false; }
     bool valid(uint32_t utc) const {
         return utc >= 1704067200UL && active_.count && utc >= active_.start &&
             utc < active_.expires && utc < active_.start + active_.count * 900UL;
     }
     uint32_t revision() const { return active_.revision; }
+    uint32_t contentRevision() const { return contentRevision_; }
     uint32_t expiry() const { return active_.expires; }
     unsigned slots() const { return active_.count; }
     bool calibrated() const { return active_.days >= 14; }
-    static constexpr size_t stateBytes() { return sizeof(Snapshot) * 2 + 8; }
+    static constexpr size_t stateBytes() { return sizeof(PvForecast) - sizeof(JsonArena); }
     bool wattsAt(uint32_t utc, float &watts, unsigned *quality = nullptr) const {
         if (!valid(utc)) return false;
         const unsigned i = (utc - active_.start) / 900;
@@ -109,6 +110,13 @@ public:
         }
         parts_ |= uint8_t(1u << part);
         if (parts_ != (1u << ((count + kChunk - 1) / kChunk)) - 1) return "pending";
+        // Compare validated complete content before the existing swap. Poll r/g are provenance only.
+        bool same = active_.session == pending_.session && active_.start == pending_.start &&
+            active_.expires == pending_.expires && active_.count == pending_.count &&
+            active_.factor == pending_.factor && active_.days == pending_.days && active_.age == pending_.age;
+        for (unsigned i = 0; same && i < pending_.count; ++i)
+            same = active_.watts[i] == pending_.watts[i] && flag(active_, i) == flag(pending_, i);
+        if (!same) ++contentRevision_;
         active_ = pending_;
         return "accepted";
     }
@@ -125,7 +133,7 @@ private:
         s.quality[i / 4] = uint8_t((s.quality[i / 4] & ~(3u << shift)) | (q << shift));
     }
     Snapshot active_, pending_;
-    uint32_t pendingAt_ = 0;
+    uint32_t pendingAt_ = 0, contentRevision_ = 0;
     uint8_t parts_ = 0;
     bool poisoned_ = false;
     // Independent MQTT parsing arena. No unproven sharing with price/telemetry callbacks.

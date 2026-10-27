@@ -17,7 +17,7 @@ Import("env")
 env.Replace(AR="xtensa-esp32-elf-gcc-ar", RANLIB="xtensa-esp32-elf-gcc-ranlib")
 
 registry_requirement = "vitaly.ruhl/ESP32 Configuration Manager@4.9.0"
-development_requirements = ("file://.local/cm-wifi-sleep-4.10.0-package",)
+development_requirements = ("file://.local/cm-wifi-recovery-4.10.3-final-package",)
 dependencies = env.GetProjectOption("lib_deps", [])
 if isinstance(dependencies, str):
     dependencies = dependencies.splitlines()
@@ -25,7 +25,7 @@ selected = [value.strip() for value in dependencies]
 development_matches = [item for item in development_requirements if selected.count(item) == 1]
 development = len(development_matches) == 1
 requirement = development_matches[0] if development else registry_requirement
-expected_version = "4.10.0" if development else "4.9.0"
+expected_version = "4.10.3" if development else "4.9.0"
 if selected.count(requirement) != 1 or len(development_matches) > 1 or (development and registry_requirement in selected):
     raise RuntimeError(f"Select exactly one explicit CM dependency: {requirement}")
 

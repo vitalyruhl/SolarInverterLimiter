@@ -56,6 +56,7 @@ public:
         classify(cfg, valid, price);
         return band_ == Expensive;
     }
+    bool cheapPrice() const { return band_ == Cheap; }
     // heldCommandW is the last issued command before output correction, not a new demand.
     // The caller retains responsibility for transport and higher-priority protection.
     CurrentDecision update(const PreparedSettings &cfg, const CurrentInputs &in,

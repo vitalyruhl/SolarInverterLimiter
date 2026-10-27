@@ -1,12 +1,51 @@
 # ESP32 RS485 Solar Inverter Limiter
 
+## Input-update continuity (5.4.9)
+
+Short source requalification no longer discards a valid display plan when a new current price or accepted price/PV content arrives at the same time. These updates request capture; actual settings/source changes and known faults still revoke retention. Held timestamps and arrays keep their original 180-second deadline, and live control remains independent. The chronological PV recharge behavior introduced in 5.4.8 is unchanged. See the [combined acceptance report](docs/acceptance/2026-10-27-chronological-pv-recharge.md).
+
+## Chronological PV recharge (5.4.8)
+
+The planner now accounts for discharge, later PV recharge and a subsequent expensive discharge in one chronological energy balance. Live allowance and both MQTT projections share the same flows. Known later sunlight can fund later targets within charging/headroom limits; it cannot fund earlier output or increase the measured battery ledger. Existing price economics, source protections and configured MAX remain authoritative. See the [planning model](docs/control-planning/05-energy-planning.md) and [5.4.8 acceptance report](docs/acceptance/2026-10-27-chronological-pv-recharge.md).
+
+## Brief source-gap continuity and WiFi recovery (5.4.6 preparation)
+
+Both plan publications now keep a previously valid projection across brief source interruptions, within its original 180-second freshness limit, source grace and coverage. They retain the exact original timestamp and arrays. Hard changes and known faults invalidate immediately; source recovery requests a fresh projection promptly. Actual source qualification, controller output and permissions are unchanged. See the [wire contract](docs/control-planning/mqtt-schedule-contract.md#battery-discharge-budget-output-v1).
+
+The current build selects immutable CM 4.10.3 at `file://.local/cm-wifi-recovery-4.10.3-final-package`, with outputs under `.pio/plan-content-hold-5.4.9`. Recovery delegates OFF/STA lifecycle and runtime buffer selection to Arduino, and checks initialization failure. This corrects inconsistent ownership and an observed buffer-policy mismatch; it does not establish the cause of the SBT panic. The bounded recovery and polling-retention runs are recorded in [the 5.4.7 acceptance report](docs/acceptance/2026-10-27-poll-retention-and-wifi-recovery.md). The tracked `dependencies/cm/cm-4.10.3-source.zip`, companion SHA256 and original manifest provide the exact source. For a clean restore, use the hash-checked procedure below with version 4.10.3 and destination `.local/cm-wifi-recovery-4.10.3-final-package`.
+
+`testesp_recovery` additionally performs exactly one explicitly logged stack reset after healthy mock planning; a compile-time assertion prevents using this injection with real RS485 transport. Normal `usb`, `ota` and `testesp` profiles contain no recovery injection. Device acceptance for 5.4.6 is pending until its separate run is recorded.
+
+## MQTT send-progress deadline (5.4.5)
+
+The 5.4.5 checkpoint uses an immutable CM 4.10.2 source snapshot through `file://.local/cm-mqtt-progress-4.10.2-package`; its build outputs are isolated under `.pio/mqtt-progress-5.4.5`. The bounded MQTT adapter expires pending data after five seconds without a positive TCP send, rather than five seconds of a continuously nonempty queue. Enqueue and transient socket errors do not renew this deadline. FIFO size, per-call budgets and overflow handling remain unchanged. A positive send is TCP-stack acceptance, not a broker acknowledgement or an absolute message-age guarantee.
+
+The owner-authorized production OTA was accepted on 2026-10-26 at 20:00:38 UTC. Fresh identity, version, profile and all 75 settings were verified. A subsequent full fifteen-minute observation found no SIL reset or transport error; it separately captured an SBT panic and temporary source invalidation. This is bounded acceptance, not a long-term crash-free claim. See the [checkpoint evidence](docs/acceptance/2026-10-26-discharge-projection-and-mqtt-progress.md).
+
+The archive, its SHA256 and original per-file manifest are tracked under `dependencies/cm/cm-4.10.2-*`. They include the preceding BLE-safe WiFi coexistence policy, although SIL remains a WiFi-only consumer. This is a local tested snapshot, not a Registry release. Restore it into the exact ignored package directory before building in a clean checkout:
+
+```powershell
+$archive = 'dependencies/cm/cm-4.10.2-source.zip'
+$expected = (Get-Content -LiteralPath ($archive + '.sha256')).Split(' ')[0]
+if ((Get-FileHash -Algorithm SHA256 -LiteralPath $archive).Hash.ToLowerInvariant() -ne $expected) { throw 'CM archive hash mismatch' }
+$destination = '.local/cm-mqtt-progress-4.10.2-package'
+if (Test-Path -LiteralPath $destination) { throw 'Preserve the existing package; choose a clean checkout for restore' }
+Expand-Archive -LiteralPath $archive -DestinationPath $destination
+```
+
+## Complete discharge projection (5.4.4 preparation, included in 5.4.5)
+
+The discharge-budget schedule now projects all considered quarter-hours chronologically, including comparable-price windows, instead of exporting only the current allowance and protected future reservations. Both the live economic ceiling and projected allowances use configured `Max Output (W)` (900 W in the owner configuration). This is a conditional upper bound, not a promised household load or future inverter command. The first value remains the real current scalar ceiling; measured demand and live reserve, fault, source and output rules still determine the command.
+
+Projection uses a private energy/headroom ledger: qualified PV is stored chronologically once, first restoring any missing Reserve OFF energy. The initial 5.4.4/5.4.5 model used MAX to account for PV load after removing the fixed 650 W assumption; 5.4.8 replaces that storage assumption with the shared chronological charge/discharge flows described above. Price factor and forecast calibration remain unchanged. See the [schedule contract](docs/control-planning/mqtt-schedule-contract.md#battery-discharge-budget-output-v1). This planning correction does not establish an MQTT-outage fix or device acceptance.
+
 ## WiFi power-save checkpoint 5.4.3
 
 Companion CM implementation checkpoint: `801e3cf76dc0c8801a4176241a600aa92be9336f`
 (on `fix/mqtt-session-recovery`). The version-specific archived inputs below,
 including their original manifests, remain the exact firmware dependency source.
 
-The installed consumer selects frozen CM 4.10.0 through the explicit URI
+The 5.4.3 checkpoint selected frozen CM 4.10.0 through the explicit URI
 `file://.local/cm-wifi-sleep-4.10.0-package`. Build and dependency outputs use
 `.pio/wifi-sleep-5.4.3`. The owner-authorized OTA was accepted on 2026-10-25 at
 20:20:52.937270 UTC. Identity, version, Settings-only profile and inactive OTA
@@ -21,8 +60,9 @@ including the original LICENSE. This is a historical **WiFi-only** reproduction
 snapshot: native NONE with BLE controller initialization has a known classic
 ESP32 platform incompatibility addressed later by CM 4.10.1. Do not treat this
 4.10.0 archive as BLE acceptance. The current CM 4.10.1 checkout cannot replace it.
-The preparation helper expects a matching CM 4.10.0 checkout and must not be run
-against current 4.10.1 sources. No Registry publication is implied. Later
+The preparation helper at that checkpoint expected a matching CM 4.10.0 checkout.
+The current helper prepares only 4.10.3; restore the historical archive explicitly
+when reproducing 5.4.3. No Registry publication is implied. Later
 documentation notes do not change the frozen package or accepted firmware.
 
 From the repository root, restore the exact source package before building:

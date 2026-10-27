@@ -16,8 +16,8 @@ EXCLUDED = {"node_modules", ".pio", ".git", ".local", ".temp", "__pycache__", ".
 ROOT_FILES = ("library.json", "README.md", "README", "README.txt", "LICENSE", "LICENSE.md", "LICENSE.txt")
 TREE_ROOTS = ("src", "tools", "webui")
 MANIFEST = "manifest.sha"
-VERSION = "4.10.0"
-PACKAGE = "cm-wifi-sleep-4.10.0-package"
+VERSION = "4.10.3"
+PACKAGE = "cm-wifi-recovery-4.10.3-final-package"
 
 
 def is_reparse(path: Path) -> bool:

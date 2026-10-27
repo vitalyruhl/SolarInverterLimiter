@@ -122,6 +122,7 @@ class Service {
 
     struct ControlSnapshot {
         bool bmsValid = false, chargerValid = false, sourcesWithinGrace = false, alarmRestricted = false;
+        bool genuineBmsFault = false, chargerFaultKnown = false;
         bool batteryPathAvailable = false, batteryChargeAvailable = false, batteryChargeConfirmed = false, softwareMosLockOnly = false, chargerFault = false;
         bool batteryChargeStateKnown = false; // Diagnostic distinction: blocked is not missing telemetry.
         bool batteryDischargeIntentAvailable = false;
@@ -160,13 +161,15 @@ class Service {
         now = millis(); // Never compare a concurrently received sample with an older loop timestamp.
         s.sourcesWithinGrace = receiver_.withinGrace(0, now) && receiver_.withinGrace(1, now);
         s.alarmRestricted = receiver_.alarmRestricted();
+        s.genuineBmsFault = receiver_.genuineAlarmRestricted();
         s.softwareMosLockOnly = receiver_.softwareMosLockOnly();
         s.batteryPathAvailable = receiver_.batteryPathAvailable(now);
         s.batteryDischargeIntentAvailable = receiver_.batteryDischargeIntentAvailable(now);
         s.batteryChargeAvailable = receiver_.batteryChargeAvailable(now);
         s.batteryChargeConfirmed = receiver_.batteryChargeConfirmed(now);
         s.batteryChargeStateKnown = receiver_.valid("bms/alarm_bits", now) && receiver_.valid("bms/charge_enabled", now);
-        s.chargerFault = receiver_.valid("victron/error_code", now) && receiver_.numeric("victron/error_code") != 0;
+        s.chargerFaultKnown = receiver_.valid("victron/error_code", now);
+        s.chargerFault = s.chargerFaultKnown && receiver_.numeric("victron/error_code") != 0;
         s.bmsValid = receiver_.valid("bms/state_of_charge_pct", now) &&
                      receiver_.valid("bms/power_w", now);
         s.chargerValid = receiver_.valid("victron/battery_voltage_v", now) &&
