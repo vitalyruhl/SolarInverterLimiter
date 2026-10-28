@@ -82,6 +82,7 @@ public:
   }
   bool alarmRestricted() const { return alarmRestricted_; }
   bool softwareMosLockOnly() const { return dischargeRestrictionBits_ == (1u << 12); }
+  bool genuineAlarmRestricted() const { return ((dischargeRestrictionBits_ | chargeRestrictionBits_) & ~(1u << 12)) != 0; }
   // An open discharge MOS is physical feedback, not a veto on the visible inverter intent.
   bool batteryDischargeIntentAvailable(uint32_t now) const {
     return valid("bms/alarm_bits", now) && valid("bms/discharge_enabled", now) &&
@@ -89,6 +90,15 @@ public:
   }
   bool batteryPathAvailable(uint32_t now) const {
     return batteryDischargeIntentAvailable(now) && numeric("bms/discharge_enabled") != 0;
+  }
+  // A battery-powered MPPT can disappear with the actual discharge MOS OFF.
+  // This explains missing samples; it never makes its voltage/current fresh or zero.
+  bool chargerStandby(uint32_t now) const {
+    const double fault = cachedNumeric("victron/error_code");
+    return !fresh(1, now) && !genuineAlarmRestricted() &&
+        batteryDischargeIntentAvailable(now) && numeric("bms/discharge_enabled") == 0 &&
+        valid("bms/state_of_charge_pct", now) && valid("bms/power_w", now) &&
+        (!std::isfinite(fault) || fault == 0);
   }
   // Reserving PV does not force a BMS/charger write or claim future stored energy.
   bool batteryChargeAvailable(uint32_t now) const {
@@ -376,11 +386,12 @@ public:
     out["discharge_disable_topic"] = disableTopic(false);
     for (unsigned s = 0; s < 2; ++s) {
       const auto &h = health_[s];
+      const bool standby = s == 1 && chargerStandby(now);
       out[s ? "victron_fresh" : "bms_fresh"] = fresh(s, now);
       out[s ? "victron_reason" : "bms_reason"] =
-          static_cast<const char *>(h.reason);
+          standby ? "standby_discharge_mos_off" : static_cast<const char *>(h.reason);
       out[s ? "victron_sequence" : "bms_sequence"] = h.sequence;
-      out[s ? "victron_age" : "bms_age"] = old(s, now) ? "Old" : "";
+      out[s ? "victron_age" : "bms_age"] = !standby && old(s, now) ? "Old" : "";
       out[s ? "victron_grace" : "bms_grace"] = withinGrace(s, now);
     }
     unsigned received = 0;

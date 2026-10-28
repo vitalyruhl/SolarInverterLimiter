@@ -4,6 +4,8 @@
 #include <iostream>
 #include <string>
 using control::PvForecast;
+template<class P> static auto content(const P& p,int)->decltype(p.contentRevision()){return p.contentRevision();}
+template<class P> static uint32_t content(const P& p,long){return p.revision();}
 static constexpr uint32_t t=1792454400; // UTC quarter-hour, independent of local DST.
 static std::string packet(uint32_t revision=t, unsigned count=48, unsigned part=0,
                           int watts=1000, uint32_t session=t-900) {
@@ -19,7 +21,31 @@ static std::string packet(uint32_t revision=t, unsigned count=48, unsigned part=
 static const char* send(PvForecast& p,const std::string& s,uint32_t now=t,uint32_t ms=100){
   const char* result=p.receive(reinterpret_cast<const uint8_t*>(s.data()),unsigned(s.size()),now,ms); std::cerr << result << " size=" << s.size() << "\n"; return result;
 }
+static void contentRevisionIgnoresPollingTime(){
+ assert(PvForecast::stateBytes()==720); // Includes the new counter and alignment before the fixed JSON arena.
+ PvForecast p;assert(!std::strcmp(send(p,packet()),"pending"));assert(!std::strcmp(send(p,packet(t,48,1)),"accepted"));
+ const auto original=content(p,0);
+ assert(!std::strcmp(send(p,packet(t+300),t+300),"pending"));assert(content(p,0)==original&&p.revision()==t);
+ assert(!std::strcmp(send(p,packet(t+300,48,1),t+300),"accepted"));assert(p.revision()==t+300&&content(p,0)==original);
+ assert(!std::strcmp(send(p,packet(t+301,48,0,1001),t+301),"pending"));assert(content(p,0)==original);
+ assert(!std::strcmp(send(p,packet(t+301,48,1,1001),t+301),"accepted"));const auto changed=content(p,0);assert(changed!=original);
+ assert(!std::strcmp(send(p,packet(t+302,24,0,1001),t+302),"accepted"));const auto coverage=content(p,0);assert(coverage!=changed);
+ JsonDocument trust;deserializeJson(trust,packet(t+303,24,0,1001));trust["e"]=t+24*900-1;
+ std::string value;serializeJson(trust,value);assert(!std::strcmp(send(p,value,t+303),"accepted"));assert(content(p,0)!=coverage);
+ const auto expiry=content(p,0);assert(!std::strcmp(send(p,packet(t+304,24,0,1001,t-899),t+304),"accepted"));assert(content(p,0)!=expiry);
+ const auto session=content(p,0);deserializeJson(trust,packet(t+305,24,0,1001,t-899));trust["f"]=800;trust["c"]=14;trust["q"]="calibrated";
+ value.clear();serializeJson(trust,value);assert(!std::strcmp(send(p,value,t+305),"accepted"));assert(content(p,0)!=session);
+ const auto calibrated=content(p,0);trust["r"]=t+306;trust["g"]=t+306;trust["a"]=1;
+ value.clear();serializeJson(trust,value);assert(!std::strcmp(send(p,value,t+306),"accepted"));assert(content(p,0)!=calibrated);
+ const auto quality=content(p,0);trust["r"]=t+307;trust["g"]=t+307;trust["x"][0]=0;
+ value.clear();serializeJson(trust,value);assert(!std::strcmp(send(p,value,t+307),"accepted"));assert(content(p,0)!=quality);
+ const auto rawQuality=content(p,0);trust["r"]=t+308;trust["g"]=t+308;trust["x"][0]=1;trust["p"][0]=nullptr;
+ value.clear();serializeJson(trust,value);assert(!std::strcmp(send(p,value,t+308),"accepted"));assert(content(p,0)!=rawQuality);
+ const auto missing=content(p,0);p.clear();assert(content(p,0)!=missing);
+ std::cout<<"[MOCKED!] PV content identity ignores r/g-only polls, retaining exact values/coverage/trust/session checks\n";
+}
 int main(){
+  contentRevisionIgnoresPollingTime();
   PvForecast p;
   assert(!p.valid(t));
   assert(!std::strcmp(send(p,packet(t,48,1)),"pending"));

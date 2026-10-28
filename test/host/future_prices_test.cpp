@@ -8,6 +8,8 @@
 #include <string>
 #include <vector>
 using namespace control;
+template<class P> static auto content(const P& p,int)->decltype(p.contentRevision()){return p.contentRevision();}
+template<class P> static uint32_t content(const P& p,long){return p.revision();}
 static constexpr uint32_t t=1792454400;
 static void near(float actual,float expected,float tolerance=.002f){
  if(std::fabs(actual-expected)>tolerance){std::cerr<<"expected "<<expected<<", received "<<actual<<"\n";std::abort();}}
@@ -55,7 +57,7 @@ static void ownerTariffsKeepStoredAndNewEnergySeparate(){
  const auto result=p.plan(t,100,cfg,true,6,0,131,1,true,.245f,false,1,900,nullptr,0,&trace);
  assert(result.valid&&result.availableWh>240&&result.reservedWh>240&&result.batteryCeilingW==0);
  assert(result.shortfallWh==0&&result.chargeTargetW==0&&result.targetAt==0);
- assert(trace.watts[22]==650&&trace.watts[23]>300&&trace.watts[23]<400);
+ assert(trace.watts[22]==900&&trace.watts[23]>=69&&trace.watts[23]<=70);
  for(unsigned i=0;i<trace.count;++i)if(i!=22&&i!=23)assert(trace.watts[i]==0);
 }
 static void relativePricesAndExistingEnergy(){
@@ -70,7 +72,7 @@ static void relativePricesAndExistingEnergy(){
  expect(trace.watts[0]==0&&trace.watts[1]>300,"trace records useful below-comfort future allocation");
  FuturePrices charge;load(charge,{100000,200000});
  auto fresh=plan(charge,cfg,nullptr,0,20,10);
- expect(fresh.shortfallWh>70&&fresh.chargeTargetW>0&&fresh.targetAt==t+900,"new charging still requires profitable round-trip spread");
+ expect(fresh.shortfallWh>70&&fresh.chargeTargetW==0&&fresh.targetAt==t+900,"profitable need is identified without inventing current solar power");
  for(const auto& curve:{std::vector<int>{120000,120000,120000},std::vector<int>{140000,130000,120000},std::vector<int>{100000,129999,100000}}){
   FuturePrices p;load(p,curve);const float current=float(curve[0])*.000001f;
   auto now=p.plan(t,100,cfg,true,20,0,10,1,true,current,false,1,900,nullptr,0,&trace);
@@ -88,20 +90,20 @@ static void relativePricesAndExistingEnergy(){
  expect(earlier.reservedWh>80&&trace.watts[1]>300&&trace.watts[2]==0,"equally useful future prices prefer the earlier slot");
  FuturePrices surplus;load(surplus,{100000,140000,140000});
  auto extra=plan(surplus,cfg,nullptr,0,20,100);
- expect(extra.batteryCeilingW==650&&close(extra.reservedWh,325),"energy left after useful future slots serves current load, capped at the independent 650 W planning load");
+ expect(extra.batteryCeilingW==900&&close(extra.reservedWh,450),"energy left after useful future slots serves current load up to configured MAX");
  PreparedSettings different=cfg;different.priceComfortEurPerKwh=1;different.priceDeadbandEurPerKwh=.2f;
  auto same=plan(surplus,different,nullptr,0,20,100,t,100,1,0,.1f,true);
  expect(same.batteryCeilingW==extra.batteryCeilingW&&close(same.reservedWh,extra.reservedWh),"comfort/deadband/expensive classification cannot change economic allocation");
  FuturePrices solarPlan;load(solarPlan,{100000,100000,200000,200000});PvForecast pv;solar(pv,{1500,1500,0,0});
- auto first=solarPlan.plan(t,100,cfg,true,20,-360,10,1,true,.1f,false,1,900,&pv,1500,&trace);
- expect(close(first.usablePvWh,325)&&first.batteryCeilingW>300&&trace.watts[2]==0&&trace.watts[3]==0,"PV credit is bounded by future need and never inserted into current stored-energy trace");
+ auto first=solarPlan.plan(t,100,cfg,true,20,-360,30,1,true,.1f,false,1,900,&pv,1500,&trace);
+ expect(first.usablePvWh>0&&first.batteryCeilingW==0,"current PV covers the AC limit while qualified withholding replenishes future demand");
  FuturePlan partial;
  for(unsigned step=1;step<=45;++step)
-  partial=solarPlan.plan(t+step*10,100+step*10000,cfg,true,20,-360,10,1,true,.1f,false,1,900,&pv,1500,&trace);
+  partial=solarPlan.plan(t+step*10,100+step*10000,cfg,true,20,-360,30,1,true,.1f,false,1,900,&pv,1500,&trace);
  expect(close(first.availableWh-partial.availableWh,40.5f),"held signed power debits the actual pool throughout a partial slot");
- expect(close(partial.usablePvWh,262.5f)&&partial.batteryCeilingW==0&&partial.reservedWh<=partial.availableWh+.003f,"partial-slot PV credit decreases without refilling measured energy");
+ expect(partial.usablePvWh<=562.5f*.9f&&partial.batteryCeilingW==0&&partial.reservedWh<=partial.availableWh+.003f,"partial-slot withholding remains within actual remaining solar and stored energy");
  float allocated=trace.watts[0]*.125f;for(unsigned i=1;i<trace.count;++i)allocated+=trace.watts[i]*.25f;
- expect(allocated<=partial.availableWh+.003f,"trace remains bounded by measured stored AC energy after PV credit and debits");
+ expect(allocated<=partial.availableWh+partial.usablePvWh+.003f,"chronological trace spends at most stored energy plus planned PV charging once");
  assert(failures==0);
  std::cout<<"Relative tariffs, held-vs-new energy costs, flat/declining/zero curves, exact benefit/MAX and partial-slot PV debits passed\n";
 }
@@ -111,27 +113,30 @@ static void economicTraces(){
  auto baseline=plan(pricesA,cfg);assert(baseline.valid&&baseline.shortfallWh>180);
  auto unknown=plan(pricesA,cfg,&pv);near(unknown.offeredPvWh,750);assert(!unknown.pvQualified&&unknown.usablePvWh==0);
  near(unknown.availableWh,baseline.availableWh);near(unknown.reservedWh,baseline.reservedWh);
- auto sun=plan(pricesA,cfg,&pv,1500);assert(sun.pvQualified);near(sun.offeredPvWh,750);near(sun.usablePvWh,325);
- near(sun.shortfallWh,0);near(sun.reservedWh,0);near(sun.availableWh,baseline.availableWh);assert(sun.batteryCeilingW==554); // PV covers future 650 W slots; stored remainder is usable now.
+ auto sun=plan(pricesA,cfg,&pv,1500);assert(sun.pvQualified);near(sun.offeredPvWh,750);
+ assert(sun.usablePvWh>=450-sun.availableWh&&sun.usablePvWh<=750*.9f);near(sun.shortfallWh,0);
+ near(sun.availableWh,baseline.availableWh);assert(sun.batteryCeilingW==0);
  FuturePrices low;load(low,{100000,100000,600000,500000});PvForecast weak;solar(weak,{500,500,0,0});
- auto lowSun=plan(low,cfg,&weak,1500);near(lowSun.usablePvWh,0);assert(lowSun.shortfallWh>180);
+ auto lowSun=plan(low,cfg,&weak,1500);near(lowSun.usablePvWh,225);assert(lowSun.shortfallWh>180);
  FuturePrices full;load(full,{100000,100000,600000,500000});auto fullBattery=plan(full,cfg,&pv,1500,100);
  assert(fullBattery.offeredPvWh>0&&fullBattery.usablePvWh==0);
  FuturePrices curtailed;load(curtailed,{100000,100000,600000,500000});PvForecast large;solar(large,{5000,5000,0,0});
- auto limit=plan(curtailed,cfg,&large,1000);near(limit.offeredPvWh,2500);near(limit.usablePvWh,125);
+ auto limit=plan(curtailed,cfg,&large,1000);near(limit.offeredPvWh,2500);near(limit.usablePvWh,450-limit.availableWh);
+ assert(curtailed.projectedChargeW(0)<=1000&&curtailed.projectedChargeW(1)<=1000);
  FuturePrices headroom;load(headroom,{100000,100000,600000,500000});
  auto almostFull=plan(headroom,cfg,&large,5000,99,10);assert(almostFull.usablePvWh<=4.625f);
  const auto builds=pricesA.planningBuilds();solar(pv,{0,0,0,0},t+2);auto cloud=plan(pricesA,cfg,&pv,1500);
  assert(pricesA.planningBuilds()==builds+1);assert(cloud.usablePvWh==0&&cloud.shortfallWh>180);
  near(cloud.availableWh,baseline.availableWh);
  FuturePrices absent;load(absent,{100000,100000,600000,500000});PvForecast incomplete;solar(incomplete,{1500,1500,0,0},t+1,0);
- auto missing=plan(absent,cfg,&incomplete,1500);assert(!missing.pvQualified&&missing.usablePvWh==0&&missing.shortfallWh>180);
+ auto missing=plan(absent,cfg,&incomplete,1500);assert(missing.pvQualified&&missing.usablePvWh>300&&missing.shortfallWh==0);
+ assert(absent.projectedSolarW(0)==-1&&absent.projectedChargeW(0)==0);
  FuturePrices noPrices;assert(!plan(noPrices,cfg,&pv,1500).valid);
 }
 static void creditNeverCreatesCurrentEnergy(){
  PreparedSettings cfg;cfg.valid=true;FuturePrices p;load(p,{400000,100000,100000,600000});PvForecast pv;solar(pv,{1500,1500,0,0});
  auto a=plan(p,cfg,nullptr,0,20,10,t,100,1,0,.4f,true);assert(a.batteryCeilingW==0);
- auto b=plan(p,cfg,&pv,1500,20,10,t,100,1,0,.4f,true);assert(b.usablePvWh>0&&b.batteryCeilingW>0);
+ auto b=p.plan(t,100,cfg,true,20,0,10,1,true,.4f,true,1,900,&pv,1500,nullptr,0);assert(b.usablePvWh>0&&b.batteryCeilingW>0);
  assert(float(b.batteryCeilingW)*.25f<=b.availableWh+.001f);near(b.availableWh,a.availableWh);
  FuturePrices empty;load(empty,{400000,100000,100000,600000});auto noStored=plan(empty,cfg,&pv,1500,2,10,t,100,1,0,.4f,true);
  assert(noStored.availableWh==0&&noStored.batteryCeilingW==0);
@@ -144,14 +149,15 @@ static void creditNeverCreatesCurrentEnergy(){
 static void pvCoverageBoundaries(){
  PreparedSettings cfg;cfg.valid=true;FuturePrices p;load(p,{100000,100000,600000,500000,100000,100000,100000,100000});
  PvForecast shorter;solar(shorter,{1500,1500,0,0});auto before=plan(p,cfg,&shorter,1500);
- assert(before.pvQualified);near(before.usablePvWh,325);near(before.offeredPvWh,750);
+ assert(before.pvQualified&&before.usablePvWh>=450-before.availableWh);near(before.offeredPvWh,750);
  const auto builds=p.planningBuilds();auto partial=plan(p,cfg,&shorter,1500,5,100,t+450,1000);
- assert(p.planningBuilds()==builds);near(partial.usablePvWh,262.5f);near(partial.offeredPvWh,562.5f);
+ assert(p.planningBuilds()==builds);near(partial.usablePvWh,450-partial.availableWh);near(partial.offeredPvWh,562.5f);
  FuturePrices later;load(later,{100000,100000,600000,500000});PvForecast lateSun;solar(lateSun,{0,0,3000,3000});
- auto late=plan(later,cfg,&lateSun,3000);assert(late.offeredPvWh>0&&late.usablePvWh==0&&late.shortfallWh>180);
+ auto late=plan(later,cfg,&lateSun,3000);assert(late.offeredPvWh>0&&late.shortfallWh==0);
+ assert(lateSun.valid(t+2700)&&later.projectedChargeW(0)==0&&later.projectedChargeW(1)==0);
  PvForecast laterMissing;solar(laterMissing,{1500,1500,0,0},t+1,3);FuturePrices missing;
  load(missing,{100000,100000,600000,500000});auto knownBefore=plan(missing,cfg,&laterMissing,1500);
- assert(knownBefore.pvQualified);near(knownBefore.usablePvWh,325);
+ assert(knownBefore.pvQualified&&knownBefore.usablePvWh>=450-knownBefore.availableWh);
 }
 static void energyDebitAndGaps(){
  PreparedSettings cfg;cfg.valid=true;FuturePrices p;load(p,{600000,100000});
@@ -199,7 +205,7 @@ static void snapshotGapsAndConflicts(){
  assert(!std::strcmp(send(pending,prices({},t)),"packet_conflict")); // Same revision cannot turn conflicting data into withdrawal.
 }
 
-// [MOCKED!] The trace must expose the actual allocator without changing scalar decisions.
+// [MOCKED!] The complete projection must preserve actual live decisions and measured energy.
 static void dischargeBudgetTrace(){
  PreparedSettings cfg;cfg.valid=true;FuturePrices plain,traced;
  const std::vector<int> values{400000,100000,600000,500000};load(plain,values);load(traced,values);
@@ -212,15 +218,17 @@ static void dischargeBudgetTrace(){
   assert(trace.priceRevision==t&&trace.pvRevision==t+1&&trace.watts[0]==b.batteryCeilingW);
   assert(a.batteryCeilingW==b.batteryCeilingW);near(a.reservedWh,b.reservedWh);near(a.availableWh,b.availableWh);
   near(a.usablePvWh,b.usablePvWh);near(a.chargeTargetW,b.chargeTargetW);assert(a.targetAt==b.targetAt);
-  float future=0;for(unsigned i=1;i<trace.count;++i)future+=trace.watts[i]*.25f;
-  assert(future<=b.reservedWh+.001f&&b.reservedWh-future<.75f);
+  assert(plain.planningBuilds()==traced.planningBuilds());
+  float spent=trace.watts[0]*float(900-step*120)/3600;for(unsigned i=1;i<trace.count;++i)spent+=trace.watts[i]*.25f;
+  const float solarCredit=b.usablePvWh;
+  assert(spent<=b.availableWh+solarCredit+.003f);
  }
  FuturePrices limited;load(limited,{100000,100000,400000,500000});
  auto b=limited.plan(t,100,cfg,true,10,0,100,1,true,.1f,false,1,900,nullptr,0,&trace);
- assert(b.valid&&trace.watts[0]==179&&trace.watts[1]==0&&trace.watts[2]==650&&trace.watts[3]==650);
+ assert(b.valid&&trace.watts[0]==0&&trace.watts[1]==0&&trace.watts[2]==579&&trace.watts[3]==900);
  char payload[DischargeBudget::kPayloadBytes];auto length=trace.serialize(payload,sizeof(payload));assert(length>0);
  JsonDocument decoded;assert(!deserializeJson(decoded,payload));assert(decoded["valid"]==true&&decoded["w"].size()==4);
- assert(decoded["w"][0]==179&&decoded["w"][2]==650&&decoded["w"][3]==650); // 369.936 Wh: reserve 325 Wh, then use 44.936 Wh now.
+ assert(decoded["w"][0]==0&&decoded["w"][2]==579&&decoded["w"][3]==900); // 369.936 Wh: protect the 225 Wh peak, then allocate 144.936 Wh to the next-best slot.
  char small[64];assert(trace.serialize(small,sizeof(small))==0&&small[0]=='\0');
  FuturePrices partial;load(partial,{600000,100000});
  auto c=partial.plan(t+450,100,cfg,true,5,0,50,1,true,.6f,true,1,900,nullptr,0,&trace);
@@ -238,7 +246,7 @@ static void dischargeBudgetTrace(){
  assert(!DischargeBudget::packetFits(1,2048));
  FuturePrices charging;load(charging,{100000,100000,600000,500000});
  auto on=charging.plan(t,100,cfg,true,5,0,100,1,true,.1f,false,1,900,&pv,1500,&trace);
- assert(on.usablePvWh==325&&trace.watts[2]==0&&trace.watts[3]==0&&trace.watts[0]==554);
+ assert(on.usablePvWh>225&&trace.watts[2]>=899&&trace.watts[3]>=899&&trace.watts[0]==0);
  auto off=charging.plan(t,100,cfg,true,5,0,100,1,true,.1f,false,1,900,&pv,0,&trace);
  assert(off.usablePvWh==0&&trace.watts[2]==554&&trace.watts[3]==0);
  DischargeBudgetPublication publication;
@@ -269,5 +277,160 @@ static void readOnlyPriceLookup(){
  assert(!p.priceAt(t,0,value));assert(!p.priceAt(t,NAN,value));
  assert(p.planningBuilds()==0); // Diagnostic lookup neither replans nor changes the energy pool.
 }
-int main(){readOnlyPriceLookup();freeGridDoesNotSpendStoredEnergy();ownerTariffsKeepStoredAndNewEnergySeparate();relativePricesAndExistingEnergy();dischargeBudgetTrace();economicTraces();creditNeverCreatesCurrentEnergy();pvCoverageBoundaries();energyDebitAndGaps();currentSlotAndCache();snapshotGapsAndConflicts();
+// [MOCKED!] Public tariffs and PV exercise the complete chronological allowance.
+static void completeDischargeProjection(){
+ PreparedSettings cfg;cfg.valid=true;DischargeBudget trace;
+ for(const auto& curve:{std::vector<int>{400000,400000,400000,400000},
+                        std::vector<int>{450000,440000,430000,420000}}){
+  FuturePrices p;load(p,curve);
+  const auto result=p.plan(t,100,cfg,true,94,0,100,1,true,float(curve[0])*.000001f,true,.95f,900,nullptr,0,&trace);
+  assert(result.valid&&result.batteryCeilingW==900);
+  assert(trace.count==4&&trace.watts[0]==900&&trace.watts[1]==900&&trace.watts[2]==900&&trace.watts[3]==900);
+ }
+ FuturePrices scarce;load(scarce,{400000,400000,600000,400000});
+ auto held=scarce.plan(t,100,cfg,true,20,0,10,1,true,.4f,true,1,900,nullptr,0,&trace);
+ assert(held.batteryCeilingW==0&&trace.watts[0]==0&&trace.watts[1]==0&&trace.watts[2]>300&&trace.watts[3]==0);
+ FuturePrices limited;load(limited,{400000,400000,400000,400000});
+ auto cap=limited.plan(t,100,cfg,true,94,0,100,1,true,.4f,true,1,500,nullptr,0,&trace);
+ assert(cap.batteryCeilingW==500);for(unsigned i=0;i<trace.count;++i)assert(trace.watts[i]==500);
+ FuturePrices empty;load(empty,{400000,400000,400000,400000});PvForecast pv;solar(pv,{1500,0,0,0});
+ auto stored=empty.plan(t,100,cfg,true,2,0,10,1,true,.4f,true,1,900,&pv,1500,&trace);
+ assert(stored.availableWh==0&&trace.watts[0]==0&&trace.watts[1]==450);
+ assert(trace.watts[2]==0&&trace.watts[3]==0);
+ FuturePrices blocked;load(blocked,{400000,400000,400000,400000});
+ blocked.plan(t,100,cfg,true,2,0,10,1,true,.4f,true,1,900,&pv,0,&trace);
+ for(unsigned i=0;i<trace.count;++i)assert(trace.watts[i]==0);
+ FuturePrices late;load(late,{100000,600000,100000,600000});PvForecast later;solar(later,{0,0,1500,0});
+ late.plan(t,100,cfg,true,2,0,10,1,true,.1f,false,1,900,&later,1500,&trace);
+ assert(trace.watts[0]==0&&trace.watts[1]==0&&trace.watts[2]==0&&trace.watts[3]==900);
+ FuturePrices free;load(free,{-100000,0,400000,400000});
+ free.plan(t,100,cfg,true,94,0,100,1,true,-.1f,false,1,900,nullptr,0,&trace);
+ assert(trace.watts[0]==0&&trace.watts[1]==0&&trace.watts[2]==900&&trace.watts[3]==900);
+ FuturePrices exhausted;load(exhausted,{400000,400000,400000,400000});
+ auto energy=exhausted.plan(t,100,cfg,true,20,0,10,1,true,.4f,true,1,900,nullptr,0,&trace);
+ assert(trace.watts[0]>=332&&trace.watts[0]<=333);
+ float spent=0;for(unsigned i=0;i<trace.count;++i)spent+=trace.watts[i]*.25f;
+ assert(spent<=energy.availableWh&&energy.availableWh-spent<.25f);
+ for(unsigned i=1;i<trace.count;++i)assert(trace.watts[i]==0);
+ FuturePrices partial;load(partial,{400000,400000,400000,400000});
+ auto remaining=partial.plan(t+450,100,cfg,true,94,0,100,1,true,.4f,true,.95f,900,nullptr,0,&trace);
+ assert(trace.generatedAt==t+450&&trace.start==t&&trace.watts[0]==remaining.batteryCeilingW);
+ for(unsigned i=0;i<trace.count;++i)assert(trace.watts[i]==900);
+ FuturePrices missing;load(missing,{400000,400000,400000,400000});PvForecast gap;solar(gap,{1500,0,0,0},t+1,0);
+ missing.plan(t,100,cfg,true,2,0,10,1,true,.4f,true,1,900,&gap,1500,&trace);
+ for(unsigned i=0;i<trace.count;++i)assert(trace.watts[i]==0);
+ FuturePrices full;load(full,{400000,400000,400000,400000});PvForecast large;solar(large,{10000,0,0,0});
+ auto headroom=full.plan(t,100,cfg,true,100,0,1,1,true,.4f,true,1,900,&large,10000,&trace);
+ assert(trace.watts[0]==0&&trace.watts[1]==181&&trace.watts[2]==0&&trace.watts[3]==0);
+ assert(float(trace.watts[0]+trace.watts[1])*.25f<=headroom.availableWh);
+ // A prior measured debit is not physical headroom while the fresh SOC remains at 100%.
+ FuturePrices ledger;load(ledger,{400000,400000,400000,400000});
+ ledger.plan(t,100,cfg,true,100,-3600,10,1,true,.4f,true,1,900,&large,10000);
+ auto debited=ledger.plan(t+10,10100,cfg,true,100,-3600,10,1,true,.4f,true,1,900,&large,10000,&trace);
+ spent=trace.watts[0]*float(890)/3600;for(unsigned i=1;i<trace.count;++i)spent+=trace.watts[i]*.25f;
+ assert(spent<=debited.availableWh+.003f&&debited.availableWh-spent<1);
+ std::cout<<"[MOCKED!] Complete flat/declining/MAX projection, protected future demand, chronological PV and nonpositive prices passed\n";
+}
+// [MOCKED!] Forecast storage must restore an initially missing reserve before discharge.
+static void projectionRestoresReserveBeforeDischarge(){
+ PreparedSettings cfg;cfg.valid=true;cfg.reserveOffSocPercent=20;cfg.reserveOnSocPercent=25;
+ unsigned failures=0;const auto expect=[&](bool ok,const char* label){if(!ok){std::cerr<<"FAIL: "<<label<<"\n";++failures;}};
+ PvForecast pv;solar(pv,{1500,0,0,0});DischargeBudget trace;
+ FuturePrices below;load(below,{400000,400000,400000,400000});
+ auto insufficient=below.plan(t,100,cfg,true,10,0,100,1,true,.4f,true,1,900,&pv,1500,&trace);
+ assert(insufficient.availableWh==0);
+ bool zero=true;for(unsigned i=0;i<trace.count;++i)zero=zero&&trace.watts[i]==0;
+ expect(zero,"PV below the missing reserve cannot become a discharge allowance"); // 125 Wh DC cannot fill the 513.8 Wh deficit.
+ FuturePrices crossing;load(crossing,{400000,400000,400000,400000});
+ auto excess=crossing.plan(t,100,cfg,true,19,0,100,1,true,.4f,true,1,900,&pv,1500,&trace);
+ expect(excess.availableWh==0&&trace.watts[0]==0&&trace.watts[1]==265,"only PV remaining after restoring reserve becomes available AC energy");
+ assert(trace.watts[2]==0&&trace.watts[3]==0); // (125 - 51.38) Wh DC leaves only 66.258 Wh AC.
+ assert(failures==0);
+ std::cout<<"[MOCKED!] Below-reserve PV restores the missing reserve before any projected AC allowance\n";
+}
+// [MOCKED!] Net-PV charging must use the same configured AC load as discharge.
+static void pvLoadTracksConfiguredMaximum(){
+ PreparedSettings cfg;cfg.valid=true;DischargeBudget trace;unsigned failures=0;
+ const auto expect=[&](bool ok,const char* label){if(!ok){std::cerr<<"FAIL: "<<label<<"\n";++failures;}};
+ FuturePrices between;load(between,{100000,600000,400000,400000});PvForecast weak;solar(weak,{900,0,0,0});
+ const auto insufficient=between.plan(t,100,cfg,true,2,0,100,1,true,.1f,false,1,900,&weak,1500,&trace);
+ bool zero=true;for(unsigned i=0;i<trace.count;++i)zero=zero&&trace.watts[i]==0;
+ expect(!zero&&std::fabs(insufficient.usablePvWh-202.5f)<.003f&&trace.watts[0]==0,"profitable PV withholding can recharge below the AC output limit");
+ const int maxima[]={500,900,1200};const float expectedAc[]={212.5f,112.5f,37.5f};
+ for(unsigned k=0;k<3;++k){
+  FuturePrices p;load(p,{400000,400000,400000,400000});PvForecast pv;solar(pv,{1500,0,0,0});
+  const auto result=p.plan(t,100,cfg,true,2,0,100,1,true,.4f,true,1,maxima[k],&pv,1500,&trace);
+  float spent=0;for(unsigned i=0;i<trace.count;++i){spent+=trace.watts[i]*.25f;assert(trace.watts[i]>=0&&trace.watts[i]<=maxima[k]);}
+  expect(std::fabs(result.usablePvWh-expectedAc[k])<.003f,"unprofitable tariffs withhold only unavoidable PV beyond the configured AC limit");
+  expect(spent<=expectedAc[k]+.003f&&expectedAc[k]-spent<.5f,"chronological PV discharge conserves energy at MAX 500/900/1200");
+  assert(trace.watts[0]==result.batteryCeilingW&&trace.watts[0]==0);
+ }
+ FuturePrices changed;load(changed,{400000,400000,400000,400000});PvForecast samePv;solar(samePv,{1500,0,0,0});
+ for(unsigned k=0;k<3;++k){
+  const auto result=changed.plan(t,100+k,cfg,true,2,0,100,1,true,.4f,true,1,maxima[k],&samePv,1500,&trace);
+  assert(changed.planningBuilds()==k+1&&std::fabs(result.usablePvWh-expectedAc[k])<.003f);
+ }
+ assert(failures==0);
+ std::cout<<"[MOCKED!] Configured MAX governs net-PV credit and energy conservation at 500/900/1200 W\n";
+}
+static void contentRevisionIgnoresPollingTime(){
+ FuturePrices p;std::vector<int> curve(48,400000);load(p,curve);const auto original=content(p,0);
+ assert(!std::strcmp(send(p,prices(curve,t+300,0),t+300),"pending"));assert(content(p,0)==original&&p.revision()==t);
+ assert(!std::strcmp(send(p,prices(curve,t+300,1),t+300),"accepted"));
+ assert(p.revision()==t+300&&content(p,0)==original);
+ curve[47]++;load(p,curve,t+600,t+600);const auto changed=content(p,0);assert(changed!=original);
+ assert(!std::strcmp(send(p,prices({},t+601),t+601),"withdrawn"));assert(content(p,0)!=changed);
+ load(p,curve,t+602,t+602);const auto restored=content(p,0);
+ curve.resize(24);load(p,curve,t+603,t+603);assert(content(p,0)!=restored);
+ const auto coverage=content(p,0);JsonDocument shifted;deserializeJson(shifted,prices(curve,t+900));shifted["t"]=t+900;
+ std::string shiftedPacket;serializeJson(shifted,shiftedPacket);assert(!std::strcmp(send(p,shiftedPacket,t+900),"accepted"));assert(content(p,0)!=coverage);
+ const auto grid=content(p,0);p.clear();assert(content(p,0)!=grid);
+ std::cout<<"[MOCKED!] Price content identity ignores poll timestamps and changes only on atomic semantic commits/withdrawal\n";
+}
+// [MOCKED!] A full battery can release before morning demand when later solar can refill it.
+static void chronologicalSolarRefillReleasesEarlierEnergy(){
+ PreparedSettings cfg;cfg.valid=true;FuturePrices p;PvForecast pv;DischargeBudget red;
+ load(p,{400000,500000,100000,100000,100000,100000,600000,600000});
+ solar(pv,{0,0,400,400,400,400,0,0});
+ const auto result=p.plan(t,100,cfg,true,98,0,10,1,true,.4f,true,1,900,&pv,1500,&red);
+ assert(result.valid&&red.count==8);
+ if(result.batteryCeilingW<=0){std::cerr<<"FAIL: time-feasible 400 W solar refill must release earlier stored energy\n";std::abort();}
+ assert(red.watts[1]==900&&red.watts[6]==900&&red.watts[7]==900);
+ float spent=0;for(unsigned i=0;i<red.count;++i)spent+=red.watts[i]*.25f;
+ assert(spent<=result.availableWh+400*.9f+.01f&&spent>result.availableWh+300);
+ // Moving the same sun after the expensive demand cannot fund any earlier allowance.
+ FuturePrices late;PvForecast latePv;load(late,{400000,500000,600000,600000,100000,100000,100000,100000});
+ solar(latePv,{0,0,0,0,400,400,400,400});
+ const auto held=late.plan(t,100,cfg,true,98,0,10,1,true,.4f,true,1,900,&latePv,1500,&red);
+ assert(held.batteryCeilingW==0);
+ float beforeSun=0;for(unsigned i=0;i<4;++i)beforeSun+=red.watts[i]*.25f;
+ assert(beforeSun<=held.availableWh+.01f);
+ std::cout<<"[MOCKED!] Chronological solar refill releases early energy and never funds demand before arrival\n";
+}
+static void profitableChargeRestoresReserveAndFutureNeed(){
+ PreparedSettings cfg;cfg.valid=true;cfg.reserveOffSocPercent=20;cfg.reserveOnSocPercent=25;
+ FuturePrices p;PvForecast pv;DischargeBudget red;load(p,{400000,600000});solar(pv,{400,0});
+ const float soc=20-50.0f/(100*51.38f)*100;
+ const auto result=p.plan(t,100,cfg,true,soc,0,100,1,true,.4f,true,1,120,&pv,1500,&red,400);
+ if(red.watts[1]<119){std::cerr<<"FAIL: profitable solar must restore 50 Wh DC reserve debt plus the 30 Wh AC target\n";std::abort();}
+ assert(result.availableWh==0&&red.watts[0]==0&&result.projectedUnmetWhDC<.01f);
+ assert(result.chargeTargetW<=400&&result.chargeTargetW>333);
+}
+static void laterSolarPaysReserveBeforeItsDemandCredit(){
+ PreparedSettings cfg;cfg.valid=true;cfg.reserveOffSocPercent=20;cfg.reserveOnSocPercent=25;
+ const float soc=20-50.0f/(100*51.38f)*100;
+ for(int laterW:{268,468}){
+  FuturePrices p;PvForecast pv;DischargeBudget red;load(p,{400000,100000,600000});solar(pv,{200,laterW,0});
+  const auto result=p.plan(t,100,cfg,true,soc,0,100,1,true,.4f,true,1,240,&pv,1500,&red,200);
+  if(red.watts[2]<239){std::cerr<<"FAIL: future PV credit must also fund the initially missing reserve\n";std::abort();}
+  if(laterW==268)assert(result.chargeTargetW>198&&result.chargeTargetW<199);
+  else assert(result.chargeTargetW==0); // The cheaper later sun can cover both reserve and demand.
+ }
+ cfg.reserveOffSocPercent=95;cfg.reserveOnSocPercent=98;
+ FuturePrices high;PvForecast sun;DischargeBudget red;load(high,{400000,100000,600000});solar(sun,{2100,268,0});
+ const auto result=high.plan(t,100,cfg,true,85,0,100,1,true,.4f,true,1,240,&sun,3000,&red,2100);
+ assert(result.availableWh==0&&red.watts[2]>=239&&result.chargeTargetW>2053&&result.chargeTargetW<2055);
+ // Initial 513.8 Wh DC debt exceeds the 256.9 Wh DC usable capacity and must not be pruned.
+}
+int main(){laterSolarPaysReserveBeforeItsDemandCredit();profitableChargeRestoresReserveAndFutureNeed();chronologicalSolarRefillReleasesEarlierEnergy();contentRevisionIgnoresPollingTime();pvLoadTracksConfiguredMaximum();projectionRestoresReserveBeforeDischarge();completeDischargeProjection();readOnlyPriceLookup();freeGridDoesNotSpendStoredEnergy();ownerTariffsKeepStoredAndNewEnergySeparate();relativePricesAndExistingEnergy();dischargeBudgetTrace();economicTraces();creditNeverCreatesCurrentEnergy();pvCoverageBoundaries();energyDebitAndGaps();currentSlotAndCache();snapshotGapsAndConflicts();
  std::cout<<"Future price/PV traces, bounded credit, signed pool, snapshot gaps and cached planning passed; object="<<sizeof(FuturePrices)<<" bytes\n";}

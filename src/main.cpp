@@ -30,6 +30,7 @@
 #include "control/TelemetryAge.h"
 #include "control/NumericSafety.h"
 #include "control/FuturePrices.h"
+#include "control/PlanCaptureContext.h"
 #include "control/PvForecast.h"
 #include "control/ChargePlan.h"
 
@@ -117,7 +118,7 @@ static constexpr uint32_t kI2cHz = 400000;
 #endif
 
 #ifndef VERSION
-#define VERSION "5.4.1"
+#define VERSION "5.4.10"
 #endif
 
 static sil::RuntimeDiagnostics runtimeDiagnostics;
@@ -504,6 +505,10 @@ static bool pvScheduleSubscribed = false;
 static control::FuturePlan futurePlan;
 static control::DischargeBudgetPublication dischargeBudget;
 static control::ChargePlanPublication chargePlan;
+static control::PlanCaptureContext planCaptureContext;
+static uint32_t planContextEpoch = 0;
+static bool planCaptureContextKnown = false;
+static control::PlanCaptureFaults planCaptureFaults;
 static String priceScheduleTopic;
 static bool priceScheduleSubscribed = false;
 static float forecastPriceFactor = 0.93f;
@@ -665,6 +670,31 @@ void loop()
 {
     runtimeDiagnostics.loop();
     runtimeDiagnostics.enter(sil::RuntimeStage::Wifi);
+#if defined(SIL_TEST_SINGLE_STACK_RESET) && SIL_TEST_SINGLE_STACK_RESET
+    static_assert(kRs485MockTransport, "Recovery injection requires the hard mock transport");
+    static bool recoveryAttempted = false;
+    static uint32_t recoveryReadySince = 0;
+    if (!recoveryAttempted)
+    {
+        const uint32_t now = millis();
+        const uint32_t recoveryUtc = uint32_t(time(nullptr));
+        if (!mqtt.isConnected() || !futurePlan.valid || !dischargeBudget.snapshot.valid || !chargePlan.snapshot.valid)
+            recoveryReadySince = 0;
+        else if (!recoveryReadySince)
+            recoveryReadySince = now;
+        else if (uint32_t(now - recoveryReadySince) >= 10000UL && recoveryUtc >= 1704067200UL &&
+                 ((recoveryUtc % 900UL >= 270UL && recoveryUtc % 900UL < 295UL) ||
+                  (recoveryUtc % 900UL >= 570UL && recoveryUtc % 900UL < 595UL)))
+        {
+            recoveryAttempted = true;
+            Serial.printf("[I] [MOCKED!] STACK_RESET_TEST begin ms=%lu heap=%u block=%u\n",
+                static_cast<unsigned long>(now), unsigned(ESP.getFreeHeap()), unsigned(ESP.getMaxAllocHeap()));
+            ConfigManager.performStackReset();
+            Serial.printf("[I] [MOCKED!] STACK_RESET_TEST end ms=%lu heap=%u block=%u\n",
+                static_cast<unsigned long>(millis()), unsigned(ESP.getFreeHeap()), unsigned(ESP.getMaxAllocHeap()));
+        }
+    }
+#endif
     ConfigManager.getWiFiManager().update();
     runtimeDiagnostics.enter(sil::RuntimeStage::Mqtt);
     mqtt.loop();
@@ -1599,10 +1629,10 @@ struct JsonNumberText
 // Payloads are formatted on the stack so each publish needs one heap allocation.
 static String buildPlanningConfigPayload()
 {
-    char payload[224];
+    char payload[256];
     snprintf(payload, sizeof(payload),
              "{\"v\":1,\"valid\":%s,\"resOff\":%s,\"resOn\":%s,\"mosMan\":%s,\"invEn\":%s,"
-             "\"priceC\":%s,\"priceDb\":%s,\"hystDb\":%s,\"fcPriceF\":%s}",
+             "\"priceC\":%s,\"priceDb\":%s,\"hystDb\":%s,\"fcPriceF\":%s,\"maxOutputW\":%d}",
              preparedSettings.valid ? "true" : "false",
              JsonNumberText(preparedSettings.reserveOffSocPercent, 4).text,
              JsonNumberText(preparedSettings.reserveOnSocPercent, 4).text,
@@ -1611,7 +1641,7 @@ static String buildPlanningConfigPayload()
              JsonNumberText(preparedSettings.priceComfortEurPerKwh, 4).text,
              JsonNumberText(preparedSettings.priceDeadbandEurPerKwh, 4).text,
              JsonNumberText(preparedSettings.priceHysteresisEurPerKwh, 4).text,
-             JsonNumberText(forecastPriceFactor, 6).text);
+             JsonNumberText(forecastPriceFactor, 6).text, limiterSettings.maxOutput.get());
     return String(payload);
 }
 
@@ -1664,6 +1694,7 @@ static void publishMqttNow()
     static uint32_t nextScheduleSubscribeMs = 0;
     const String &inputTopic = limiterSettings.priceScheduleInputTopic.get();
     if (priceScheduleTopic != inputTopic) {
+        dischargeBudget.topicChanged(); chargePlan.topicChanged();
         if (priceScheduleSubscribed && !mqtt.unsubscribe(priceScheduleTopic.c_str()))
             lmg.logTag(LL::Warn, "FORECAST", "old topic unsubscribe failed");
         priceScheduleSubscribed = false;
@@ -1686,6 +1717,7 @@ static void publishMqttNow()
     static uint32_t nextPvSubscribeMs = 0;
     const String &pvTopic = limiterSettings.pvScheduleInputTopic.get();
     if (pvScheduleTopic != pvTopic) {
+        dischargeBudget.topicChanged(); chargePlan.topicChanged();
         if (pvScheduleSubscribed) mqtt.unsubscribe(pvScheduleTopic.c_str());
         pvScheduleSubscribed = false;
         pvForecast.clear();
@@ -1718,7 +1750,7 @@ static void publishMqttNow()
     }
     mqtt.publishExtraTopicLazy("setvalue_w", topicPublishSetValueW.c_str(), []() { return String(inverterSetValue); }, false);
     mqtt.publishExtraTopicLazy("calculated_w", topicPublishCalculatedValueW.c_str(), []() { return String(inverterCalculatedValue); }, false);
-    mqtt.publishExtraTopicLazy("runtime_diag", topicPublishRuntimeDiagnostics.c_str(), []() { return runtimeDiagnostics.mqttPayload(); }, false);
+    mqtt.publishExtraTopicLazy("runtime_diag", topicPublishRuntimeDiagnostics.c_str(), []() { return runtimeDiagnostics.mqttPayload(mqtt.getBoundedIoStats()); }, false);
     mqtt.publishExtraTopicLazy("grid_import_w", topicPublishGridImportW.c_str(), []() { return String(currentGridImportW); }, false);
     if (preparedSettingsLoaded)
     {
@@ -1998,6 +2030,7 @@ static void processRS485Tick()
     inputs.chargerFault = source.chargerFault;
     inputs.householdW = measuredInverterW + measuredGridW;
     inputs.chargerValid = source.chargerValid;
+    inputs.chargerStandby = source.chargerStandby;
     inputs.metersValid = gridFresh && inverterFresh;
     inputs.priceValid = priceFresh;
     inputs.soc = source.soc;
@@ -2007,20 +2040,58 @@ static void processRS485Tick()
     inputs.bmsSequence = source.bmsSequence;
     inputs.chargerSequence = source.chargerSequence;
     const uint32_t utc = uint32_t(time(nullptr));
+    control::PlanCaptureContext captureContext;
+    captureContext.settings = preparedSettings;
+    captureContext.maximumW = configuredMax; captureContext.minimumW = configuredMin; captureContext.offsetW = offset;
+    captureContext.sourceTimeoutS = limiterSettings.sbtTimeout.get();
+    captureContext.priceFactor = forecastPriceFactor;
+    captureContext.observePrice(priceFresh, measuredPrice, planCaptureContextKnown ? &planCaptureContext : nullptr);
+    captureContext.prices = futurePrices.contentRevision(); captureContext.pv = pvForecast.contentRevision();
+    captureContext.limiter = limiterSettings.enableController.get();
+    captureContext.transport = kRs485MockTransport || rs485settings.enableRS485.get();
+    captureContext.negativeMin = limiterSettings.forceMinOnNegativePrice.get();
+    captureContext.negativeZero = limiterSettings.setZeroOnNegativePrice.get();
+    captureContext.pvValid = pvForecast.valid(utc);
+    if (!planCaptureContextKnown || !planCaptureContext.same(captureContext))
+    {
+        if (!planCaptureContextKnown || !planCaptureContext.sameHard(captureContext))
+            ++planContextEpoch;
+        planCaptureContext = captureContext; planCaptureContextKnown = true;
+        dischargeBudget.requestCapture(); chargePlan.requestCapture();
+    }
+    float coveredPrice = 0;
+    const bool forecastCoverage = utc <= UINT32_MAX - 900UL &&
+        futurePrices.priceAt(utc, forecastPriceFactor, coveredPrice) &&
+        futurePrices.priceAt(utc + 900UL, forecastPriceFactor, coveredPrice);
+    planCaptureFaults.observe(source.chargerFaultKnown, source.chargerFault);
+    const bool knownSourceFault = planCaptureFaults.blocked(source.genuineBmsFault);
+    const bool projectionHardInvalid = captureContext.hardInvalid(knownSourceFault);
+    const bool planSourceGrace = source.sourcesWithinGrace || source.bmsWithinGrace;
+    dischargeBudget.observe(nowMs, utc, planContextEpoch, planSourceGrace, projectionHardInvalid, forecastCoverage);
+    chargePlan.observe(nowMs, utc, planContextEpoch, planSourceGrace, projectionHardInvalid, forecastCoverage);
     const bool capturePlans = dischargeBudget.captureDue(nowMs) || chargePlan.captureDue(nowMs);
-    control::DischargeBudget *budgetTrace = capturePlans ? &dischargeBudget.snapshot : nullptr;
+    control::DischargeBudget *budgetTrace = capturePlans ? &dischargeBudget.candidate : nullptr;
+    const bool plannerExpensiveNow = currentControl.expensivePrice(preparedSettings, priceFresh, measuredPrice);
+    const bool plannerCheapNow = currentControl.cheapPrice();
+    // An unavailable MPPT supplies no measured PV. Fresh BMS voltage only bounds the installed
+    // MPPT's possible future charging after sunlight restores its power supply.
+    const bool chargerPlanningAvailable = source.chargerValid || source.bmsValid;
+    const float planningVoltageV = source.chargerValid ? source.chargerVoltageV : source.batteryVoltageV;
+    const float planningMaxChargeW = chargerPlanningAvailable && source.batteryChargeConfirmed && !knownSourceFault &&
+        std::isfinite(planningVoltageV) && planningVoltageV > 0
+        ? planningVoltageV * SIL_QUALIFIED_MPPT_MAX_CHARGE_A : 0.0f;
     futurePlan = futurePrices.plan(utc, nowMs, preparedSettings,
         source.bmsValid, source.soc, source.batteryW, source.fullCapacityAh,
         source.bmsSequence, priceFresh, measuredPrice,
-        currentControl.expensivePrice(preparedSettings, priceFresh, measuredPrice),
+        plannerExpensiveNow,
         forecastPriceFactor, configuredMax, &pvForecast,
-        source.chargerValid && source.batteryChargeConfirmed ? source.chargerVoltageV * SIL_QUALIFIED_MPPT_MAX_CHARGE_A : 0.0f, budgetTrace);
-    if (budgetTrace) dischargeBudget.captured(nowMs);
-    else if (dischargeBudget.invalidationDue(futurePlan.valid))
+        planningMaxChargeW, budgetTrace,
+        source.chargerValid ? source.chargerW : 0.0f, plannerCheapNow);
+    if (!budgetTrace && dischargeBudget.invalidationDue(futurePlan.valid))
     {
-        dischargeBudget.snapshot.reset(utc, futurePrices.revision(), pvForecast.revision());
-        dischargeBudget.snapshot.finish(false, futurePlan.reason);
-        dischargeBudget.captured(nowMs);
+        dischargeBudget.candidate.reset(utc, futurePrices.revision(), pvForecast.revision());
+        dischargeBudget.candidate.finish(false, futurePlan.reason);
+        dischargeBudget.select(dischargeBudget.candidate, nowMs, planContextEpoch);
     }
     inputs.futureValid = futurePlan.valid;
     inputs.futureBatteryCeilingW = futurePlan.batteryCeilingW;
@@ -2034,27 +2105,36 @@ static void processRS485Tick()
     projection.controlEnabled = preparedSettings.inverterEnabled &&
         (kRs485MockTransport || rs485settings.enableRS485.get()) &&
         (limiterSettings.enableController.get() || !source.batteryDischargeIntentAvailable);
-    projection.sourcesQualified = preparedSettings.valid && inputs.sourcesWithinGrace &&
-        inputs.bmsValid && inputs.chargerValid && inputs.priceValid && inputs.metersValid && source.batteryChargeStateKnown &&
+    projection.sourcesQualified = preparedSettings.valid && planSourceGrace &&
+        inputs.bmsValid && chargerPlanningAvailable && inputs.priceValid && inputs.metersValid && source.batteryChargeStateKnown &&
         !inputs.chargerFault && (!inputs.alarmRestricted || inputs.softwareMosLockOnly) &&
-        (!projection.controlEnabled || !currentDecision.direct);
+        (!projection.controlEnabled || !currentDecision.direct || source.chargerStandby);
     projection.chargeAvailable = source.batteryChargeAvailable;
     projection.soc = source.soc;
     projection.fullCapacityAh = source.fullCapacityAh;
-    projection.maxChargeW = source.chargerVoltageV * SIL_QUALIFIED_MPPT_MAX_CHARGE_A;
+    projection.maxChargeW = planningMaxChargeW;
     projection.currentChargerW = source.chargerW;
     projection.priceFactor = forecastPriceFactor;
+    dischargeBudget.qualification(futurePlan.valid && inputs.bmsValid && chargerPlanningAvailable &&
+        inputs.priceValid && inputs.metersValid && source.batteryChargeStateKnown && !knownSourceFault);
+    chargePlan.qualification(futurePlan.valid && projection.sourcesQualified && !knownSourceFault);
     if (capturePlans)
     {
-        chargePlan.snapshot.project(utc, preparedSettings, futurePlan, futurePrices, pvForecast,
-            currentDecision, dischargeBudget.snapshot, projection);
-        chargePlan.captured(nowMs);
+        chargePlan.candidate.project(utc, preparedSettings, futurePlan, futurePrices, pvForecast,
+            currentDecision, dischargeBudget.candidate, projection);
+        if (knownSourceFault)
+        {
+            dischargeBudget.candidate.finish(false, "source_fault");
+            chargePlan.candidate.finish(false, "source_fault");
+        }
+        dischargeBudget.select(dischargeBudget.candidate, nowMs, planContextEpoch);
+        chargePlan.select(chargePlan.candidate, nowMs, planContextEpoch);
     }
     else if (chargePlan.invalidationDue(futurePlan.valid && projection.sourcesQualified))
     {
-        chargePlan.snapshot.reset(utc, futurePrices.revision(), pvForecast.revision());
-        chargePlan.snapshot.finish(false, futurePlan.valid ? "sources_missing" : futurePlan.reason);
-        chargePlan.captured(nowMs);
+        chargePlan.candidate.reset(utc, futurePrices.revision(), pvForecast.revision());
+        chargePlan.candidate.finish(false, futurePlan.valid ? "sources_missing" : futurePlan.reason);
+        chargePlan.select(chargePlan.candidate, nowMs, planContextEpoch);
     }
     currentDecisionAvailable = true;
     // Only qualified discharge intent may lift economic/PV preservation limits.

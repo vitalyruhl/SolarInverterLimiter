@@ -3,6 +3,56 @@
 #include <cstring>
 #include <iostream>
 
+// [MOCKED!] Fresh actual MOS feedback explains an unavailable MPPT without inventing a sample.
+static void disconnectedBatteryExplainsMpptStandby() {
+  sbt::Receiver receiver;
+  auto send = [&](const char *topic, const char *value, uint32_t now) {
+    assert(receiver.receive(topic, value, std::strlen(value), now));
+  };
+  send("status", "online", 100);
+  send("victron/availability", "unavailable", 100);
+  send("victron/health", R"({"available":false,"reason":"stale","sample_sequence":1,"sample_age_ms":null})", 100);
+  send("bms/availability", "available", 100);
+  send("bms/health", R"({"available":true,"reason":"ok","sample_sequence":1,"sample_age_ms":0})", 100);
+  send("bms/alarm_bits", "0", 101);
+  send("bms/discharge_enabled", "false", 101);
+  send("bms/voltage_v", "54", 101);
+  send("bms/state_of_charge_pct", "65", 101);
+  send("bms/power_w", "0", 101);
+  send("bms/health", R"({"available":true,"reason":"ok","sample_sequence":2,"sample_age_ms":0})", 200);
+  auto standby = [&](uint32_t now) {
+    JsonDocument doc; receiver.writeRuntime(doc.to<JsonObject>(), now);
+    assert(!doc["victron_fresh"].as<bool>());
+    assert(!receiver.valid("victron/battery_voltage_v", now));
+    assert(!receiver.valid("victron/charge_current_a", now));
+    return !std::strcmp(doc["victron_reason"].as<const char *>(), "standby_discharge_mos_off");
+  };
+  assert(standby(201));
+  assert(!standby(30200)); // Stale BMS cannot explain the MPPT state.
+  send("bms/health", R"({"available":true,"reason":"ok","sample_sequence":3,"sample_age_ms":0})", 30300);
+  send("bms/discharge_enabled", "true", 30301);
+  assert(!standby(30302));
+  send("bms/discharge_enabled", "null", 30303);
+  assert(!standby(30304));
+  send("bms/discharge_enabled", "false", 30305);
+  send("victron/error_code", "2", 30306);
+  assert(!standby(30307)); // A known charger fault is not normal standby.
+  send("victron/error_code", "0", 30308);
+  send("bms/alarm_bits", "2", 30309);
+  assert(!standby(30310));
+  send("bms/alarm_bits", "0", 30311);
+  assert(standby(30312));
+  send("victron/availability", "available", 30313);
+  send("victron/health", R"({"available":true,"reason":"ok","sample_sequence":2,"sample_age_ms":0})", 30314);
+  send("victron/battery_voltage_v", "54", 30315);
+  send("victron/charge_current_a", "0", 30315);
+  send("victron/health", R"({"available":true,"reason":"ok","sample_sequence":3,"sample_age_ms":0})", 30320);
+  assert(receiver.fresh(1, 30321) && !receiver.chargerStandby(30321));
+  assert(receiver.valid("victron/battery_voltage_v", 30321));
+  receiver.disconnect();
+  assert(!standby(30322)); // Retained feedback cannot qualify after disconnect.
+}
+
 static void cacheBoundaries() {
   for (unsigned seconds : {1u, 180u, 9999u}) {
     sbt::Receiver r;
@@ -249,6 +299,7 @@ static void emergencyOffEpisodes() {
   assert(!r.takeEmergencyOff(30207,2000000008,"sil-9",out,sizeof(out))); // Stale alarm is not emergency authority.
 }
 int main() {
+  disconnectedBatteryExplainsMpptStandby();
   emergencyOffEpisodes();
   independentSoftwarePermissions();
   actualMosAndSoftwareLockClassification();

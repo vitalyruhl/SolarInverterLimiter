@@ -59,64 +59,19 @@ struct ChargePlan {
             reason = "forecast_missing"; return;
         }
         start = red.start; count = red.count; targetAt = future.targetAt;
-        // shortfallWh already excludes accepted future PV credit. Never subtract it again.
-        remainingWhDC = future.shortfallWh / kDischargeEfficiency;
-        const float capacityWh = in.fullCapacityAh * 51.38f;
-        float energyWh = capacityWh * in.soc * .01f;
-        const float chargeCap = std::min(in.maxChargeW, 12000.0f);
-        const bool currentNoCharge = !decision.direct && decision.strategy &&
-            !std::strcmp(decision.strategy, "discharge");
-        const float currentTargetW = currentNoCharge ? 0 : decision.chargeTargetW;
-        Band band = bandOf(decision.priceBand);
-        bool socKnown = true;
-        for (unsigned i = 0; i < count; ++i) {
-            const uint32_t at = i ? start + i * 900UL : utc;
-            const uint32_t end = start + (i + 1) * 900UL;
-            const float hours = float(end - at) / 3600.0f;
-            float solarWh = 0;
-            const bool solarKnown = pv.energyWh(at, end, solarWh);
-            if (solarKnown) solarWatts[i] = int32_t(std::min(12000.0f, std::max(0.0f, solarWh / hours)));
-            if (!in.controlEnabled || !in.chargeAvailable) { watts[i] = 0; continue; }
-            float price = 0;
-            const bool priceKnown = i == 0 ? band != Unknown : prices.priceAt(at, in.priceFactor, price);
-            if (i && priceKnown) classify(cfg, price, band);
-            const bool anchored = i != 0 || currentNoCharge || (decision.chargeTargetValid &&
-                std::isfinite(currentTargetW) && currentTargetW >= 0);
-            if (!socKnown || !priceKnown || !anchored || (i && !solarKnown)) {
-                socKnown = false; continue;
-            }
-            // A negative-price stop has no explicit charging request. Do not invent one.
-            if (i && price < 0) { watts[i] = 0; continue; }
-            const float pvW = std::min(chargeCap, i ? float(solarWatts[i]) : in.currentChargerW);
-            const float soc = energyWh / capacityWh * 100.0f;
-            float reserveW = soc <= cfg.reserveOffSocPercent && band != Expensive ? pvW :
-                (soc > cfg.reserveOffSocPercent && soc < cfg.reserveOnSocPercent && band == Cheap ? pvW * .5f : 0);
-            float economicRate = future.chargeTargetW;
-            if (!i) {
-                reserveW = std::min(reserveW, currentTargetW);
-                economicRate = std::min(economicRate, currentTargetW);
-            }
-            const float activeHours = targetAt > at ? float(std::min(end, targetAt) - at) / 3600.0f : 0;
-            const float economicWh = std::min(remainingWhDC, economicRate * activeHours);
-            const float effectiveRate = activeHours > 0 ? economicWh / activeHours : 0;
-            // Cap each chronological rate before averaging a partial deadline interval.
-            const float beforeRate = std::min(pvW, std::max(reserveW, effectiveRate));
-            const float afterRate = std::min(pvW, reserveW);
-            const float headroomWh = std::max(0.0f, capacityWh - energyWh);
-            const float beforeTargetWh = std::min(headroomWh, beforeRate * activeHours);
-            const float afterTargetWh = std::min(std::max(0.0f, headroomWh - beforeTargetWh),
-                afterRate * (hours - activeHours));
-            const float chargeWh = beforeTargetWh + afterTargetWh;
-            watts[i] = int32_t(std::max(0.0f, chargeWh / hours));
-            energyWh += chargeWh;
-            remainingWhDC = std::max(0.0f, remainingWhDC - beforeTargetWh);
-            if (chargeWh == 0) {
-                // Coarse intent ledger only: do not model simultaneous battery charge/discharge.
-                const float usableWh = std::max(0.0f, energyWh - capacityWh * cfg.reserveOffSocPercent * .01f);
-                const float dischargeWh = std::max(0.0f, float(red.watts[i])) * hours / kDischargeEfficiency;
-                energyWh -= std::min(usableWh, dischargeWh);
-            }
+        if (!future.coupledProjection || !prices.projectionMatches(utc, start, count)) {
+            finish(false, "forecast_missing"); return;
         }
+        remainingWhDC = future.projectedUnmetWhDC;
+        for (unsigned i = 0; i < count; ++i) {
+            solarWatts[i] = prices.projectedSolarW(i);
+            watts[i] = !in.controlEnabled || !in.chargeAvailable ? 0 :
+                (solarWatts[i] < 0 ? -1 : int32_t(std::max(0.0f, prices.projectedChargeW(i))));
+        }
+        // Slot zero follows the independently guarded live decision, including negative-price stops.
+        if (!in.controlEnabled || !in.chargeAvailable || !decision.chargeTargetValid ||
+            !std::isfinite(decision.chargeTargetW) || decision.chargeTargetW < 0) watts[0] = 0;
+        else if (watts[0] >= 0) watts[0] = int32_t(std::min(float(watts[0]), decision.chargeTargetW));
         finish(true, !in.controlEnabled ? "control_off" : (!in.chargeAvailable ? "charge_blocked" : "intent_projection"));
     }
     // Fixed buffers only. Unknown values are null; any malformed/overflowed plan fails closed.
@@ -147,23 +102,6 @@ struct ChargePlan {
             std::memcpy(buffer + used, tail, size + 1); used += size;
         }
         return used;
-    }
-private:
-    enum Band { Unknown, Cheap, Comfort, Expensive };
-    static Band bandOf(const char *value) {
-        if (!value) return Unknown;
-        if (!std::strcmp(value, "cheap")) return Cheap;
-        if (!std::strcmp(value, "comfort")) return Comfort;
-        if (!std::strcmp(value, "expensive")) return Expensive;
-        return Unknown;
-    }
-    static void classify(const PreparedSettings &cfg, float price, Band &band) {
-        const float high = cfg.priceComfortEurPerKwh + cfg.priceDeadbandEurPerKwh;
-        const float low = cfg.priceComfortEurPerKwh - cfg.priceDeadbandEurPerKwh;
-        const float hysteresis = cfg.priceDeadbandEurPerKwh / 3.0f;
-        if (band == Expensive && price > high - hysteresis) return;
-        if (band == Cheap && price < low + hysteresis) return;
-        band = price >= high ? Expensive : (price <= low ? Cheap : Comfort);
     }
 };
 using ChargePlanPublication = PlanPublication<ChargePlan>;

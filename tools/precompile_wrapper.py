@@ -17,7 +17,7 @@ Import("env")
 env.Replace(AR="xtensa-esp32-elf-gcc-ar", RANLIB="xtensa-esp32-elf-gcc-ranlib")
 
 registry_requirement = "vitaly.ruhl/ESP32 Configuration Manager@4.9.0"
-development_requirements = ("file://../ConfigurationsManager", "file://.local/cm-hardening-package")
+development_requirements = ("file://.local/cm-wifi-recovery-4.10.3-final-package",)
 dependencies = env.GetProjectOption("lib_deps", [])
 if isinstance(dependencies, str):
     dependencies = dependencies.splitlines()
@@ -25,7 +25,7 @@ selected = [value.strip() for value in dependencies]
 development_matches = [item for item in development_requirements if selected.count(item) == 1]
 development = len(development_matches) == 1
 requirement = development_matches[0] if development else registry_requirement
-expected_version = "4.9.1" if development else "4.9.0"
+expected_version = "4.10.3" if development else "4.9.0"
 if selected.count(requirement) != 1 or len(development_matches) > 1 or (development and registry_requirement in selected):
     raise RuntimeError(f"Select exactly one explicit CM dependency: {requirement}")
 
@@ -39,6 +39,8 @@ except (OSError, ValueError) as error:
     raise RuntimeError("ConfigManager registry provenance missing or invalid.") from error
 if not development and (provenance.get("version") != "4.9.0" or provenance.get("spec", {}).get("owner") != "vitaly.ruhl"):
     raise RuntimeError("ConfigManager registry owner/version does not match the pinned requirement.")
+if development and (provenance.get("version") != expected_version or provenance.get("spec", {}).get("uri") != requirement):
+    raise RuntimeError("ConfigManager development URI/version provenance mismatch.")
 metadata = json.loads((library_dir / "library.json").read_text(encoding="utf-8"))
 if metadata.get("name") != "ESP32 Configuration Manager" or metadata.get("version") != expected_version:
     raise RuntimeError("ConfigManager manifest version does not match the explicit requirement.")
@@ -48,13 +50,17 @@ web_version = json.loads((library_dir / "webui/package.json").read_text(encoding
 if not match or match.group(1) != expected_version or web_version != expected_version:
     raise RuntimeError("ConfigManager version mirrors disagree.")
 if development:
-    source = (Path(env.subst("$PROJECT_DIR")) / "../ConfigurationsManager/src/mqtt").resolve()
-    # A cached local package must not silently omit a later reviewed transport fix.
-    if source.exists():
-        for original in source.rglob("*.h"):
-            copied = library_dir / "src/mqtt" / original.relative_to(source)
-            if not copied.is_file() or copied.read_bytes() != original.read_bytes():
-                raise RuntimeError("Local CM package is stale; refresh the explicit development dependency before building.")
+    helper_path = Path(env.subst("$PROJECT_DIR")) / "tools/prepare_cm_development.py"
+    package_module = importlib.util.spec_from_file_location("sil_cm_package", helper_path)
+    package_helper = importlib.util.module_from_spec(package_module)
+    previous_bytecode_policy = sys.dont_write_bytecode
+    try:
+        sys.dont_write_bytecode = True
+        package_module.loader.exec_module(package_helper)
+    finally:
+        sys.dont_write_bytecode = previous_bytecode_policy
+    source_package = Path(env.subst("$PROJECT_DIR")) / requirement.removeprefix("file://")
+    package_helper.verify_development_package(source_package, library_dir)
 
 # Build only the consumer-local package; never modify PlatformIO's shared cache
 # or the adjacent development checkout while generating embedded UI assets.
@@ -70,6 +76,8 @@ process_env.update({"VITE_" + key: value for key, value in features.items()})
 process_env.update(NODE_ENV="production", NPM_CONFIG_INCLUDE="dev")
 subprocess.run([sys.executable, str(library_dir / "tools/preCompile_script.py")],
                cwd=str(library_dir), env=process_env, check=True)
+if development:
+    package_helper.verify_development_package(source_package, library_dir)
 
 asset = library_dir / "src/html_content.h"
 asset_text = asset.read_text(encoding="utf-8")
