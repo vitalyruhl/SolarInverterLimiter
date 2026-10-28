@@ -121,12 +121,12 @@ class Service {
     }
 
     struct ControlSnapshot {
-        bool bmsValid = false, chargerValid = false, sourcesWithinGrace = false, alarmRestricted = false;
+        bool bmsValid = false, chargerValid = false, chargerStandby = false, bmsWithinGrace = false, sourcesWithinGrace = false, alarmRestricted = false;
         bool genuineBmsFault = false, chargerFaultKnown = false;
         bool batteryPathAvailable = false, batteryChargeAvailable = false, batteryChargeConfirmed = false, softwareMosLockOnly = false, chargerFault = false;
         bool batteryChargeStateKnown = false; // Diagnostic distinction: blocked is not missing telemetry.
         bool batteryDischargeIntentAvailable = false;
-        float soc = 0, batteryW = 0, chargerW = 0, chargerVoltageV = 0, fullCapacityAh = NAN;
+        float soc = 0, batteryW = 0, chargerW = 0, chargerVoltageV = 0, batteryVoltageV = 0, fullCapacityAh = NAN;
         uint32_t bmsSequence = 0, chargerSequence = 0;
     };
     struct DiagnosticSnapshot {
@@ -147,7 +147,8 @@ class Service {
         s.fresh[1] = receiver_.fresh(1, now);
         s.sequence[0] = bms.sequence; s.sequence[1] = victron.sequence;
         std::snprintf(s.reason[0], sizeof(s.reason[0]), "%s", bms.reason);
-        std::snprintf(s.reason[1], sizeof(s.reason[1]), "%s", victron.reason);
+        std::snprintf(s.reason[1], sizeof(s.reason[1]), "%s",
+            receiver_.chargerStandby(now) ? "standby_discharge_mos_off" : victron.reason);
         receiver_.diagnosticValues(now, s.values, s.validMask);
         s.chargeStateValid = receiver_.copyDiagnosticText("victron/charge_state", now, s.chargeState, sizeof(s.chargeState));
         s.protectionValid = receiver_.copyDiagnosticText("bms/protection", now, s.protection, sizeof(s.protection));
@@ -159,7 +160,8 @@ class Service {
         if (!mutex_) return s;
         xSemaphoreTake(mutex_, portMAX_DELAY);
         now = millis(); // Never compare a concurrently received sample with an older loop timestamp.
-        s.sourcesWithinGrace = receiver_.withinGrace(0, now) && receiver_.withinGrace(1, now);
+        s.bmsWithinGrace = receiver_.withinGrace(0, now);
+        s.sourcesWithinGrace = s.bmsWithinGrace && receiver_.withinGrace(1, now);
         s.alarmRestricted = receiver_.alarmRestricted();
         s.genuineBmsFault = receiver_.genuineAlarmRestricted();
         s.softwareMosLockOnly = receiver_.softwareMosLockOnly();
@@ -174,6 +176,11 @@ class Service {
                      receiver_.valid("bms/power_w", now);
         s.chargerValid = receiver_.valid("victron/battery_voltage_v", now) &&
                          receiver_.valid("victron/charge_current_a", now);
+        s.chargerStandby = receiver_.chargerStandby(now);
+        if (receiver_.valid("bms/voltage_v", now)) {
+            const double voltage = receiver_.numeric("bms/voltage_v");
+            if (std::isfinite(voltage) && voltage > 0) s.batteryVoltageV = voltage;
+        }
         if (s.bmsValid) {
             s.soc = receiver_.numeric("bms/state_of_charge_pct");
             s.batteryW = receiver_.numeric("bms/power_w");

@@ -118,7 +118,7 @@ static constexpr uint32_t kI2cHz = 400000;
 #endif
 
 #ifndef VERSION
-#define VERSION "5.4.9"
+#define VERSION "5.4.10"
 #endif
 
 static sil::RuntimeDiagnostics runtimeDiagnostics;
@@ -2030,6 +2030,7 @@ static void processRS485Tick()
     inputs.chargerFault = source.chargerFault;
     inputs.householdW = measuredInverterW + measuredGridW;
     inputs.chargerValid = source.chargerValid;
+    inputs.chargerStandby = source.chargerStandby;
     inputs.metersValid = gridFresh && inverterFresh;
     inputs.priceValid = priceFresh;
     inputs.soc = source.soc;
@@ -2065,18 +2066,26 @@ static void processRS485Tick()
     planCaptureFaults.observe(source.chargerFaultKnown, source.chargerFault);
     const bool knownSourceFault = planCaptureFaults.blocked(source.genuineBmsFault);
     const bool projectionHardInvalid = captureContext.hardInvalid(knownSourceFault);
-    dischargeBudget.observe(nowMs, utc, planContextEpoch, source.sourcesWithinGrace, projectionHardInvalid, forecastCoverage);
-    chargePlan.observe(nowMs, utc, planContextEpoch, source.sourcesWithinGrace, projectionHardInvalid, forecastCoverage);
+    const bool planSourceGrace = source.sourcesWithinGrace || source.bmsWithinGrace;
+    dischargeBudget.observe(nowMs, utc, planContextEpoch, planSourceGrace, projectionHardInvalid, forecastCoverage);
+    chargePlan.observe(nowMs, utc, planContextEpoch, planSourceGrace, projectionHardInvalid, forecastCoverage);
     const bool capturePlans = dischargeBudget.captureDue(nowMs) || chargePlan.captureDue(nowMs);
     control::DischargeBudget *budgetTrace = capturePlans ? &dischargeBudget.candidate : nullptr;
     const bool plannerExpensiveNow = currentControl.expensivePrice(preparedSettings, priceFresh, measuredPrice);
     const bool plannerCheapNow = currentControl.cheapPrice();
+    // An unavailable MPPT supplies no measured PV. Fresh BMS voltage only bounds the installed
+    // MPPT's possible future charging after sunlight restores its power supply.
+    const bool chargerPlanningAvailable = source.chargerValid || source.bmsValid;
+    const float planningVoltageV = source.chargerValid ? source.chargerVoltageV : source.batteryVoltageV;
+    const float planningMaxChargeW = chargerPlanningAvailable && source.batteryChargeConfirmed && !knownSourceFault &&
+        std::isfinite(planningVoltageV) && planningVoltageV > 0
+        ? planningVoltageV * SIL_QUALIFIED_MPPT_MAX_CHARGE_A : 0.0f;
     futurePlan = futurePrices.plan(utc, nowMs, preparedSettings,
         source.bmsValid, source.soc, source.batteryW, source.fullCapacityAh,
         source.bmsSequence, priceFresh, measuredPrice,
         plannerExpensiveNow,
         forecastPriceFactor, configuredMax, &pvForecast,
-        source.chargerValid && source.batteryChargeConfirmed ? source.chargerVoltageV * SIL_QUALIFIED_MPPT_MAX_CHARGE_A : 0.0f, budgetTrace,
+        planningMaxChargeW, budgetTrace,
         source.chargerValid ? source.chargerW : 0.0f, plannerCheapNow);
     if (!budgetTrace && dischargeBudget.invalidationDue(futurePlan.valid))
     {
@@ -2096,17 +2105,17 @@ static void processRS485Tick()
     projection.controlEnabled = preparedSettings.inverterEnabled &&
         (kRs485MockTransport || rs485settings.enableRS485.get()) &&
         (limiterSettings.enableController.get() || !source.batteryDischargeIntentAvailable);
-    projection.sourcesQualified = preparedSettings.valid && inputs.sourcesWithinGrace &&
-        inputs.bmsValid && inputs.chargerValid && inputs.priceValid && inputs.metersValid && source.batteryChargeStateKnown &&
+    projection.sourcesQualified = preparedSettings.valid && planSourceGrace &&
+        inputs.bmsValid && chargerPlanningAvailable && inputs.priceValid && inputs.metersValid && source.batteryChargeStateKnown &&
         !inputs.chargerFault && (!inputs.alarmRestricted || inputs.softwareMosLockOnly) &&
-        (!projection.controlEnabled || !currentDecision.direct);
+        (!projection.controlEnabled || !currentDecision.direct || source.chargerStandby);
     projection.chargeAvailable = source.batteryChargeAvailable;
     projection.soc = source.soc;
     projection.fullCapacityAh = source.fullCapacityAh;
-    projection.maxChargeW = source.chargerVoltageV * SIL_QUALIFIED_MPPT_MAX_CHARGE_A;
+    projection.maxChargeW = planningMaxChargeW;
     projection.currentChargerW = source.chargerW;
     projection.priceFactor = forecastPriceFactor;
-    dischargeBudget.qualification(futurePlan.valid && inputs.bmsValid && inputs.chargerValid &&
+    dischargeBudget.qualification(futurePlan.valid && inputs.bmsValid && chargerPlanningAvailable &&
         inputs.priceValid && inputs.metersValid && source.batteryChargeStateKnown && !knownSourceFault);
     chargePlan.qualification(futurePlan.valid && projection.sourcesQualified && !knownSourceFault);
     if (capturePlans)

@@ -286,7 +286,60 @@ static void capabilityChangesDiscardOldBatteryDynamics() {
   assert(decision.chargeTargetValid&&decision.pvOnly);
 }
 
+static void batteryPlanningSurvivesMissingMppt() {
+  PreparedSettings cfg; cfg.valid = true; cfg.idleOutputW = 500;
+  for (int futureW : {0, 120, 900}) {
+    CurrentControl control; auto in = qualifiedStorageInputs();
+    in.chargerValid = false; in.chargerSequence = 1;
+    in.chargerW = 3000; // Stale/invalid charger power must not become direct PV credit.
+    in.futureBatteryCeilingW = futureW;
+    control::CurrentDecision out;
+    for (unsigned i = 0; i < 3; ++i) {
+      in.bmsSequence = i + 1;
+      out = control.update(cfg, in, true, true, 900, 900, 100 + i * 3000);
+    }
+    assert(out.ceilingW == futureW);
+    assert(!std::strcmp(out.strategy, futureW ? "discharge" : "preserve"));
+  }
+}
+
+static void forecastCeilingSurvivesSourceLoss() {
+  PreparedSettings cfg; cfg.valid = true; cfg.idleOutputW = 500;
+  for (int futureW : {0, 120, 900}) {
+    CurrentControl control; auto in = qualifiedStorageInputs();
+    in.chargerValid = false; in.futureBatteryCeilingW = futureW;
+    const auto out = control.update(cfg, in, true, true, 900, 500, 100);
+    assert(out.ceilingW <= futureW && out.ceilingW != 500);
+  }
+  CurrentControl control; auto in = qualifiedStorageInputs();
+  in.futureBatteryCeilingW = 600; in.futureReason = "forecast_release";
+  const auto approved = qualifyStorage(control, cfg, in);
+  assert(approved.ceilingW > 0);
+  in.chargerValid = false; in.sourcesWithinGrace = true;
+  in.futureBatteryCeilingW = 0; in.futureReason = "forecast_hold";
+  assert(control.update(cfg, in, true, true, 900, 500, 7000).ceilingW == 0);
+  in.chargerValid = true; in.bmsSequence = in.chargerSequence = 4;
+  assert(control.update(cfg, in, true, true, 900, 500, 7100).ceilingW == 0);
+}
+
+static void unavailableMpptWithDischargeMosOffHoldsOutput() {
+  PreparedSettings cfg; cfg.valid = true; cfg.idleOutputW = 500;
+  for (bool limiterEnabled : {false, true}) for (bool forecast : {false, true}) {
+    CurrentControl control; auto in = qualifiedStorageInputs();
+    in.chargerValid = false; in.chargerStandby = true;
+    in.futureValid = forecast; in.futureBatteryCeilingW = 900;
+    const auto out = control.update(cfg, in, limiterEnabled, true, 900, 500, 100);
+    assert(out.direct && out.ceilingW == 0);
+    assert(!std::strcmp(out.reason, "mppt_standby"));
+    in.chargerFault = true;
+    assert(!std::strcmp(control.update(cfg, in, limiterEnabled, true, 900, 500, 200).reason, "charger_fault"));
+  }
+}
+
 int main() {
+  batteryPlanningSurvivesMissingMppt();
+  forecastCeilingSurvivesSourceLoss();
+  unavailableMpptWithDischargeMosOffHoldsOutput();
   noUnplannedChargingFloor(); reserveChargingUsesPriceAndSoc(); economicChargingAddsToReservePolicy();
   criticalReserveResetsPriorPositiveFeedback();
   halfReserveChargingEndsAtReserveOn();
@@ -303,8 +356,8 @@ int main() {
       in.bmsValid = !(missing & 1); in.chargerValid = !(missing & 2);
       in.soc = 50; in.chargerW = 300;
       auto d = c.update(cfg, in, true, true, 900, 200, 100);
-      assert(d.direct && d.ceilingW == ((missing & 1) ? 0 : (idle > 900 ? 900 : idle)));
-      assert(!std::strcmp(d.reason, (missing & 1) ? ((missing & 2) ? "pv_missing" : "pv_recovery") : "source_loss"));
+      assert(d.direct && d.ceilingW == 0);
+      assert(!std::strcmp(d.reason, (missing & 1) ? ((missing & 2) ? "pv_missing" : "pv_recovery") : "recovery"));
     }
   }
   cfg.idleOutputW = 500;

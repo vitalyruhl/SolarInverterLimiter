@@ -20,6 +20,7 @@ struct CurrentInputs {
     bool softwareMosLockOnly = false; // The sole latched discharge bit is JBD bit 12.
     bool chargerFault = false;
     bool chargerValid = false;
+    bool chargerStandby = false; // Fresh actual discharge MOS OFF explains an unavailable MPPT.
     bool metersValid = false;
     bool priceValid = false;
     float soc = 0;
@@ -64,6 +65,8 @@ public:
                            int maximumW, int heldCommandW, uint32_t now) {
         CurrentDecision out;
         const float maximum = maximumW > 0 ? float(maximumW) : 0.0f;
+        const int forecastLimit = in.futureValid
+            ? std::max(0, std::min(in.futureBatteryCeilingW, int(maximum))) : int(maximum);
         const bool bms = in.bmsValid && std::isfinite(in.soc) &&
             in.soc >= 0 && in.soc <= 100 && std::isfinite(in.batteryW);
         const bool charger = in.chargerValid && std::isfinite(in.chargerW) && in.chargerW >= 0;
@@ -81,14 +84,25 @@ public:
         const bool chargeAvailable = bms && in.batteryChargeAvailable;
         const bool dischargeAvailable = bms && in.batteryDischargeIntentAvailable;
         const bool pvOnly = !chargeAvailable && !dischargeAvailable;
+        const bool batteryOnly = bms && dischargeAvailable && !charger;
         if (pvOnly != pvOnly_ || chargeAvailable != chargeAvailable_ || dischargeAvailable != dischargeAvailable_) {
             resetDynamics(); pvOnly_ = pvOnly; chargeAvailable_ = chargeAvailable; dischargeAvailable_ = dischargeAvailable;
+        }
+        if (batteryOnly != batteryOnly_) {
+            qualified_ = qualifying_ = false; pairs_ = 0;
+            pauseDynamics(); batteryOnly_ = batteryOnly;
         }
         // A directional software lock is not a separate hardware protection fault.
         if (in.alarmRestricted && !in.softwareMosLockOnly) return stop(out, "source_alarm");
         if (!cfg.inverterEnabled) return stop(out, "inverter_off");
         if (!transportEnabled) return stop(out, "transport_off");
         if (price && in.price < 0) return stop(out, "negative_price");
+        if (bms && !charger && in.chargerStandby) {
+            if (in.chargerFault) return stop(out, "charger_fault");
+            resetDynamics();
+            out.direct = true; out.strategy = "preserve"; out.reason = "mppt_standby";
+            return out;
+        }
         if (pvOnly) {
             out.pvOnly = true; out.reserveAllowed = false;
             out.strategy = "pv_only";
@@ -114,52 +128,34 @@ public:
         }
         if (!in.metersValid) return stop(out, "meters_missing");
         if (in.chargerFault) return stop(out, "charger_fault");
-        if (!bms || !charger) {
-            if (!dischargeAvailable) return stop(out, "pv_missing");
-            if (approved_ && in.sourcesWithinGrace && !(reserveKnown_ && !reserveAllowed_)) {
-                qualified_ = qualifying_ = false; pairs_ = 0;
-                pauseDynamics();
-                out = lastApproved_;
-                out.minimumOverrideAllowed = false;
-                out.direct = false;
-                out.ceilingW = std::max(0, std::min({out.ceilingW, int(maximum), heldCommandW}));
-                out.chargeTargetValid = false;
-                out.reason = "source_grace";
-                return out;
-            }
-            resetDynamics();
-            out.direct = true;
-            // Missing-source fallback must not clear an already latched restriction.
-            out.ceilingW = reserveKnown_ && !reserveAllowed_ ? 0 : std::max(0, std::min(cfg.idleOutputW, int(maximum)));
-            out.strategy = "fallback";
-            out.reason = reserveKnown_ && !reserveAllowed_ ? "reserve_source_loss" : "source_loss";
-            return out;
-        }
-        if (!qualify(in, now)) {
+        if (!bms || (!charger && !batteryOnly)) return stop(out, "pv_missing");
+        if (!qualify(in, now, false, batteryOnly)) {
             pauseDynamics();
             if (approved_ && in.sourcesWithinGrace && !(reserveKnown_ && !reserveAllowed_)) {
                 out = lastApproved_;
                 out.minimumOverrideAllowed = false; out.direct = false;
-                out.ceilingW = std::max(0, std::min({out.ceilingW, int(maximum), heldCommandW}));
-                out.chargeTargetValid = false; out.reason = "source_recovery";
+                out.ceilingW = std::max(0, std::min({out.ceilingW, forecastLimit, heldCommandW}));
+                out.chargeTargetValid = false; out.reason = batteryOnly ? "source_grace" : "source_recovery";
                 return out;
             }
             out.direct = true; out.reason = "recovery";
             return out;
         }
+        // Missing MPPT measurements cannot add direct PV or charging power.
+        const float chargerW = charger ? in.chargerW : 0.0f;
         out.minimumOverrideAllowed = dischargeAvailable && out.reserveAllowed;
         const bool reserveOffCharging = chargeAvailable && price &&
             in.soc <= cfg.reserveOffSocPercent && band_ != Expensive;
         const bool reserveOnCharging = chargeAvailable && price &&
             in.soc > cfg.reserveOffSocPercent && in.soc < cfg.reserveOnSocPercent && band_ == Cheap;
         const bool reserveCharging = reserveOffCharging || reserveOnCharging;
-        const float reserveChargeW = reserveOffCharging ? in.chargerW :
-            (reserveOnCharging ? in.chargerW * 0.5f : 0.0f);
+        const float reserveChargeW = reserveOffCharging ? chargerW :
+            (reserveOnCharging ? chargerW * 0.5f : 0.0f);
         if (!reserveCharging && dischargeAvailable && out.reserveAllowed &&
             (in.futureValid ? in.futureBatteryCeilingW > 0 : band_ == Expensive)) {
             const float economicTarget = in.futureValid
                 ? clamp(float(in.futureBatteryCeilingW) +
-                    clamp(in.chargerW, 0, maximum) * kDischargeEfficiency, 0, maximum)
+                    clamp(chargerW, 0, maximum) * kDischargeEfficiency, 0, maximum)
                 : maximum;
             piActive_ = false; integral_ = 0;
             if (!economicActive_) {
@@ -184,7 +180,7 @@ public:
             if (!std::isfinite(in.householdW)) return stop(out, "meters_missing");
             piActive_ = false; integral_ = 0;
             out.pvOnly = true; out.reserveAllowed = false; out.strategy = "pv_only";
-            out.ceilingW = int(clamp(in.chargerW, 0, clamp(in.householdW, 0, maximum)));
+            out.ceilingW = int(clamp(chargerW, 0, clamp(in.householdW, 0, maximum)));
             out.reason = "pv_only_charge_disabled";
             return approve(out);
         }
@@ -202,8 +198,8 @@ public:
             out.ceilingW = 0;
             return approve(out);
         }
-        const float upper = clamp(in.chargerW * kDischargeEfficiency, 0, maximum);
-        const float feedforward = clamp((in.chargerW - out.chargeTargetW) * kDischargeEfficiency, 0, upper);
+        const float upper = clamp(chargerW * kDischargeEfficiency, 0, maximum);
+        const float feedforward = clamp((chargerW - out.chargeTargetW) * kDischargeEfficiency, 0, upper);
         const float error = (in.batteryW - out.chargeTargetW) * kDischargeEfficiency;
         if (!piActive_) {
             piActive_ = true; integral_ = 0;
@@ -244,7 +240,7 @@ private:
     uint32_t recoveryAt_ = 0, bmsSequence_ = 0, chargerSequence_ = 0;
     uint32_t lastTick_ = 0, lastSampleAt_ = 0, lastPiSequence_ = 0;
     float integral_ = 0, ceiling_ = 0, economicCeiling_ = 0;
-    bool economicActive_ = false, pvOnly_ = false, chargeAvailable_ = false, dischargeAvailable_ = false;
+    bool economicActive_ = false, pvOnly_ = false, batteryOnly_ = false, chargeAvailable_ = false, dischargeAvailable_ = false;
     uint32_t economicAt_ = 0;
 
     static float clamp(float value, float low, float high) {
@@ -259,12 +255,14 @@ private:
         if (band_ == Cheap && price < low + hysteresis) return;
         band_ = price >= high ? Expensive : (price <= low ? Cheap : Comfort);
     }
-    bool qualify(const CurrentInputs &in, uint32_t now, bool chargerOnly = false) {
+    bool qualify(const CurrentInputs &in, uint32_t now, bool chargerOnly = false, bool batteryOnly = false) {
         if (qualified_) return true;
         if (!qualifying_) {
             qualifying_ = true; recoveryAt_ = now; pairs_ = 0;
             bmsSequence_ = in.bmsSequence; chargerSequence_ = in.chargerSequence;
-        } else if ((chargerOnly || in.bmsSequence != bmsSequence_) && in.chargerSequence != chargerSequence_) {
+        } else if (chargerOnly ? in.chargerSequence != chargerSequence_ :
+                   (batteryOnly ? in.bmsSequence != bmsSequence_ :
+                    in.bmsSequence != bmsSequence_ && in.chargerSequence != chargerSequence_)) {
             bmsSequence_ = in.bmsSequence; chargerSequence_ = in.chargerSequence;
             if (pairs_ < kRecoveryNewSamples) ++pairs_;
         }
