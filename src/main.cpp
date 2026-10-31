@@ -33,6 +33,7 @@
 #include "control/PlanCaptureContext.h"
 #include "control/PvForecast.h"
 #include "control/ChargePlan.h"
+#include "control/ModeSettingsRuntime.h"
 
 #include "RS485Module/RS485Module.h"
 #include "helpers/HelperModule.h"
@@ -118,7 +119,7 @@ static constexpr uint32_t kI2cHz = 400000;
 #endif
 
 #ifndef VERSION
-#define VERSION "5.4.10"
+#define VERSION "5.6.0"
 #endif
 
 static sil::RuntimeDiagnostics runtimeDiagnostics;
@@ -418,6 +419,9 @@ static String topicPublishPlanningConfig;
 static String topicPublishPlanningState;
 static String topicPublishDischargeBudget;
 static String topicPublishChargePlan;
+static String topicModeState, topicModeCommand, topicModeStatus;
+static String modeConfiguredRoot;
+static bool modeSubscribed = false, modePublishDirty = true;
 #if FEATURE_BME280_ENABLED
 static String topicPublishTempC;
 static String topicPublishHumidityPct;
@@ -496,6 +500,9 @@ static control::PreparedSettings preparedSettings;
 static control::RuntimeState preparedState;
 static bool preparedSettingsLoaded = false;
 static control::CurrentControl currentControl;
+static control::ModeSettingsRuntime operatingModes;
+static control::OperatingModePolicy modePolicy;
+static control::ModeDecision modeDecision;
 static control::CurrentDecision currentDecision;
 static control::TelemetryAge telemetryAge;
 static control::FuturePrices futurePrices;
@@ -596,6 +603,7 @@ void setup()
 
     ConfigManager.checkSettingsForErrors();
     ConfigManager.loadAll();
+    operatingModes.begin();
     refreshPreparedSettings();
     normalizeNegativePriceSettings(NegativePriceSettingPreference::None, true, true);
     syncStoredCodeVersion();
@@ -698,6 +706,19 @@ void loop()
     ConfigManager.getWiFiManager().update();
     runtimeDiagnostics.enter(sil::RuntimeStage::Mqtt);
     mqtt.loop();
+    if (mqttSettings.publishTopicBase.get() != modeConfiguredRoot) operatingModes.discardPendingMode();
+    const char *previousModeStorage = operatingModes.storageReason();
+    if (operatingModes.loop(uint32_t(time(nullptr)))) {
+        resetPidController();
+        currentControl = control::CurrentControl{};
+        modePolicy = control::OperatingModePolicy{};
+        planCaptureContextKnown = false;
+        ++planContextEpoch;
+        dischargeBudget.requestCapture(); chargePlan.requestCapture();
+        modePublishDirty = true;
+        rs485TickDue = true;
+    }
+    if (strcmp(previousModeStorage, operatingModes.storageReason())) modePublishDirty = true;
     runtimeDiagnostics.enter(sil::RuntimeStage::Sbt);
     sbtInputs.loop();
     runtimeDiagnostics.enter(sil::RuntimeStage::Publish);
@@ -1174,7 +1195,13 @@ static void setupMqtt()
     telemetryAge.attach(ConfigManager);
     mqtt.onMessage([](const char *topic, const byte *payload, unsigned int length)
                    {
-        if (topic && priceScheduleTopic == topic) {
+        if (topic && topicModeCommand == topic) {
+            const String &configuredRoot = mqttSettings.publishTopicBase.get();
+            if (configuredRoot != modeConfiguredRoot) return;
+            control::ModeCommand command;
+            if (control::parseModeCommand(reinterpret_cast<const char *>(payload), length, uint32_t(time(nullptr)), command))
+                operatingModes.queueMode(command.mode, command.expiresAt);
+        } else if (topic && priceScheduleTopic == topic) {
             const char *result = futurePrices.receive(payload, length, uint32_t(time(nullptr)), millis());
             if (strcmp(result, "pending") && strcmp(result, "duplicate"))
                 lmg.logTag(!strcmp(result, "accepted") || !strcmp(result, "withdrawn") ? LL::Info : LL::Warn,
@@ -1188,7 +1215,10 @@ static void setupMqtt()
                     static_cast<unsigned long>(pvForecast.revision()), pvForecast.slots());
         } else telemetryAge.receive(topic, payload, length, millis());
     });
-    mqtt.onDisconnected([]() { telemetryAge.reset(); priceScheduleSubscribed = false; pvScheduleSubscribed = false; });
+    mqtt.onDisconnected([]() {
+        telemetryAge.reset(); priceScheduleSubscribed = false; pvScheduleSubscribed = false;
+        modeSubscribed = false; modePublishDirty = true; operatingModes.discardPendingMode();
+    });
 
     // Optional: show receive topics in runtime UI
     // mqtt.addMqttTopicToLiveGroup(ConfigManager, "grid_import_w", "mqtt", "MQTT-Received", "MQTT-Received", 1);
@@ -1204,6 +1234,7 @@ static void setupMqtt()
 static void registerProjectSettings()
 {
     limiterSettings.attachTo(ConfigManager);
+    operatingModes.attachTo(ConfigManager);
 #if FEATURE_BME280_ENABLED
     tempSettings.attachTo(ConfigManager);
 #endif
@@ -1442,6 +1473,7 @@ static void setupNetworkDefaults()
 
 #if defined(SIL_MOCK_TRANSPORT) && SIL_MOCK_TRANSPORT
     // Never connect a newly flashed mock to production using inherited/default NVS.
+    wifiSettings.useDhcp.set(true);
     mqttSettings.publishTopicBase.set("SILHardening/COM8/out");
     mqttSettings.clientId.set("SILHardening-COM8-device");
     if (!mockMqttIsIsolated()) {
@@ -1591,12 +1623,19 @@ static void updateMqttTopics()
         base = APP_NAME;
     }
 
+    modeConfiguredRoot = mqttSettings.publishTopicBase.get();
     if (base == mqttBaseTopic)
     {
         return;
     }
 
+    if (modeSubscribed && !topicModeCommand.isEmpty()) mqtt.unsubscribe(topicModeCommand.c_str());
+    modeSubscribed = false; modePublishDirty = true;
+    operatingModes.discardPendingMode();
     mqttBaseTopic = base;
+    topicModeState = mqttBaseTopic + "/Control/Mode";
+    topicModeCommand = topicModeState + "/set";
+    topicModeStatus = mqttBaseTopic + "/Control/ModeStatus";
     topicPublishSetValueW = mqttBaseTopic + "/SetValue";
     topicPublishCalculatedValueW = mqttBaseTopic + "/CalculatedValue";
     topicPublishRuntimeDiagnostics = mqttBaseTopic + "/Diagnostics/Runtime";
@@ -1692,6 +1731,28 @@ static void publishMqttNow()
     }
 
     static uint32_t nextScheduleSubscribeMs = 0;
+    static uint32_t nextModeAttemptMs = 0;
+    if (static_cast<int32_t>(nowMs - nextModeAttemptMs) >= 0) {
+        nextModeAttemptMs = nowMs + 5000UL;
+        if (!modeSubscribed) modeSubscribed = mqtt.subscribe(topicModeCommand.c_str(), 1);
+        {
+            char status[256];
+            static char publishedModeStatus[256] = "";
+            const char *effective = !modeDecision.handled && currentDecisionAvailable && currentDecision.direct && currentDecision.ceilingW == 0
+                ? "hold" : modeDecision.effective;
+            const char *reason = !modeDecision.handled && currentDecisionAvailable ? currentDecision.reason : modeDecision.reason;
+            snprintf(status, sizeof(status), "{\"configured\":\"%s\",\"effective\":\"%s\",\"reason\":\"%s\",\"storage\":\"%s\",\"charge_threshold\":%.2f,\"inverter_share_percent\":%d}",
+                control::operatingModeName(operatingModes.confirmed().mode), effective,
+                reason, operatingModes.storageReason(), operatingModes.confirmed().chargeThreshold,
+                operatingModes.confirmed().inverterSharePercent);
+            if (modePublishDirty || strcmp(status, publishedModeStatus)) {
+                const bool stateSent = mqtt.publishRaw(topicModeState.c_str(), control::operatingModeName(operatingModes.confirmed().mode), true);
+                const bool statusSent = mqtt.publishRaw(topicModeStatus.c_str(), status, true);
+                modePublishDirty = !(stateSent && statusSent);
+                if (!modePublishDirty) snprintf(publishedModeStatus, sizeof(publishedModeStatus), "%s", status);
+            }
+        }
+    }
     const String &inputTopic = limiterSettings.priceScheduleInputTopic.get();
     if (priceScheduleTopic != inputTopic) {
         dischargeBudget.topicChanged(); chargePlan.topicChanged();
@@ -2039,6 +2100,30 @@ static void processRS485Tick()
     inputs.price = measuredPrice;
     inputs.bmsSequence = source.bmsSequence;
     inputs.chargerSequence = source.chargerSequence;
+    control::ModeInputs modeInputs;
+    modeInputs.settingsValid = preparedSettings.valid;
+    modeInputs.metersValid = inputs.metersValid;
+    modeInputs.bmsValid = inputs.bmsValid;
+    modeInputs.dischargeAllowed = source.batteryDischargeIntentAvailable;
+    modeInputs.chargeKnown = source.batteryChargeStateKnown;
+    modeInputs.chargeAllowed = source.batteryChargeAvailable;
+    modeInputs.physicalDischargeOff = source.bmsValid && source.batteryDischargeIntentAvailable && !source.batteryPathAvailable;
+    modeInputs.genuineFault = source.alarmRestricted && !source.softwareMosLockOnly;
+    modeInputs.chargerFault = source.chargerFault;
+    modeInputs.chargerValid = source.chargerValid;
+    modeInputs.chargerW = source.chargerW;
+    modeInputs.inverterEnabled = preparedSettings.inverterEnabled;
+    modeInputs.transportEnabled = kRs485MockTransport || rs485settings.enableRS485.get();
+    modeInputs.householdW = inputs.householdW;
+    modeInputs.soc = source.soc;
+    modeInputs.reserveOff = preparedSettings.reserveOffSocPercent;
+    modeInputs.reserveOn = preparedSettings.reserveOnSocPercent;
+    modeInputs.correctionW = offset;
+    modeInputs.maximumW = configuredMax;
+    const auto nextModeDecision = modePolicy.update(operatingModes.confirmed(), modeInputs);
+    if (strcmp(modeDecision.effective, nextModeDecision.effective) || strcmp(modeDecision.reason, nextModeDecision.reason))
+        modePublishDirty = true;
+    modeDecision = nextModeDecision;
     const uint32_t utc = uint32_t(time(nullptr));
     control::PlanCaptureContext captureContext;
     captureContext.settings = preparedSettings;
@@ -2065,7 +2150,8 @@ static void processRS485Tick()
         futurePrices.priceAt(utc + 900UL, forecastPriceFactor, coveredPrice);
     planCaptureFaults.observe(source.chargerFaultKnown, source.chargerFault);
     const bool knownSourceFault = planCaptureFaults.blocked(source.genuineBmsFault);
-    const bool projectionHardInvalid = captureContext.hardInvalid(knownSourceFault);
+    const bool manualMode = operatingModes.confirmed().mode != control::OperatingMode::Automatic;
+    const bool projectionHardInvalid = captureContext.hardInvalid(knownSourceFault) || manualMode;
     const bool planSourceGrace = source.sourcesWithinGrace || source.bmsWithinGrace;
     dischargeBudget.observe(nowMs, utc, planContextEpoch, planSourceGrace, projectionHardInvalid, forecastCoverage);
     chargePlan.observe(nowMs, utc, planContextEpoch, planSourceGrace, projectionHardInvalid, forecastCoverage);
@@ -2100,6 +2186,14 @@ static void processRS485Tick()
     currentDecision = currentControl.update(preparedSettings, inputs,
         limiterSettings.enableController.get(), kRs485MockTransport || rs485settings.enableRS485.get(),
         configuredMax, kRs485MockTransport ? lastMockBaseCommandW : lastIssuedBaseCommandW, nowMs);
+    if (modeDecision.handled) {
+        currentDecision = control::CurrentDecision{};
+        currentDecision.direct = true;
+        currentDecision.ceilingW = modeDecision.watts;
+        currentDecision.strategy = modeDecision.effective;
+        currentDecision.reason = modeDecision.reason;
+        currentControl = control::CurrentControl{};
+    }
     // This projection consumes the decision but never participates in PID, MOS or inverter commands.
     control::ChargePlanInputs projection;
     projection.controlEnabled = preparedSettings.inverterEnabled &&
@@ -2127,6 +2221,10 @@ static void processRS485Tick()
             dischargeBudget.candidate.finish(false, "source_fault");
             chargePlan.candidate.finish(false, "source_fault");
         }
+        if (manualMode) {
+            dischargeBudget.candidate.finish(false, "manual_mode");
+            chargePlan.candidate.finish(false, "manual_mode");
+        }
         dischargeBudget.select(dischargeBudget.candidate, nowMs, planContextEpoch);
         chargePlan.select(chargePlan.candidate, nowMs, planContextEpoch);
     }
@@ -2135,6 +2233,15 @@ static void processRS485Tick()
         chargePlan.candidate.reset(utc, futurePrices.revision(), pvForecast.revision());
         chargePlan.candidate.finish(false, futurePlan.valid ? "sources_missing" : futurePlan.reason);
         chargePlan.select(chargePlan.candidate, nowMs, planContextEpoch);
+    }
+    if (modeDecision.handled) {
+        // Policy demand already includes correction. Zero bias preserves STOP and
+        // avoids applying the automatic endpoint rule or configured MIN to a mode.
+        currentDecisionAvailable = modeDecision.handled;
+        resetPidController();
+        inverterCalculatedValue = modeDecision.watts;
+        issueInverterCommand(modeDecision.watts, configuredMax, 0);
+        return;
     }
     currentDecisionAvailable = true;
     // Only qualified discharge intent may lift economic/PV preservation limits.
