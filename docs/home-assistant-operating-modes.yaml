@@ -1,0 +1,34 @@
+# Add this select to the existing mqtt.select list; do not replace other entities.
+# Change every SolarLimiter prefix together if the SIL MQTT root is changed.
+mqtt:
+  select:
+    - name: "Solarregler Betriebsart"
+      unique_id: solar_limiter_operating_mode
+      icon: mdi:solar-power
+      state_topic: "SolarLimiter/Control/Mode"
+      command_topic: "SolarLimiter/Control/Mode/set"
+      availability_mode: all
+      availability:
+        - topic: "SolarLimiter/System-Info/status"
+          payload_available: "online"
+          payload_not_available: "offline"
+        - topic: "SolarLimiter/Control/Mode"
+          payload_available: "online"
+          payload_not_available: "offline"
+          value_template: >-
+            {{ 'online' if value in ['automatic', 'household_follow', 'charge_priority', 'pv_follow'] else 'offline' }}
+      qos: 1
+      retain: false
+      optimistic: false
+      options:
+        - "Automatik"
+        - "Hausverbrauch folger"
+        - "Batterie-lade-Vorrang"
+        - "PV-Folger"
+      value_template: >-
+        {{ {'automatic': 'Automatik', 'household_follow': 'Hausverbrauch folger',
+            'charge_priority': 'Batterie-lade-Vorrang', 'pv_follow': 'PV-Folger'}.get(value, '') }}
+      command_template: >-
+        {% set modes = {'Automatik': 'automatic', 'Hausverbrauch folger': 'household_follow',
+                        'Batterie-lade-Vorrang': 'charge_priority', 'PV-Folger': 'pv_follow'} %}
+        {{ {'mode': modes[value], 'expires_at': (as_timestamp(now()) | int) + 30} | to_json }}

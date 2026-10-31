@@ -1,8 +1,18 @@
 # ESP32 RS485 Solar Inverter Limiter
 
-## Independent BMS and MPPT capabilities (5.4.10)
+## Explicit operating modes (5.6.0)
 
-Fresh BMS data keep battery energy accounting and price planning active when MPPT telemetry is unavailable; advancing BMS samples qualify that mode independently. Fresh MPPT and AC-meter data can still supply the household when BMS telemetry is missing, without granting access to stored battery energy. The former fixed 500 W idle fallback cannot replace an economic hold. Actual discharge MOS OFF with an unavailable battery-powered MPPT is contextual standby: current output stays zero, including with Limiter OFF, while unknown voltage/current remain unknown. Future charging may use a fresh BMS-voltage bound for the installed MPPT; retained known faults prevent forecast recharge credit. Display plans retain only their original bounded BMS grace and generation deadline. See the [5.4.10 acceptance report](docs/acceptance/2026-10-28-mppt-standby-independent-sources.md).
+Production 5.6.0 was confirmed after the owner-authorized five-minute test on
+2026-10-31. See the [hardware gates](docs/acceptance/2026-10-31-operating-modes-hardware-gate.md)
+for the mocked bench boundary, successful web upload and unchanged Automatic mode.
+
+Select `automatic`, `household_follow`, `charge_priority` or `pv_follow` through the persisted CM settings or confirmed MQTT state. The new PV follower caps corrected household demand by fresh measured PV times 0.90 and produces zero at night; surplus PV remains available for charging. Household following applies correction once before the MAX clamp. Charge priority defaults to 95%, keeps all charging power until full, and returns to priority below that threshold. Automatic holds output when BMS feedback is unverified; deliberate manual following reports that condition explicitly. See [operating modes](docs/operating-modes.md) and the [additive Home Assistant select](docs/home-assistant-operating-modes.yaml). No mode writes MOS registers or changes reserve settings.
+
+The documented battery label (50.4 V / 114 Ah, approximately 5.746 kWh) differs from the existing planner basis and observed reported capacity (51.38 V / 131.25 Ah, approximately 6.744 kWh). This is a [future calibration boundary](docs/operating-modes.md#battery-energy-calibration-boundary); runtime voltage, capacity and SOC defaults remain unchanged.
+
+## Independent BMS and MPPT capabilities (5.4.10 history)
+
+Fresh BMS data keep battery energy accounting and price planning active when MPPT telemetry is unavailable; advancing BMS samples qualify that mode independently. The former automatic missing-BMS PV fallback is superseded by explicit mode selection in 5.5.0. The former fixed 500 W idle fallback cannot replace an economic hold. Automatic treats actual discharge MOS OFF with an unavailable battery-powered MPPT as contextual standby: current output stays zero, including with Limiter OFF, while unknown voltage/current remain unknown. Future charging may use a fresh BMS-voltage bound for the installed MPPT; retained known faults prevent forecast recharge credit. Display plans retain only their original bounded BMS grace and generation deadline. See the [5.4.10 acceptance report](docs/acceptance/2026-10-28-mppt-standby-independent-sources.md).
 
 ## Input-update continuity (5.4.9)
 
@@ -16,7 +26,7 @@ The planner now accounts for discharge, later PV recharge and a subsequent expen
 
 Both plan publications now keep a previously valid projection across brief source interruptions, within its original 180-second freshness limit, source grace and coverage. They retain the exact original timestamp and arrays. Hard changes and known faults invalidate immediately; source recovery requests a fresh projection promptly. Actual source qualification, controller output and permissions are unchanged. See the [wire contract](docs/control-planning/mqtt-schedule-contract.md#battery-discharge-budget-output-v1).
 
-The current build selects immutable CM 4.10.3 at `file://.local/cm-wifi-recovery-4.10.3-final-package`, with outputs under `.pio/mppt-standby-5.4.10`. Recovery delegates OFF/STA lifecycle and runtime buffer selection to Arduino, and checks initialization failure. This corrects inconsistent ownership and an observed buffer-policy mismatch; it does not establish the cause of the SBT panic. The bounded recovery and polling-retention runs are recorded in [the 5.4.7 acceptance report](docs/acceptance/2026-10-27-poll-retention-and-wifi-recovery.md). The tracked `dependencies/cm/cm-4.10.3-source.zip`, companion SHA256 and original manifest provide the exact source. For a clean restore, use the hash-checked procedure below with version 4.10.3 and destination `.local/cm-wifi-recovery-4.10.3-final-package`.
+The current build selects immutable CM 4.10.3 at `file://.local/cm-wifi-recovery-4.10.3-final-package`, with outputs under `.pio/operating-modes-5.6.0`. Recovery delegates OFF/STA lifecycle and runtime buffer selection to Arduino, and checks initialization failure. This corrects inconsistent ownership and an observed buffer-policy mismatch; it does not establish the cause of the SBT panic. The bounded recovery and polling-retention runs are recorded in [the 5.4.7 acceptance report](docs/acceptance/2026-10-27-poll-retention-and-wifi-recovery.md). The tracked `dependencies/cm/cm-4.10.3-source.zip`, companion SHA256 and original manifest provide the exact source. For a clean restore, use the hash-checked procedure below with version 4.10.3 and destination `.local/cm-wifi-recovery-4.10.3-final-package`.
 
 `testesp_recovery` additionally performs exactly one explicitly logged stack reset after healthy mock planning; a compile-time assertion prevents using this injection with real RS485 transport. Normal `usb`, `ota` and `testesp` profiles contain no recovery injection. Device acceptance for 5.4.6 is pending until its separate run is recorded.
 
