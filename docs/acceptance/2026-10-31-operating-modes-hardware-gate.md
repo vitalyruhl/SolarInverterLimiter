@@ -48,3 +48,23 @@ MOS policy, capacity/reserve settings and disabled Live UI were preserved.
 No production mode/MOS command, commit, push or release was performed.
 Evidence, image hashes, captures and uploader responses are retained in
 `C:/Temp/energy-rollout-20261031` and `.local/pv-follow-artifacts.json`.
+
+## Workspace recovery checkpoint (2026-11-01)
+
+The working checkout is `C:/Daten/_Codding/ESP32/SolarInverterLimiter` on
+`feature/operating-modes`, restored from the published baseline
+`9d93b53ef97699cdaa1f614b4be1719edd038fa1`.
+
+Recovered local evidence and historical snapshots are retained in these ignored
+repository-local archives:
+
+- `.local/recovery/sil-operating-modes-20261031/`
+- `.local/recovery/sil-current-control-a7063614cbd5464b925cd608290502ed/`
+- `.local/recovery/sil-ha-mqtt-20261017-151200/`
+- `.local/recovery/esp-integration-20261031/`
+
+These archives preserve prior records; source snapshots are recovery material,
+not changes to the current firmware. Private inputs, binaries and archive contents
+remain outside Git. This recovery and documentation checkpoint introduced no
+product changes and performed no new build, test, device or hardware validation.
+The earlier bounded acceptance results and their limitations remain unchanged.

@@ -330,6 +330,28 @@ static void invalidPidArithmeticStopsWithoutConversionOverflow(){
  assert(!pidController.initialized);
 }
 
+static void fullBatteryRunsHouseholdPidWithoutMinimum(){
+ control::PreparedSettings cfg;cfg.valid=true;
+ control::CurrentInputs in;in.bmsValid=in.batteryChargeAvailable=in.batteryDischargeIntentAvailable=true;
+ in.chargerValid=in.metersValid=in.priceValid=true;
+ in.soc=100;in.chargerW=0;in.batteryW=0;in.householdW=200;in.price=.2f;
+ in.futureValid=true;in.futureReason="forecast_hold";
+ for(int demand:{0,50,200})for(int correction:{-50,0,50}){
+  control::CurrentControl c;configuredMin=700;configuredMax=900;offset=correction;
+  in.householdW=float(demand);
+  currentInverterOutputW=0;signedGridPowerW=demand;negativePriceOverrideTarget=-1;
+  limiterSettings.enableController.value=true;resetPidController();lastIssuedBaseCommandW=0;
+  for(unsigned i=0;i<10;++i){
+   in.bmsSequence=in.chargerSequence=i+1;clockMs=100+i*3000;
+   currentDecision=c.update(cfg,in,true,true,900,heldControlCommand(),clockMs);applyDecision();
+   assert(issued>=0&&issued<=std::max(0,demand+correction));
+  }
+  assert(issued<configuredMin);
+  if(demand>0&&demand+correction>0)assert(issued>0);
+  else assert(issued==0);
+ }
+}
+
 int main(){
  invalidPidArithmeticStopsWithoutConversionOverflow();
  minimumNeverOverridesRestrictions();
@@ -339,5 +361,6 @@ int main(){
  dischargeOffStillSendsPlannedInverterRequest();
  chargeOnlyForecastAppliedThroughRealPid();
  exactOutputBoundaries();allFinalBranches();pvOnlyCorrectionOnce();heldBaseSurvivesRepeatedGraceAndRecovery();
+ fullBatteryRunsHouseholdPidWithoutMinimum();
  std::puts("PASS: real control/PID/TX MIN override, economic zero, intent, restrictions, grace/recovery, correction once and MAX");
 }

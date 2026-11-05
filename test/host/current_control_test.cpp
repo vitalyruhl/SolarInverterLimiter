@@ -336,7 +336,55 @@ static void unavailableMpptWithDischargeMosOffHoldsOutput() {
   }
 }
 
+static void fullBatteryRestartsCurtailedPv() {
+  PreparedSettings cfg; cfg.valid = true;
+  auto in = qualifiedStorageInputs(); CurrentControl control;
+  in.soc = 100; in.chargerW = 0; in.batteryW = 0;
+  const auto out = qualifyStorage(control, cfg, in);
+  assert(!out.direct && out.ceilingW > 0);
+  assert(!std::strcmp(out.reason, "full_battery_pv"));
+  assert(out.pvOnly && !out.minimumOverrideAllowed);
+  assert(out.chargeTargetValid && out.chargeTargetW == 0);
+  assert(out.ceilingW == 900);
+  in.soc = 99;
+  auto resumed = qualifyStorage(control, cfg, in, 4, 10100);
+  assert(std::strcmp(resumed.reason, "full_battery_pv"));
+  assert(resumed.ceilingW == 0);
+  in.soc = 100; in.futureChargeTargetW = 500;
+  assert(qualifyStorage(control, cfg, in, 7, 20100).chargeTargetW == 0);
+  auto chargeProtected = in; chargeProtected.batteryChargeAvailable = false;
+  CurrentControl chargeOnlyFault;
+  assert(!std::strcmp(qualifyStorage(chargeOnlyFault, cfg, chargeProtected).reason, "full_battery_pv"));
+  auto badMeter = in; badMeter.householdW = NAN; CurrentControl meterFault;
+  assert(qualifyStorage(meterFault, cfg, badMeter).ceilingW == 0);
+  for (unsigned gate = 0; gate < 7; ++gate) {
+    auto blocked = in; auto settings = cfg; CurrentControl guarded;
+    if (gate == 0) blocked.alarmRestricted = true;
+    if (gate == 1) blocked.chargerFault = true;
+    if (gate == 2) settings.inverterEnabled = false;
+    if (gate == 3) blocked.metersValid = false;
+    if (gate == 4) blocked.price = -.01f;
+    if (gate == 5) blocked.batteryDischargeIntentAvailable = false;
+    if (gate == 6) settings.valid = false;
+    const auto stopped = qualifyStorage(guarded, settings, blocked);
+    assert(stopped.ceilingW == 0);
+    assert(std::strcmp(stopped.reason, "full_battery_pv"));
+  }
+  CurrentControl recovering;
+  auto first = recovering.update(cfg, in, true, true, 900, 0, 100);
+  assert(first.direct && first.ceilingW == 0);
+  assert(recovering.update(cfg, in, true, false, 900, 0, 6200).ceilingW == 0);
+  CurrentControl grace;
+  in.futureValid = false;
+  assert(qualifyStorage(grace, cfg, in).ceilingW == 900);
+  in.soc = 99; in.chargerValid = false; in.sourcesWithinGrace = true;
+  assert(grace.update(cfg, in, true, true, 900, 500, 6300).ceilingW == 0);
+  in.chargerValid = true;
+  assert(grace.update(cfg, in, true, true, 900, 500, 6400).ceilingW == 0);
+}
+
 int main() {
+  fullBatteryRestartsCurtailedPv();
   batteryPlanningSurvivesMissingMppt();
   forecastCeilingSurvivesSourceLoss();
   unavailableMpptWithDischargeMosOffHoldsOutput();

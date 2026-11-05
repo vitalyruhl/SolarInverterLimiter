@@ -66,12 +66,10 @@ public:
   };
   void reset() {
     const uint32_t deadline = deadlineMs_;
-    const bool emergencyAttempted = emergencyAttempted_;
     const bool dischargeAlarm = alarmRestricted_, chargeAlarm = chargeRestricted_;
     const uint32_t dischargeBits = dischargeRestrictionBits_, chargeBits = chargeRestrictionBits_;
     *this = Receiver{};
     deadlineMs_ = deadline;
-    emergencyAttempted_ = emergencyAttempted;
     alarmRestricted_ = dischargeAlarm; chargeRestricted_ = chargeAlarm;
     dischargeRestrictionBits_ = dischargeBits; chargeRestrictionBits_ = chargeBits;
   }
@@ -124,18 +122,8 @@ public:
     return h.heldKnown && h.heldAge < deadlineMs_ &&
         uint32_t(now - h.heldReceived) < deadlineMs_ - h.heldAge;
   }
-  bool commandsLocked(uint32_t now = 0) const { return !emergencyOffEligible(now); }
-  bool emergencyOffEligible(uint32_t now) const {
-    return !emergencyAttempted_ && remoteEnabled_ && remoteReady_ && !remotePending_ && controlAvailable_ &&
-        hexSession(session_) && valid("bms/alarm_bits", now) && (uint32_t(numeric("bms/alarm_bits")) & 0xfffu);
-  }
-  static constexpr const char* emergencyOffTopic() { return "bms/emergency_off/set"; }
-  // Caller owns synchronization. Consume before publishing: even an uncertain send is never retried.
-  bool takeEmergencyOff(uint32_t now, uint64_t utc, const char* requestId, char* output, size_t capacity) {
-    if (!emergencyOffEligible(now) || !previewDisable(false,requestId,utc,output,capacity)) return false;
-    emergencyAttempted_ = true;
-    return true;
-  }
+  // SIL only observes MOS state; it never authorizes a BMS control command.
+  bool commandsLocked() const { return true; }
   bool fresh(unsigned source, uint32_t now) const {
     if (source > 1)
       return false;
@@ -323,8 +311,6 @@ public:
     recordQualified(channels[i].source, now);
     if (!std::strcmp(topic, "bms/alarm_bits")) {
       const uint32_t bits = static_cast<uint32_t>(candidate);
-      // Only a fresh clear rearms the one-shot emergency; link/session changes do not.
-      if (fresh(0, now) && !(bits & 0xfffu)) emergencyAttempted_ = false;
       // JBD protocol directions, not new numeric battery thresholds.
       constexpr uint32_t dischargeMask = 0xffff0000u | (1u<<1) | (1u<<3) | (1u<<6) |
           (1u<<7) | (1u<<9) | (1u<<10) | (1u<<11) | (1u<<12) | (1u<<14) | (1u<<15);
@@ -340,37 +326,10 @@ public:
     }
     return true;
   }
-  // Preview only: deliberately has no MQTT transport or publish dependency.
-  bool previewDisable(bool charge, const char *requestId, uint64_t now,
-                      char *output, size_t capacity) const {
-    (void)charge;
-    if (!output || !capacity || !hexSession(session_) || !requestId ||
-        now < 1700000000ULL || now > 4294967265ULL)
-      return false;
-    const size_t n = std::strlen(requestId);
-    if (!n || n > 32)
-      return false;
-    for (size_t i = 0; i < n; ++i) {
-      char c = requestId[i];
-      if (!((c >= 'a' && c <= 'z') || (c >= 'A' && c <= 'Z') ||
-            (c >= '0' && c <= '9') || c == '_' || c == '-'))
-        return false;
-    }
-    const int nout = std::snprintf(
-        output, capacity,
-        "{\"state\":false,\"request_id\":\"%s\",\"session\":\"%s\","
-        "\"expires_at\":%llu}",
-        requestId, session_, static_cast<unsigned long long>(now + 30));
-    return nout >= 0 && size_t(nout) < capacity;
-  }
-  static const char *disableTopic(bool charge) {
-    return charge ? "bms/charge_enabled/set" : "bms/discharge_enabled/set";
-  }
   void writeRuntime(JsonObject out, uint32_t now) const {
     out["online"] = online_;
-    out["commands_locked"] = commandsLocked(now);
-    out["emergency_state"] = emergencyAttempted_ ? "Attempted; manual retry if needed" :
-        emergencyOffEligible(now) ? "Emergency stop ready" : !remoteEnabled_ ? "Control disabled" : "Waiting for a fresh fault";
+    out["commands_locked"] = commandsLocked();
+    out["emergency_state"] = "Manual SBT control only"; // Legacy runtime key.
     out["charge_restriction"] = chargeRestricted_;
     out["discharge_restriction"] = alarmRestricted_;
     out["remote_control_ready"] =
@@ -382,8 +341,9 @@ public:
     // the service mutex is held; HTTP serialization runs after this method.
     out["control_reason"] = static_cast<const char *>(controlReason_);
     out["control_result"] = static_cast<const char *>(result_);
-    out["charge_disable_topic"] = disableTopic(true);
-    out["discharge_disable_topic"] = disableTopic(false);
+    // Retained diagnostic keys identify external manual SBT endpoints, never SIL actions.
+    out["charge_disable_topic"] = "bms/charge_enabled/set";
+    out["discharge_disable_topic"] = "bms/discharge_enabled/set";
     for (unsigned s = 0; s < 2; ++s) {
       const auto &h = health_[s];
       const bool standby = s == 1 && chargerStandby(now);
@@ -430,7 +390,6 @@ private:
   bool alarmRestricted_ = false, chargeRestricted_ = false;
   uint32_t dischargeRestrictionBits_ = 0, chargeRestrictionBits_ = 0;
   bool permissionsKnown_ = false, requestedCharge_ = false, requestedDischarge_ = false;
-  bool emergencyAttempted_ = false;
   bool online_ = false, remoteReady_ = false, remoteEnabled_ = false,
        remotePending_ = false, controlAvailable_ = false;
   char protection_[512] = "", chargeState_[32] = "", session_[33] = "",

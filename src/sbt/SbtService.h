@@ -5,7 +5,6 @@
 #include "mqtt/MQTTManager.h"
 #include <freertos/FreeRTOS.h>
 #include <freertos/semphr.h>
-#include <ctime>
 
 namespace sbt {
 class Service {
@@ -90,24 +89,6 @@ class Service {
             uint32_t(millis() - lastSubscribe_) >= 1000) {
             lastSubscribe_ = millis();
             subscribed_ = mqtt_->subscribe((root_ + "/#").c_str());
-        }
-        if (subscribed_) {
-            char payload[256], requestId[33];
-            std::snprintf(requestId,sizeof(requestId),"sil-%08lx-%08lx",
-                static_cast<unsigned long>(requestNonce_),static_cast<unsigned long>(++requestSequence_));
-            // Recheck the current gate/session/fault immediately before consuming the episode.
-            xSemaphoreTake(mutex_, portMAX_DELAY);
-            const auto utc = std::time(nullptr);
-            const bool send = receiver_.takeEmergencyOff(millis(),utc > 0 ? static_cast<uint64_t>(utc) : 0,
-                requestId,payload,sizeof(payload));
-            xSemaphoreGive(mutex_);
-            if (send) {
-#if defined(SIL_MOCK_TRANSPORT) && SIL_MOCK_TRANSPORT
-                Serial.println("[I] [MOCKED!] BMS emergency TX suppressed");
-#else
-                mqtt_->publishRaw((root_ + "/" + Receiver::emergencyOffTopic()).c_str(),payload,false);
-#endif
-            }
         }
     }
 
@@ -217,7 +198,6 @@ class Service {
     String root_;
     bool subscribed_ = false;
     uint32_t lastSubscribe_ = 0;
-    uint32_t requestNonce_ = esp_random(), requestSequence_ = 0;
     void reset(bool rootChanged = false) {
         if (mutex_) {
             xSemaphoreTake(mutex_, portMAX_DELAY);

@@ -1,5 +1,8 @@
 # Manual MOS and forecast charging correction
 
+The automatic MOS policy recorded in this historical acceptance was removed in
+5.6.1. Current behavior is documented in [operating modes](../operating-modes.md).
+
 ## 5.1.3 actual readback and emergency-only follow-up
 
 The owner's later redesign supersedes the historical 5.1.2 ACK-based capability rules below. Fresh actual charge/discharge flags plus known genuine directional faults now govern physical battery capability, including after collector restart. Historical software-request fields remain optional diagnostics. Global software-lock bit 12 cannot identify a direction and is not an emergency trigger.

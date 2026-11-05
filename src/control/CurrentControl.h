@@ -38,6 +38,7 @@ struct CurrentInputs {
 
 struct CurrentDecision {
     int ceilingW = 0;
+    bool fullBatteryPv = false; // Approval requires fresh full-battery and charger feedback.
     bool pvOnly = false; // Always use the household PID, including with Limiter OFF.
     bool minimumOverrideAllowed = false; // Qualified discharge intent and released reserve; economics may yield to configured MIN.
     bool direct = false; // A fallback/stop/bypass decision, not a demand request.
@@ -131,7 +132,8 @@ public:
         if (!bms || (!charger && !batteryOnly)) return stop(out, "pv_missing");
         if (!qualify(in, now, false, batteryOnly)) {
             pauseDynamics();
-            if (approved_ && in.sourcesWithinGrace && !(reserveKnown_ && !reserveAllowed_)) {
+            if (approved_ && in.sourcesWithinGrace && !(reserveKnown_ && !reserveAllowed_) &&
+                (!lastApproved_.fullBatteryPv || (bms && in.soc >= 100 && charger))) {
                 out = lastApproved_;
                 out.minimumOverrideAllowed = false; out.direct = false;
                 out.ceilingW = std::max(0, std::min({out.ceilingW, forecastLimit, heldCommandW}));
@@ -144,6 +146,18 @@ public:
         // Missing MPPT measurements cannot add direct PV or charging power.
         const float chargerW = charger ? in.chargerW : 0.0f;
         out.minimumOverrideAllowed = dischargeAvailable && out.reserveAllowed;
+        if (charger && dischargeAvailable && out.reserveAllowed && in.soc >= 100) {
+            // A full battery curtails MPPT output without an AC load. Measured
+            // charger power cannot bound the PV that a new load will release.
+            pauseDynamics();
+            if (!std::isfinite(in.householdW)) return stop(out, "meters_missing");
+            out.pvOnly = true; out.minimumOverrideAllowed = false;
+            out.fullBatteryPv = true;
+            out.ceilingW = int(clamp(in.householdW, 0, maximum));
+            out.chargeTargetValid = true; out.chargeTargetW = 0;
+            out.strategy = "pv_only"; out.reason = "full_battery_pv";
+            return approve(out);
+        }
         const bool reserveOffCharging = chargeAvailable && price &&
             in.soc <= cfg.reserveOffSocPercent && band_ != Expensive;
         const bool reserveOnCharging = chargeAvailable && price &&
