@@ -24,6 +24,121 @@ static CurrentDecision qualifyStorage(CurrentControl &control, const PreparedSet
   return out;
 }
 
+static void reconnectKeepsQualifiedBatteryPermission() {
+  PreparedSettings cfg; cfg.valid = true;
+  auto in = qualifiedStorageInputs(); CurrentControl control;
+  in.chargerW = 0; in.futureBatteryCeilingW = 900;
+  for (unsigned i = 0; i < 3; ++i) {
+    in.bmsSequence = in.chargerSequence = i + 1;
+    control.update(cfg, in, true, true, 900, 900, 100 + i * 3000);
+  }
+  assert(control.update(cfg, in, true, true, 900, 900, 6200).ceilingW == 900);
+  in.bmsValid = in.chargerValid = false;
+  in.batteryChargeAvailable = in.batteryDischargeIntentAvailable = false;
+  in.sourcesWithinGrace = true;
+  in.bmsWithinGrace = true;
+  const auto held = control.update(cfg, in, true, true, 900, 900, 8000);
+  assert(held.ceilingW == 900 && !held.direct);
+}
+
+static void limiterOffWaitsForCompleteBatteryGraceRecovery() {
+  PreparedSettings cfg; cfg.valid = true; CurrentControl control;
+  auto in = qualifiedStorageInputs(); in.chargerW = 0; in.futureBatteryCeilingW = 900;
+  for (unsigned i = 0; i < 3; ++i) {
+    in.bmsSequence = in.chargerSequence = i + 1;
+    control.update(cfg, in, true, true, 900, 900, 100 + i * 3000);
+  }
+  in.bmsValid = in.chargerValid = in.batteryDischargeIntentAvailable = in.batteryChargeAvailable = false;
+  in.bmsWithinGrace = true;
+  assert(control.update(cfg, in, false, true, 900, 200, 8000).sourceGrace);
+  in.bmsValid = in.chargerValid = in.batteryDischargeIntentAvailable = in.batteryChargeAvailable = true;
+  for (unsigned i = 0; i < 3; ++i) {
+    in.bmsSequence = in.chargerSequence = i + 4;
+    const auto recovery = control.update(cfg, in, false, true, 900, 200, 10000 + i * 3000);
+    if (i < 2) assert(recovery.sourceGrace && recovery.ceilingW == 200 && !recovery.direct);
+    else assert(!recovery.sourceGrace && recovery.ceilingW == 900 && recovery.direct && !std::strcmp(recovery.reason,"limiter_off"));
+  }
+  CurrentControl ordinary;
+  const auto bypass = ordinary.update(cfg, in, false, true, 900, 200, 20000);
+  assert(bypass.direct && bypass.ceilingW == 900 && !bypass.sourceGrace);
+}
+
+static void batteryGraceCannotCreatePermissionOrSurviveAStop() {
+  PreparedSettings cfg; cfg.valid = true;
+  for (int fault = 0; fault < 8; ++fault) {
+    CurrentControl control; auto in = qualifiedStorageInputs();
+    in.chargerW = 0; in.futureBatteryCeilingW = 900;
+    for (unsigned i = 0; i < 3; ++i) {
+      in.bmsSequence = in.chargerSequence = i + 1;
+      control.update(cfg, in, true, true, 900, 900, 100 + i * 3000);
+    }
+    in.bmsValid = in.chargerValid = false;
+    in.batteryChargeAvailable = in.batteryDischargeIntentAvailable = false;
+    in.bmsWithinGrace = true; in.futureValid = false;
+    assert(control.update(cfg, in, true, true, 900, 900, 8000).sourceGrace);
+    auto settings = cfg; bool transport = true;
+    if (fault == 0) in.bmsWithinGrace = false;
+    if (fault == 1) in.alarmRestricted = true;
+    if (fault == 2) settings.inverterEnabled = false;
+    if (fault == 3) transport = false;
+    if (fault == 4) in.price = -.01f;
+    if (fault == 5) in.metersValid = false;
+    if (fault == 6) in.chargerFault = true;
+    if (fault == 7) { in.bmsValid = true; in.soc = 1; }
+    auto stopped = control.update(settings, in, true, transport, 900, 900, 10000);
+    assert(stopped.ceilingW == 0 && !stopped.sourceGrace);
+    in = qualifiedStorageInputs(); in.bmsValid = in.chargerValid = false;
+    in.batteryChargeAvailable = in.batteryDischargeIntentAvailable = false;
+    in.bmsWithinGrace = true;
+    assert(!control.update(cfg, in, true, true, 900, 900, 12000).sourceGrace);
+  }
+  CurrentControl startup; auto absent = qualifiedStorageInputs();
+  absent.bmsValid = absent.chargerValid = false; absent.bmsWithinGrace = true;
+  assert(!startup.update(cfg, absent, true, true, 900, 900, 100).sourceGrace);
+  for (bool fullBattery : {false, true}) {
+    CurrentControl pv; auto in = qualifiedStorageInputs();
+    in.soc = fullBattery ? 100 : 50;
+    in.batteryDischargeIntentAvailable = fullBattery;
+    in.chargerW = 1000;
+    qualifyStorage(pv, cfg, in);
+    in.bmsValid = in.chargerValid = false;
+    in.batteryChargeAvailable = in.batteryDischargeIntentAvailable = false;
+    in.bmsWithinGrace = true;
+    assert(!pv.update(cfg, in, true, true, 900, 900, 8000).sourceGrace);
+  }
+}
+
+static void batteryGraceExcludesOldPvAndAllowsPartialRecovery() {
+  PreparedSettings cfg; cfg.valid = true; CurrentControl control;
+  auto in = qualifiedStorageInputs();
+  in.chargerW = 1000; in.futureBatteryCeilingW = 50;
+  for (unsigned i = 0; i < 3; ++i) {
+    in.bmsSequence = in.chargerSequence = i + 1;
+    control.update(cfg, in, true, true, 900, 900, 100 + i * 3000);
+  }
+  in.bmsValid = in.chargerValid = false;
+  in.batteryChargeAvailable = in.batteryDischargeIntentAvailable = false;
+  in.bmsWithinGrace = true; in.futureValid = false;
+  auto held = control.update(cfg, in, true, true, 900, 900, 8000);
+  assert(held.sourceGrace && held.ceilingW == 50 && !held.minimumOverrideAllowed && !held.chargeTargetValid);
+  // SOC/power can arrive before MOS/permission fields; this must not discard grace.
+  in.bmsValid = true;
+  held = control.update(cfg, in, true, true, 900, 50, 9000);
+  assert(held.sourceGrace && held.ceilingW == 50);
+  in.batteryDischargeIntentAvailable = true; in.bmsSequence = 4;
+  held = control.update(cfg, in, true, true, 900, 50, 10000);
+  assert(held.sourceGrace && held.ceilingW == 50);
+  in.bmsSequence = 5;
+  assert(control.update(cfg, in, true, true, 40, 50, 13000).ceilingW == 40);
+  in.bmsSequence = 6; in.price = .4f;
+  const auto recovered = control.update(cfg, in, true, true, 900, 40, 16000);
+  assert(!recovered.sourceGrace && recovered.ceilingW == 40);
+  // A later new, restrictive forecast still takes effect within a held interval.
+  in.bmsValid = false; in.batteryDischargeIntentAvailable = false;
+  in.futureValid = true; in.futureBatteryCeilingW = 20;
+  assert(control.update(cfg, in, true, true, 900, 40, 18000).ceilingW == 20);
+}
+
 static void noUnplannedChargingFloor() {
   PreparedSettings cfg; cfg.valid = true;
   auto in = qualifiedStorageInputs(); CurrentControl control;
@@ -394,6 +509,10 @@ int main() {
   chargeOnlyHonorsFutureStorage(); chargeOnlyPriorityAndRecovery(); manualChargeBlockingDoesNotReserveUnavailableStorage(); capabilityChangesDiscardOldBatteryDynamics();
   missingBmsCanFollowFreshPv();
   batteryUnavailablePvOnly();
+  reconnectKeepsQualifiedBatteryPermission();
+  limiterOffWaitsForCompleteBatteryGraceRecovery();
+  batteryGraceCannotCreatePermissionOrSurviveAStop();
+  batteryGraceExcludesOldPvAndAllowsPartialRecovery();
   recoveryRestartsDynamicsAtHeldCommand();
   PreparedSettings cfg; cfg.valid = true;
   CurrentInputs in; in.metersValid = true; in.batteryDischargeIntentAvailable = true;

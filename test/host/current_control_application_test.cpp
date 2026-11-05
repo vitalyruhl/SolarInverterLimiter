@@ -1,4 +1,5 @@
 #include "control/CurrentControl.h"
+#include "control/OperatingModes.h"
 #include "control/OutputCorrection.h"
 #include "control/NumericSafety.h"
 #include <algorithm>
@@ -33,6 +34,10 @@ static bool kRs485MockTransport=false,lastIssuedCommandKnown=false;
 static int lastMockCommandW=0,lastIssuedCommandW=0;
 static int lastMockBaseCommandW=0,lastIssuedBaseCommandW=0;
 static struct {Setting<bool> enableRS485{true};} rs485settings;
+static control::OperatingModePolicy modePolicy;
+static control::ModeDecision modeDecision;
+static bool modePublishDirty=false;
+static struct {control::ModeSettings confirmed() const {return {};}} operatingModes;
 static void sendToRS485(uint16_t watts){
  // Observe the signed command before its wire cast as well as the actual wire value.
  assert(inverterSetValue>=0&&inverterSetValue<=configuredMax);
@@ -159,6 +164,52 @@ static void heldBaseSurvivesRepeatedGraceAndRecovery(){
   assert(currentDecision.ceilingW==250);
  }
  kRs485MockTransport=false;
+}
+
+static void productionModeGateKeepsBoundedReconnectOutput(){
+ for(bool enabled:{true,false})for(int correction:{-50,50}){
+  control::PreparedSettings cfg;cfg.valid=true;control::CurrentControl c;
+  control::CurrentInputs in;
+  in.bmsValid=in.batteryDischargeIntentAvailable=in.batteryChargeAvailable=in.chargerValid=in.metersValid=in.priceValid=true;
+  in.soc=50;in.price=.4f;in.futureValid=true;in.futureBatteryCeilingW=900;in.householdW=900;
+  for(unsigned i=0;i<3;++i){in.bmsSequence=in.chargerSequence=i+1;c.update(cfg,in,true,true,900,900,100+i*3000);}
+  offset=correction;configuredMin=700;configuredMax=900;negativePriceOverrideTarget=-1;
+  limiterSettings.enableController.value=enabled;issueInverterCommand(200,900,offset);
+  in.bmsValid=in.chargerValid=in.batteryDischargeIntentAvailable=in.batteryChargeAvailable=false;
+  in.bmsWithinGrace=true;in.futureValid=false;
+  currentInverterOutputW=200;signedGridPowerW=700;resetPidController();
+  control::ModeInputs modeInputs;modeInputs.metersValid=true;modeInputs.householdW=900;modeInputs.maximumW=900;
+  for(unsigned i=0;i<3;++i){
+   clockMs=8000+i*2000;
+   currentDecision=c.update(cfg,in,enabled,true,900,heldControlCommand(),clockMs);
+   applyProductionModeGate(modeInputs,c);
+   assert(!modeDecision.handled&&currentDecision.sourceGrace);
+   applyDecision();assert(issued==200+correction);
+  }
+  // The first fresh packet is still recovery, including with Limiter OFF.
+  in.bmsValid=in.chargerValid=in.batteryDischargeIntentAvailable=in.batteryChargeAvailable=true;
+  in.futureValid=true;in.bmsSequence=in.chargerSequence=4;clockMs+=2000;
+  modeInputs.bmsValid=true;modeInputs.soc=50;modeInputs.dischargeAllowed=true;
+  currentDecision=c.update(cfg,in,enabled,true,900,heldControlCommand(),clockMs);
+  applyProductionModeGate(modeInputs,c);
+  assert(currentDecision.sourceGrace&&!modeDecision.handled);
+  applyDecision();assert(issued==200+correction);
+  in.bmsValid=in.chargerValid=in.batteryDischargeIntentAvailable=in.batteryChargeAvailable=false;
+  in.futureValid=false;modeInputs.bmsValid=false;
+  // A live lower household demand may reduce output; an old MIN cannot lift it.
+  currentInverterOutputW=0;signedGridPowerW=0;
+  for(unsigned i=0;i<20;++i){clockMs+=2000;applyDecision();}
+  assert(issued<200+correction);
+  in.bmsWithinGrace=false;clockMs+=2000;
+  currentDecision=c.update(cfg,in,enabled,true,900,heldControlCommand(),clockMs);
+  applyProductionModeGate(modeInputs,c);applyDecision();
+  assert(modeDecision.handled&&issued==0&&!currentDecision.sourceGrace);
+  // Initial input lacks any grant, even when the receiver reports historical grace.
+  c={};in.bmsWithinGrace=true;
+  currentDecision=c.update(cfg,in,enabled,true,900,900,clockMs+2000);
+  applyProductionModeGate(modeInputs,c);applyDecision();assert(issued==0);
+ }
+ limiterSettings.enableController.value=true;
 }
 
 static void chargeOnlyForecastAppliedThroughRealPid(){
@@ -353,6 +404,7 @@ static void fullBatteryRunsHouseholdPidWithoutMinimum(){
 }
 
 int main(){
+ productionModeGateKeepsBoundedReconnectOutput();
  invalidPidArithmeticStopsWithoutConversionOverflow();
  minimumNeverOverridesRestrictions();
  minimumPermissionDoesNotSurviveSourceGrace();

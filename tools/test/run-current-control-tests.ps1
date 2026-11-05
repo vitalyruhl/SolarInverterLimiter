@@ -23,7 +23,10 @@ $heldSource = [regex]::Match($source, 'configuredMax, ([^\r\n]+), nowMs\);')
 if (!$heldSource.Success) { throw 'Production held-command extraction missing' }
 $heldFunction = 'static int heldControlCommand() { return ' + $heldSource.Groups[1].Value + '; }'
 $header = Join-Path $repo '.pio/current_control_application.h'
-[IO.File]::WriteAllText($header, $pidSource.Value + [Environment]::NewLine + $issueSource.Value + [Environment]::NewLine + $heldFunction + [Environment]::NewLine + 'static void applyDecision() {' + $command + '}' + [Environment]::NewLine)
+$modeGate = [regex]::Match($source, '(?s)    modeInputs.automaticSourceGrace = currentDecision.sourceGrace;.*?        currentControl = control::CurrentControl\{\};\r?\n    \}')
+if (!$modeGate.Success) { throw 'Production automatic grace gate extraction missing' }
+$modeFunction = 'static void applyProductionModeGate(control::ModeInputs &modeInputs, control::CurrentControl &currentControl) {' + $modeGate.Value + '}'
+[IO.File]::WriteAllText($header, $pidSource.Value + [Environment]::NewLine + $issueSource.Value + [Environment]::NewLine + $heldFunction + [Environment]::NewLine + $modeFunction + [Environment]::NewLine + 'static void applyDecision() {' + $command + '}' + [Environment]::NewLine)
 $applicationOut = Join-Path $repo '.pio/current_control_application_test.exe'
 & 'C:/Program Files/LLVM/bin/clang++.exe' -std=c++17 -Wall -Wextra -Werror -I (Join-Path $repo 'src') -I (Join-Path $repo '.pio') (Join-Path $repo 'test/host/current_control_application_test.cpp') -o $applicationOut
 if ($LASTEXITCODE -ne 0) { throw 'Current control application compilation failed' }

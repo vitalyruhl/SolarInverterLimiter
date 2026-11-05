@@ -67,6 +67,10 @@ int main() {
     assert(!std::strcmp(p.update(cfg,in).reason,"manual_bms_unverified"));
     cfg.mode = OperatingMode::Automatic;
     assert(p.update(cfg,in).handled && p.update(cfg,in).watts == 0);
+    in.automaticSourceGrace=true;
+    assert(!p.update(cfg,in).handled);
+    in.metersValid=false;assert(p.update(cfg,in).handled&&p.update(cfg,in).watts==0);
+    in.metersValid=true;in.genuineFault=true;assert(p.update(cfg,in).handled&&p.update(cfg,in).watts==0);
     in = healthy(); assert(!p.update(cfg,in).handled);
     cfg.mode = OperatingMode::HouseholdFollow;
     in.soc = 1; assert(p.update(cfg,in).watts == 0);

@@ -34,6 +34,7 @@ inline bool sameModeSettings(const ModeSettings &a,const ModeSettings &b) {
     return a.mode == b.mode && a.chargeThreshold == b.chargeThreshold && a.inverterSharePercent == b.inverterSharePercent;
 }
 struct ModeInputs {
+    bool automaticSourceGrace=false; // Supplied only by the bounded CurrentControl decision.
     bool metersValid=false,bmsValid=false,dischargeAllowed=false,chargeKnown=false,chargeAllowed=false;
     // genuineFault is a directional discharge restriction, not a charge-only alarm.
     bool settingsValid=true,inverterEnabled=true,transportEnabled=true,physicalDischargeOff=false,genuineFault=false,chargerFault=false,chargerValid=false;
@@ -68,7 +69,7 @@ public:
         if (in.genuineFault) return stop("source_alarm");
         if (in.chargerFault) return stop("charger_fault");
         if (cfg.mode == OperatingMode::Automatic) {
-            if (!bms) return stop("bms_unverified");
+            if (!bms && !in.automaticSourceGrace) return stop("bms_unverified");
             out.handled=false; out.effective="automatic"; out.reason="automatic"; return out;
         }
         const double corrected = double(in.householdW) + double(in.correctionW);

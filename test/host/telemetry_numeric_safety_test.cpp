@@ -5,6 +5,10 @@
 #include <cstring>
 #include <iostream>
 
+static bool priceScheduleSubscribed=true,pvScheduleSubscribed=true,modeSubscribed=true,modePublishDirty=false;
+static struct { void discardPendingMode() {} } operatingModes;
+#include "telemetry_disconnect_application.h"
+
 // [MOCKED!] Synthetic MQTT messages run through the real TelemetryAge parser.
 struct Receiver {
     ConfigManagerClass cfg;
@@ -26,6 +30,20 @@ struct Receiver {
         return age.read(control::TelemetryAge::Grid, now, 500, value);
     }
 };
+
+static void productionDisconnectKeepsOriginalMeterDeadline() {
+    Receiver receiver;
+    float value=0;
+    assert(receiver.send("900",value,100));
+    for (unsigned now : {200u,10000u,20099u}) {
+        productionMqttDisconnect(receiver.age);
+        assert(receiver.age.read(control::TelemetryAge::Grid,now,20000,value)&&value==900);
+    }
+    assert(!receiver.age.read(control::TelemetryAge::Grid,20100,20000,value));
+    productionMqttDisconnect(receiver.age);
+    assert(!receiver.age.read(control::TelemetryAge::Grid,20101,20000,value));
+    assert(!priceScheduleSubscribed&&!pvScheduleSubscribed&&!modeSubscribed&&modePublishDirty);
+}
 
 static void floatStorageCannotValidateAnUnrepresentableInteger() {
     Receiver receiver;
@@ -121,6 +139,7 @@ static void checkedConversionsAndArithmeticRespectIntegerBounds() {
 }
 
 int main() {
+    productionDisconnectKeepsOriginalMeterDeadline();
     floatStorageCannotValidateAnUnrepresentableInteger();
     invalidMessagesCannotRefreshOrRestoreFreshness();
     ordinaryMappingAndSignedBoundsArePreserved();
