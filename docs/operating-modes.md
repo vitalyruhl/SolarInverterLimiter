@@ -1,8 +1,8 @@
-# Explicit operating modes (5.6.0)
+# Explicit operating modes (5.6.1)
 
 The persisted default is `automatic`. Existing reserve, price, controller and
-transport settings remain unchanged. Mode selection does not write MOS registers
-or remove the existing automatic emergency-OFF policy.
+transport settings remain unchanged. SIL does not publish BMS MOS commands in any
+mode. Manual MOS control remains with SBT and the BMS retains its own protection.
 
 | Mode | Behavior |
 | --- | --- |
@@ -10,6 +10,16 @@ or remove the existing automatic emergency-OFF policy.
 | `household_follow` | `clamp(measured inverter AC + signed grid power + correction, 0, MAX)`, with correction applied once before clamping. Explicit selection permits missing BMS feedback and reports `manual_bms_unverified`. |
 | `charge_priority` | Holds output below the configured charge threshold (default 95%). Between the threshold and 100%, default inverter share is 0%. At 100%, household following latches until SOC drops below the threshold. |
 | `pv_follow` | Uses only fresh measured PV: `min(charger DC W * 0.90, clamp(measured household W + correction, 0, MAX))`. Excess PV remains available for battery charging; night-time zero PV produces zero output. |
+
+With the automatic limiter enabled, a fresh, qualified 100% battery permits the
+household PID to request the measured household demand up to MAX. A full battery
+can curtail MPPT output until a load appears, so the present charger output does
+not cap this request. This grants no charging reservation and does not force MIN
+above household demand. Normal economic planning resumes below 100%; a source
+gap cannot preserve an old full-battery exception. Existing discharge, charger,
+reserve, enable and negative-price gates remain authoritative. The physical
+battery may briefly supply power while the charger responds or until SOC falls
+below 100%. The explicit Limiter-OFF maximum-output bypass is unchanged.
 
 Fresh grid and actual inverter measurements, enabled inverter, enabled transport
 and valid settings are required. Configured MIN and negative-price overrides do

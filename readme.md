@@ -1,5 +1,14 @@
 # ESP32 RS485 Solar Inverter Limiter
 
+## Full battery PV and manual MOS ownership (5.6.1)
+
+At a fresh, qualified 100% SOC, the automatic limiter allows household demand to
+release PV that a full battery has curtailed. Current measured MPPT output no
+longer holds that request at zero. Normal planning resumes below 100%, with
+existing protection and source-freshness gates preserved. SIL no longer sends
+automatic MOS commands; manual SBT controls and the BMS's own protection remain.
+See [operating modes](docs/operating-modes.md) for the control boundaries.
+
 ## Explicit operating modes (5.6.0)
 
 Production 5.6.0 was confirmed after the owner-authorized five-minute test on
@@ -190,7 +199,7 @@ The [integration plan](docs/superpowers/plans/2026-10-20-sil-sbt-ha-integration.
 
 The receiver retains last-good values through transient source loss. `SBT Data Timeout (s)` is 1..9999 seconds, default 180; invalid entries normalize visibly to 180. Since 5.1.3, fresh actual MOS flags and genuine directional alarms govern physical battery capability; historical acknowledged requests have no control authority. The global software-lock bit cannot identify a direction and remains diagnostic. Actual discharge MOS OFF does not cap the calculated or transmitted inverter request: SIL continues to plan and send ordinary desired discharge under existing economics, reserve, protection, settings and transport rules. Physical discharge capability is reported separately; SIL never enables a MOS to satisfy that intent. Charge MOS OFF disables PV storage reservation. With charging enabled, cheap/forecast-charge periods still reserve PV normally. Missing PV/meters and genuine charger/protection faults retain restrictive behavior.
 
-SIL sends only a one-shot emergency both-off request on `bms/emergency_off/set` for fresh JBD hard faults (bits 0..11). SBT's shared persistent control gate governs this path; disabled, unavailable, busy or stale state cannot consume an unsent episode. No economic MOS action, automatic ON or retry is implemented. Reconnect/session changes never rearm an attempted fault; only a fresh hard-fault clear does. SBT independently checks its gate and current fault before writing. A local MQTT send or E1 ACK does not prove physical isolation. The legacy `mosMan` setting is preserved but does not authorize or suppress this emergency-only path. This supersedes earlier Hand/Auto and always-locked planning text; local build validation is separate from hardware acceptance.
+SIL does not publish MOS commands. BMS protection, fault clears, mode changes and reconnects never cause SIL to switch either MOS. It still consumes directional BMS restrictions and stops inverter output when discharge protection requires it. The BMS retains its own protection and manual MOS operation remains available through SBT's existing control gate. The legacy `mosMan` setting is preserved but does not grant SIL MOS ownership. This policy replaces the earlier automatic one-shot emergency both-off behavior starting with 5.6.1; local build validation remains separate from hardware acceptance.
 
 SBT 1.2.0 adds independent `bms/temperature_1_c` and `bms/temperature_2_c`; SIL has 31 receiver slots and 29 visible SBT fields. NTC identities use raw JBD order, labeled Top/Bottom; a missing sensor is unavailable. The System live card is removed; only UsedHeap, FreeHeap and HeapFragmentation appear under Limiter. `SIL_DEACTIVATE_BME280_CARD=1` hides the BME280 card, while 0 shows it; sampling/MQTT remain enabled independently. I2C uses SDA21/SCL22/400000 Hz; old pin/frequency NVS keys are inert.
 

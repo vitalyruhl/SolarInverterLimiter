@@ -254,53 +254,40 @@ static void independentSoftwarePermissions() {
   assert(!r.batteryChargeAvailable(30223));
   r.disconnect();assert(!r.batteryChargeAvailable(223)&&!r.batteryPathAvailable(223));
 }
-static void emergencyOffEpisodes() {
-  sbt::Receiver r;
-  const char* currentSession="0123456789abcdef0123456789abcdef";
-  auto control=[&](bool enabled,bool pending=false,const char* session=nullptr) {
-    if(session)currentSession=session;else session=currentSession;
-    char payload[256];std::snprintf(payload,sizeof(payload),"{\"enabled\":%s,\"ready\":%s,\"pending\":%s,\"session\":\"%s\",\"reason\":\"ok\"}",enabled?"true":"false",enabled?"true":"false",pending?"true":"false",session);
-    assert(receive(r,"bms/control",payload,201));
+static void automaticMosCommandsRemainBlockedForEveryProtection() {
+  // [MOCKED!] A fully ready collector must never authorize SIL MOS writes.
+  struct Protection { unsigned bits; bool charge, discharge; };
+  const Protection cases[] = {
+    {1,true,false}, {2,false,true}, {4,true,false}, {8,false,true},
+    {16,true,false}, {32,true,false}, {64,false,true}, {128,false,true},
+    {256,true,false}, {512,false,true}, {1024,true,true}, {2048,true,true},
+    {4096,true,true}, {8192,true,false}, {16384,true,true}, {32768,true,true},
+    {65535,true,true}, {0,false,false}
   };
-  char out[256];
-  control(false);qualified(r,0);
-  assert(receive(r,"bms/control/availability","available",201));
-  assert(receive(r,"bms/alarm_bits","16",202)); // [MOCKED!] Charge overtemperature.
-  assert(!r.takeEmergencyOff(203,2000000000,"sil-1",out,sizeof(out)));
-  control(true);
-  assert(!r.takeEmergencyOff(203,0,"sil-1",out,sizeof(out))); // No valid clock: do not consume.
-  assert(!r.takeEmergencyOff(203,2000000000,"bad id",out,sizeof(out)));
-  assert(!r.commandsLocked(203));
-  assert(r.takeEmergencyOff(203,2000000000,"sil-1",out,sizeof(out)));
-  JsonDocument envelope;assert(!deserializeJson(envelope,out));
-  assert(envelope.size()==4&&envelope["state"].is<bool>()&&!envelope["state"].as<bool>());
-  assert(envelope["expires_at"].as<uint64_t>()==2000000030);
-  assert(!std::strcmp(envelope["session"].as<const char*>(),"0123456789abcdef0123456789abcdef"));
-  assert(!std::strcmp(r.emergencyOffTopic(),"bms/emergency_off/set"));
-  assert(!r.takeEmergencyOff(204,2000000001,"sil-2",out,sizeof(out)));
-  r.disconnect();control(true,false,"abcdef0123456789abcdef0123456789");qualified(r,0);
-  assert(receive(r,"bms/control/availability","available",201));
-  assert(receive(r,"bms/alarm_bits","16",202));
-  assert(!r.takeEmergencyOff(203,2000000002,"sil-3",out,sizeof(out))); // No reconnect retry.
-  assert(receive(r,"bms/alarm_bits","0",30203)); // Stale clear does not rearm.
-  health(r,0,1002,30204);assert(receive(r,"bms/alarm_bits","16",30205));
-  assert(!r.takeEmergencyOff(30206,2000000003,"sil-4",out,sizeof(out)));
-  assert(receive(r,"bms/alarm_bits","4096",30207)); // Fresh software-lock-only is a hard-fault clear.
-  assert(!r.takeEmergencyOff(30208,2000000004,"sil-5",out,sizeof(out)));
-  assert(receive(r,"bms/alarm_bits","64",30209));
-  control(false);assert(!r.takeEmergencyOff(30210,2000000005,"sil-6",out,sizeof(out)));
-  control(true,true);assert(!r.takeEmergencyOff(30210,2000000005,"sil-6",out,sizeof(out)));
-  control(true);assert(r.takeEmergencyOff(30210,2000000005,"sil-6",out,sizeof(out)));
-  r.reset();control(true);qualified(r,0);assert(receive(r,"bms/control/availability","available",201));
-  assert(receive(r,"bms/alarm_bits","64",202));assert(!r.takeEmergencyOff(203,2000000006,"sil-7",out,sizeof(out)));
-  assert(receive(r,"bms/alarm_bits","0",204));assert(r.commandsLocked(205)); // Never auto-ON.
-  assert(!r.takeEmergencyOff(205,2000000007,"sil-8",out,sizeof(out)));
-  assert(receive(r,"bms/alarm_bits","2048",206));
-  assert(!r.takeEmergencyOff(30207,2000000008,"sil-9",out,sizeof(out))); // Stale alarm is not emergency authority.
+  for (const auto& protection : cases) {
+    sbt::Receiver r;
+    assert(receive(r,"bms/control",R"({"enabled":true,"ready":true,"pending":false,"session":"0123456789abcdef0123456789abcdef","reason":"ok"})",201));
+    qualified(r,0);
+    assert(receive(r,"bms/control/availability","available",201));
+    char bits[16]; std::snprintf(bits,sizeof(bits),"%u",protection.bits);
+    assert(receive(r,"bms/alarm_bits",bits,202));
+    assert(r.valid("bms/alarm_bits",203));
+    assert(r.chargeRestricted()==protection.charge);
+    assert(r.alarmRestricted()==protection.discharge);
+    assert(r.commandsLocked());
+    JsonDocument runtime; r.writeRuntime(runtime.to<JsonObject>(),203);
+    assert(runtime["commands_locked"].as<bool>());
+    assert(runtime["remote_control_enabled"].as<bool>());
+    assert(runtime["remote_control_ready"].as<bool>());
+    assert(!std::strcmp(runtime["emergency_state"].as<const char*>(),"Manual SBT control only"));
+    r.disconnect(); assert(r.commandsLocked());
+    r.reset(); assert(r.commandsLocked());
+  }
 }
+
 int main() {
   disconnectedBatteryExplainsMpptStandby();
-  emergencyOffEpisodes();
+  automaticMosCommandsRemainBlockedForEveryProtection();
   independentSoftwarePermissions();
   actualMosAndSoftwareLockClassification();
   invalidEssentialKeepsCacheAndOriginalDeadline();
@@ -391,14 +378,9 @@ int main() {
   assert(!std::strcmp(snapshot["bms_reason"].as<const char *>(),
                       "snapshot_health"));
   r = copied;
-  char out[256];
-  assert(r.previewDisable(true, "sil-test_1", 2000000000, out, sizeof(out)));
-  assert(std::strstr(out, "\"state\":false"));
-  assert(std::strstr(out, "2000000030"));
-  assert(!r.previewDisable(true, "bad id", 2000000000, out, sizeof(out)));
   assert(r.commandsLocked());
   r.reset();
-  assert(!r.previewDisable(false, "id", 2000000000, out, sizeof(out)));
+  assert(r.commandsLocked());
   for (const auto &c : sbt::channels) {
     const char *payload =
         c.kind == sbt::Kind::Boolean ? "true"

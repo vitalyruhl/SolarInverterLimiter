@@ -119,7 +119,7 @@ static constexpr uint32_t kI2cHz = 400000;
 #endif
 
 #ifndef VERSION
-#define VERSION "5.6.0"
+#define VERSION "5.6.1"
 #endif
 
 static sil::RuntimeDiagnostics runtimeDiagnostics;
