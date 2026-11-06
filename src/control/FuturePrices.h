@@ -256,11 +256,16 @@ private:
             else desiredDc = 0;
             float storedDc = std::max(0.0f, std::min({desiredDc, solarDc, float(chargeCapW) * hours, headroomDc,
                 reserveDeficitDc + std::max(0.0f, capacityAc - pool) / kDischargeEfficiency}));
-            float allocation = 0;
+            float allocation = 0, allocatedW = 0;
             if (storedDc <= 0 && price > 0 && reserveDeficitDc <= 0) {
                 const float batteryLimit = std::max(0.0f, maximum * hours - solarDc * kDischargeEfficiency);
                 allocation = std::min(batteryLimit, std::max(0.0f,
                     pool - std::max(0.0f, protectedWh_[k] - std::min(restoredDebtAc, protectedDebtWh_[k]))));
+                // A fully funded power cap is already known; a Wh/W round trip
+                // can turn exact MAX into MAX-1 through floating-point truncation.
+                allocatedW = allocation == batteryLimit
+                    ? std::max(0.0f, maximum - solarW * kDischargeEfficiency)
+                    : allocation / hours;
             }
             pool = std::max(0.0f, pool - allocation);
             headroomDc += allocation / kDischargeEfficiency;
@@ -270,7 +275,7 @@ private:
             headroomDc = std::max(0.0f, headroomDc - storedDc);
             projectedChargeW_[k] = storedDc / hours;
             out.usablePvWh += (storedDc - restoredDc) * kDischargeEfficiency;
-            const int watts = int(std::max(0.0f, std::min(maximum, allocation / hours)));
+            const int watts = int(std::max(0.0f, std::min(maximum, allocatedW)));
             if (trace) trace->watts[k] = watts;
             if (!k) {
                 out.batteryCeilingW = watts; out.chargeTargetW = storedDc / hours;

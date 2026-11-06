@@ -119,7 +119,7 @@ static constexpr uint32_t kI2cHz = 400000;
 #endif
 
 #ifndef VERSION
-#define VERSION "5.6.1"
+#define VERSION "5.6.3"
 #endif
 
 static sil::RuntimeDiagnostics runtimeDiagnostics;
@@ -1216,7 +1216,8 @@ static void setupMqtt()
         } else telemetryAge.receive(topic, payload, length, millis());
     });
     mqtt.onDisconnected([]() {
-        telemetryAge.reset(); priceScheduleSubscribed = false; pvScheduleSubscribed = false;
+        // Preserve original meter timestamps; their unchanged 20 s expiry still protects output.
+        priceScheduleSubscribed = false; pvScheduleSubscribed = false;
         modeSubscribed = false; modePublishDirty = true; operatingModes.discardPendingMode();
     });
 
@@ -2083,6 +2084,7 @@ static void processRS485Tick()
     const auto source = sbtInputs.controlSnapshot(nowMs);
     control::CurrentInputs inputs;
     inputs.sourcesWithinGrace = source.sourcesWithinGrace;
+    inputs.bmsWithinGrace = source.bmsWithinGrace;
     inputs.alarmRestricted = source.alarmRestricted;
     inputs.bmsValid = source.bmsValid;
     inputs.batteryDischargeIntentAvailable = source.batteryDischargeIntentAvailable;
@@ -2120,10 +2122,6 @@ static void processRS485Tick()
     modeInputs.reserveOn = preparedSettings.reserveOnSocPercent;
     modeInputs.correctionW = offset;
     modeInputs.maximumW = configuredMax;
-    const auto nextModeDecision = modePolicy.update(operatingModes.confirmed(), modeInputs);
-    if (strcmp(modeDecision.effective, nextModeDecision.effective) || strcmp(modeDecision.reason, nextModeDecision.reason))
-        modePublishDirty = true;
-    modeDecision = nextModeDecision;
     const uint32_t utc = uint32_t(time(nullptr));
     control::PlanCaptureContext captureContext;
     captureContext.settings = preparedSettings;
@@ -2186,13 +2184,21 @@ static void processRS485Tick()
     currentDecision = currentControl.update(preparedSettings, inputs,
         limiterSettings.enableController.get(), kRs485MockTransport || rs485settings.enableRS485.get(),
         configuredMax, kRs485MockTransport ? lastMockBaseCommandW : lastIssuedBaseCommandW, nowMs);
+    modeInputs.automaticSourceGrace = currentDecision.sourceGrace;
+    modeInputs.automaticPvOnly = currentDecision.pvOnly;
+    modeInputs.automaticPvQualified = !currentDecision.direct;
+    const auto nextModeDecision = modePolicy.update(operatingModes.confirmed(), modeInputs);
+    if (strcmp(modeDecision.effective, nextModeDecision.effective) || strcmp(modeDecision.reason, nextModeDecision.reason))
+        modePublishDirty = true;
+    modeDecision = nextModeDecision;
     if (modeDecision.handled) {
         currentDecision = control::CurrentDecision{};
         currentDecision.direct = true;
         currentDecision.ceilingW = modeDecision.watts;
         currentDecision.strategy = modeDecision.effective;
         currentDecision.reason = modeDecision.reason;
-        currentControl = control::CurrentControl{};
+        // Retain qualified PV recovery state only while the automatic fallback owns output.
+        if (!modeDecision.automaticPvFallback) currentControl = control::CurrentControl{};
     }
     // This projection consumes the decision but never participates in PID, MOS or inverter commands.
     control::ChargePlanInputs projection;
@@ -2268,7 +2274,7 @@ static void processRS485Tick()
     {
         pidBaseTarget = control::saturatingAdd(currentInverterOutputW, signedGridPowerW);
         const int effectiveCeiling = max(outputMinimumW, constrain(currentDecision.ceilingW, 0, configuredMax));
-        const int effectiveMin = min(configuredMin, effectiveCeiling);
+        const int effectiveMin = currentDecision.sourceGrace ? 0 : min(configuredMin, effectiveCeiling);
         pidClampedBaseTarget = constrain(pidBaseTarget, effectiveMin, effectiveCeiling);
         pidInput = pidClampedBaseTarget;
         if (pidController.initialized && !control::checkedFloatToInt(roundf(pidController.output), pidInput)) resetPidController();
@@ -2292,11 +2298,11 @@ static void processRS485Tick()
         resetPidController();
         issueInverterCommand(inverterSetValue, configuredMax, offset);
     }
-    else if (limiterSettings.enableController.get() || currentDecision.pvOnly)
+    else if (limiterSettings.enableController.get() || currentDecision.pvOnly || currentDecision.sourceGrace)
     {
         const int correctedValue = inverterCalculatedValue;
         const int ceiling = max(outputMinimumW, constrain(currentDecision.ceilingW, 0, configuredMax));
-        const int effectiveMin = min(configuredMin, ceiling);
+        const int effectiveMin = currentDecision.sourceGrace ? 0 : min(configuredMin, ceiling);
         inverterSetValue = constrain(correctedValue, effectiveMin, ceiling);
         issueInverterCommand(inverterSetValue, configuredMax, offset, outputMinimumW);
         lmg.logTag(LL::Trace, "RS485", "Controller enabled -> set inverter to %d W (calc=%d, corr=%d)", inverterSetValue, inverterCalculatedValue, correctedValue);

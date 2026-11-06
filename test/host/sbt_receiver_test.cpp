@@ -143,6 +143,17 @@ static void qualified(sbt::Receiver& r,unsigned source){
  health(r,source,1000,100);essential(r,source,101);health(r,source,1001,200);
  assert(r.withinGrace(source,200));
 }
+static void reconnectNeverExtendsApprovedBatteryDeadline(){
+ sbt::Receiver r;r.setTimeoutSeconds(180);qualified(r,0);
+ for(uint32_t now:{1000u,60000u,120000u,180199u}){
+  r.disconnect();
+  assert(receive(r,"status","online",now));
+  health(r,0,1001,now); // Retained duplicate cannot restart the original 200-ms clock.
+  assert(r.withinGrace(0,now)&&!r.fresh(0,now));
+ }
+ assert(!r.withinGrace(0,180200));
+ assert(!r.valid("bms/power_w",180200));
+}
 static void invalidEssentialKeepsCacheAndOriginalDeadline(){
  struct Invalid {const char* topic;const char* value;unsigned source;double previous;};
  for(const auto& bad : {Invalid{"bms/state_of_charge_pct","-1",0,50},
@@ -286,6 +297,7 @@ static void automaticMosCommandsRemainBlockedForEveryProtection() {
 }
 
 int main() {
+  reconnectNeverExtendsApprovedBatteryDeadline();
   disconnectedBatteryExplainsMpptStandby();
   automaticMosCommandsRemainBlockedForEveryProtection();
   independentSoftwarePermissions();

@@ -13,6 +13,7 @@ constexpr float kPvKiPerSecond = 0.03f;
 
 struct CurrentInputs {
     bool sourcesWithinGrace = false;
+    bool bmsWithinGrace = false; // Original receiver deadline; reconnect never renews it.
     bool alarmRestricted = false;
     bool bmsValid = false;
     bool batteryDischargeIntentAvailable = false; // Fresh healthy source permits inverter intent, even with actual MOS OFF.
@@ -38,6 +39,7 @@ struct CurrentInputs {
 
 struct CurrentDecision {
     int ceilingW = 0;
+    bool sourceGrace = false; // Previously qualified battery permission only; never fresh telemetry.
     bool fullBatteryPv = false; // Approval requires fresh full-battery and charger feedback.
     bool pvOnly = false; // Always use the household PID, including with Limiter OFF.
     bool minimumOverrideAllowed = false; // Qualified discharge intent and released reserve; economics may yield to configured MIN.
@@ -84,20 +86,25 @@ public:
             (band_ == Cheap ? "cheap" : (band_ == Comfort ? "comfort" : "unknown"));
         const bool chargeAvailable = bms && in.batteryChargeAvailable;
         const bool dischargeAvailable = bms && in.batteryDischargeIntentAvailable;
+        // These gates also precede held permission and partial source recovery.
+        if (in.alarmRestricted && !in.softwareMosLockOnly) return stop(out, "source_alarm");
+        if (!cfg.inverterEnabled) return stop(out, "inverter_off");
+        if (!transportEnabled) return stop(out, "transport_off");
+        if (price && in.price < 0) return stop(out, "negative_price");
+        if (!in.metersValid || !std::isfinite(in.householdW)) return stop(out, "meters_missing");
+        if (in.chargerFault) return stop(out, "charger_fault");
+        if (batteryGraceActive_ && !in.bmsWithinGrace) return stop(out, "source_timeout");
+        if (!dischargeAvailable && batteryGraceAllowed(in))
+            return holdBattery(out, forecastLimit, maximumW, heldCommandW, "source_grace", true);
         const bool pvOnly = !chargeAvailable && !dischargeAvailable;
         const bool batteryOnly = bms && dischargeAvailable && !charger;
         if (pvOnly != pvOnly_ || chargeAvailable != chargeAvailable_ || dischargeAvailable != dischargeAvailable_) {
-            resetDynamics(); pvOnly_ = pvOnly; chargeAvailable_ = chargeAvailable; dischargeAvailable_ = dischargeAvailable;
+            resetDynamics(batteryGraceActive_); pvOnly_ = pvOnly; chargeAvailable_ = chargeAvailable; dischargeAvailable_ = dischargeAvailable;
         }
         if (batteryOnly != batteryOnly_) {
             qualified_ = qualifying_ = false; pairs_ = 0;
             pauseDynamics(); batteryOnly_ = batteryOnly;
         }
-        // A directional software lock is not a separate hardware protection fault.
-        if (in.alarmRestricted && !in.softwareMosLockOnly) return stop(out, "source_alarm");
-        if (!cfg.inverterEnabled) return stop(out, "inverter_off");
-        if (!transportEnabled) return stop(out, "transport_off");
-        if (price && in.price < 0) return stop(out, "negative_price");
         if (bms && !charger && in.chargerStandby) {
             if (in.chargerFault) return stop(out, "charger_fault");
             resetDynamics();
@@ -121,7 +128,7 @@ public:
         }
         // Keep the household PID active for charge-only operation, including Limiter OFF.
         out.pvOnly = !dischargeAvailable;
-        if (!limiterEnabled && dischargeAvailable) {
+        if (!limiterEnabled && dischargeAvailable && !batteryGraceActive_) {
             resetDynamics();
             out.direct = true; out.ceilingW = int(maximum);
             out.strategy = "bypass"; out.reason = "limiter_off";
@@ -132,6 +139,8 @@ public:
         if (!bms || (!charger && !batteryOnly)) return stop(out, "pv_missing");
         if (!qualify(in, now, false, batteryOnly)) {
             pauseDynamics();
+            if (batteryGraceActive_ && batteryGraceAllowed(in))
+                return holdBattery(out, forecastLimit, maximumW, heldCommandW, "source_recovery", false);
             if (approved_ && in.sourcesWithinGrace && !(reserveKnown_ && !reserveAllowed_) &&
                 (!lastApproved_.fullBatteryPv || (bms && in.soc >= 100 && charger))) {
                 out = lastApproved_;
@@ -141,6 +150,13 @@ public:
                 return out;
             }
             out.direct = true; out.reason = "recovery";
+            return out;
+        }
+        // Grace must complete source qualification before Limiter OFF may bypass it.
+        if (!limiterEnabled && dischargeAvailable) {
+            resetDynamics();
+            out.direct = true; out.ceilingW = int(maximum);
+            out.strategy = "bypass"; out.reason = "limiter_off";
             return out;
         }
         // Missing MPPT measurements cannot add direct PV or charging power.
@@ -186,7 +202,8 @@ public:
             if (in.futureValid) economicCeiling_ = std::min(economicCeiling_, economicTarget);
             out.ceilingW = int(economicCeiling_);
             out.strategy = "discharge"; out.reason = in.futureValid ? in.futureReason : "expensive";
-            return approve(out);
+            batteryGraceBudgetW_ = in.futureValid ? forecastLimit : int(maximum);
+            return approve(out, true);
         }
         economicActive_ = false;
         if (!chargeAvailable) {
@@ -243,7 +260,27 @@ public:
 private:
     CurrentDecision lastApproved_;
     bool approved_ = false;
-    CurrentDecision approve(CurrentDecision out) {
+    int batteryGraceBudgetW_ = 0;
+    bool batteryGraceApproved_ = false, batteryGraceActive_ = false;
+    bool batteryGraceAllowed(const CurrentInputs &in) const {
+        return batteryGraceApproved_ && batteryGraceBudgetW_ > 0 && in.bmsWithinGrace &&
+            reserveKnown_ && reserveAllowed_;
+    }
+    CurrentDecision holdBattery(CurrentDecision out, int forecastLimit, int maximumW,
+                                int heldCommandW, const char *reason, bool restartQualification) {
+        out.ceilingW = std::max(0, std::min({batteryGraceBudgetW_, lastApproved_.ceilingW,
+            forecastLimit, maximumW, heldCommandW}));
+        out.sourceGrace = true; out.direct = false;
+        out.strategy = "hold"; out.reason = reason;
+        out.minimumOverrideAllowed = false; out.chargeTargetValid = false;
+        pauseDynamics(); batteryGraceActive_ = true;
+        if (restartQualification) { qualifying_ = qualified_ = false; pairs_ = 0; }
+        return out;
+    }
+    CurrentDecision approve(CurrentDecision out, bool batteryApproval = false) {
+        batteryGraceApproved_ = batteryApproval && out.reserveAllowed && !out.pvOnly && !out.fullBatteryPv;
+        batteryGraceActive_ = false;
+        if (!batteryGraceApproved_) batteryGraceBudgetW_ = 0;
         lastApproved_ = out; approved_ = true; return out;
     }
     enum Band { Unknown, Cheap, Comfort, Expensive };
@@ -290,8 +327,12 @@ private:
         lastTick_ = lastSampleAt_ = economicAt_ = 0;
         lastPiSequence_ = 0;
     }
-    void resetDynamics() {
+    void resetDynamics(bool keepBatteryGrace = false) {
         approved_ = false;
+        if (!keepBatteryGrace) {
+            batteryGraceApproved_ = batteryGraceActive_ = false;
+            batteryGraceBudgetW_ = 0;
+        }
         qualifying_ = qualified_ = false; pairs_ = 0;
         pauseDynamics();
     }

@@ -1,4 +1,4 @@
-# Explicit operating modes (5.6.1)
+# Explicit operating modes (5.6.3)
 
 The persisted default is `automatic`. Existing reserve, price, controller and
 transport settings remain unchanged. SIL does not publish BMS MOS commands in any
@@ -6,7 +6,7 @@ mode. Manual MOS control remains with SBT and the BMS retains its own protection
 
 | Mode | Behavior |
 | --- | --- |
-| `automatic` | Existing economic controller, PID, forecasts and output correction. Missing BMS feedback holds output rather than identifying a disconnected battery. |
+| `automatic` | Existing economic controller, PID, forecasts and output correction. Missing BMS feedback preserves only a previously approved, bounded battery grace; fresh qualified Victron power can supply PV-only demand after that grace expires. |
 | `household_follow` | `clamp(measured inverter AC + signed grid power + correction, 0, MAX)`, with correction applied once before clamping. Explicit selection permits missing BMS feedback and reports `manual_bms_unverified`. |
 | `charge_priority` | Holds output below the configured charge threshold (default 95%). Between the threshold and 100%, default inverter share is 0%. At 100%, household following latches until SOC drops below the threshold. |
 | `pv_follow` | Uses only fresh measured PV: `min(charger DC W * 0.90, clamp(measured household W + correction, 0, MAX))`. Excess PV remains available for battery charging; night-time zero PV produces zero output. |
@@ -30,6 +30,17 @@ Fresh healthy physical discharge MOS OFF permits household PV demand without a m
 physical battery isolation is the boundary. Missing BMS feedback never establishes
 that physical isolation. A remembered genuine discharge restriction still stops
 manual following.
+
+In automatic mode, missing BMS feedback never proves physical battery isolation.
+After any previously approved battery grace expires, the existing automatic
+PV-only path can qualify from advancing Victron samples alone. During recovery
+output remains zero. After qualification, it uses the same corrected household
+demand and 90% measured-PV cap as explicit PV following, while the selected mode
+remains automatic. Fault and output gates retain precedence; configured MIN
+and Limiter OFF cannot grant battery discharge. Without fresh Victron voltage
+and charging current, automatic output remains zero. BMS and Victron freshness
+are checked independently, even when SBT collects both sources. A collector
+outage that removes both sources cannot use remembered PV as a substitute.
 
 The explicit PV follower uses no stored-battery discharge budget or forecast
 credit. Its measured-PV cap permits solar use below the reserve threshold or

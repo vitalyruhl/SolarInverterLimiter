@@ -34,13 +34,15 @@ inline bool sameModeSettings(const ModeSettings &a,const ModeSettings &b) {
     return a.mode == b.mode && a.chargeThreshold == b.chargeThreshold && a.inverterSharePercent == b.inverterSharePercent;
 }
 struct ModeInputs {
+    bool automaticSourceGrace=false; // Supplied only by the bounded CurrentControl decision.
+    bool automaticPvOnly=false, automaticPvQualified=false; // Supplied only by CurrentControl.
     bool metersValid=false,bmsValid=false,dischargeAllowed=false,chargeKnown=false,chargeAllowed=false;
     // genuineFault is a directional discharge restriction, not a charge-only alarm.
     bool settingsValid=true,inverterEnabled=true,transportEnabled=true,physicalDischargeOff=false,genuineFault=false,chargerFault=false,chargerValid=false;
     float householdW=0,soc=0,chargerW=0,reserveOff=2,reserveOn=10;
     int correctionW=0,maximumW=0;
 };
-struct ModeDecision { bool handled=true; int watts=0; const char *effective="hold",*reason="startup"; };
+struct ModeDecision { bool handled=true, automaticPvFallback=false; int watts=0; const char *effective="hold",*reason="startup"; };
 class OperatingModePolicy {
     bool full_ = false, reserveAllowed_ = false;
 public:
@@ -67,18 +69,23 @@ public:
         if (in.maximumW <= 0) return stop("maximum_zero");
         if (in.genuineFault) return stop("source_alarm");
         if (in.chargerFault) return stop("charger_fault");
+        const bool automaticPv = cfg.mode == OperatingMode::Automatic && !bms &&
+            in.automaticPvOnly && in.chargerValid && std::isfinite(in.chargerW) && in.chargerW >= 0;
         if (cfg.mode == OperatingMode::Automatic) {
-            if (!bms) return stop("bms_unverified");
-            out.handled=false; out.effective="automatic"; out.reason="automatic"; return out;
+            if (!bms && !in.automaticSourceGrace && !automaticPv) return stop("bms_unverified");
+            if (!automaticPv || !in.automaticPvQualified) {
+                out.handled=false; out.effective="automatic"; out.reason="automatic"; return out;
+            }
         }
         const double corrected = double(in.householdW) + double(in.correctionW);
         const int demand = int(std::max(0.0,std::min(corrected,double(in.maximumW))));
-        if (cfg.mode == OperatingMode::PvFollow) {
+        if (cfg.mode == OperatingMode::PvFollow || automaticPv) {
             // This request spends current measured PV only. Reserve or absent
             // discharge permission does not grant or consume stored energy.
             if (!in.chargerValid || !std::isfinite(in.chargerW) || in.chargerW < 0)
                 return stop("pv_unverified");
             out.watts=int(std::min(double(demand),double(in.chargerW)*0.9));
+            out.automaticPvFallback=automaticPv;
             out.effective="pv_follow";
             out.reason=bms ? "pv_follow" : "pv_bms_unverified";
             return out;

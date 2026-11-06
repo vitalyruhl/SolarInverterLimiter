@@ -67,6 +67,18 @@ int main() {
     assert(!std::strcmp(p.update(cfg,in).reason,"manual_bms_unverified"));
     cfg.mode = OperatingMode::Automatic;
     assert(p.update(cfg,in).handled && p.update(cfg,in).watts == 0);
+    in.automaticPvOnly=in.chargerValid=true; in.chargerW=300;
+    assert(!p.update(cfg,in).handled);
+    in.automaticPvQualified=true;
+    assert(p.update(cfg,in).automaticPvFallback && p.update(cfg,in).watts==270);
+    in.chargerValid=false; assert(p.update(cfg,in).handled && !p.update(cfg,in).automaticPvFallback);
+    in.chargerValid=true; in.chargerW=NAN; assert(p.update(cfg,in).handled);
+    in.chargerW=-1; assert(p.update(cfg,in).handled);
+    in=healthy(); in.bmsValid=false; in.automaticPvOnly=false;
+    in.automaticSourceGrace=true;
+    assert(!p.update(cfg,in).handled);
+    in.metersValid=false;assert(p.update(cfg,in).handled&&p.update(cfg,in).watts==0);
+    in.metersValid=true;in.genuineFault=true;assert(p.update(cfg,in).handled&&p.update(cfg,in).watts==0);
     in = healthy(); assert(!p.update(cfg,in).handled);
     cfg.mode = OperatingMode::HouseholdFollow;
     in.soc = 1; assert(p.update(cfg,in).watts == 0);

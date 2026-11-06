@@ -1,6 +1,7 @@
 #include "control/FuturePrices.h"
 #include "control/PvForecast.h"
 #include "control/CurrentControl.h"
+#include "control/OutputCorrection.h"
 #include <cassert>
 #include <cmath>
 #include <cstring>
@@ -44,6 +45,52 @@ static FuturePlan plan(FuturePrices& p,const PreparedSettings& cfg,const PvForec
  return p.plan(utc,ms,cfg,valid,soc,power,ah,seq,true,price,expensive,1,900,pv,cap);
 }
 // [MOCKED!] Synthetic tariffs/PV and battery samples; real fixed-size allocator.
+static void completePowerAllocationSurvivesEveryPartialSlot(){
+ PreparedSettings cfg;cfg.valid=true;
+ for(int maximum:{900,500,899,1200}){
+  FuturePrices p;load(p,{400000,100000});
+  for(unsigned remaining=900;remaining>0;--remaining){
+   const auto result=p.plan(t+900-remaining,100+900-remaining,cfg,true,50,0,131.25f,
+       1,true,.4f,true,1,maximum,nullptr,0,nullptr,0);
+   if(!result.valid||result.batteryCeilingW!=maximum){
+    std::cerr<<"FAIL: complete "<<maximum<<" W allocation with "<<remaining
+             <<" s remaining returned "<<result.batteryCeilingW<<" W\n";std::abort();
+   }
+  }
+ }
+ // A genuinely fractional energy allocation still floors; it must never gain a watt.
+ for(unsigned remaining:{900u,307u})for(float power:{.75f,200.75f,899.75f}){
+  FuturePrices p;load(p,{400000,100000});
+  const float neededAcWh=power*float(remaining)/3600.0f;
+  const float soc=cfg.reserveOffSocPercent+neededAcWh/(100*51.38f*kDischargeEfficiency)*100;
+  const auto result=p.plan(t+900-remaining,100,cfg,true,soc,0,100,1,true,.4f,true,1,
+      900,nullptr,0,nullptr,0);
+  assert(result.valid&&result.batteryCeilingW==int(power));
+ }
+ FuturePrices withPv;load(withPv,{400000,100000});
+ const auto fractional=withPv.plan(t+593,100,cfg,true,50,0,100,1,true,.4f,true,1,
+     900,nullptr,1000,nullptr,.5f);
+ assert(fractional.valid&&fractional.batteryCeilingW==899); // 900 - 0.5 * 0.9 = 899.55 W.
+ // Real planner -> current decision -> existing correction: a full cap must remain MAX.
+ FuturePrices p;load(p,{400000,100000});CurrentControl controller;
+ CurrentInputs in;in.bmsValid=in.batteryDischargeIntentAvailable=in.batteryChargeAvailable=
+     in.chargerValid=in.metersValid=in.priceValid=true;
+ in.soc=50;in.price=.4f;in.householdW=1200;
+ for(unsigned sample=0;sample<8;++sample){
+  const auto result=p.plan(t+589+sample,100+sample*1000,cfg,true,50,0,131.25f,sample+1,
+      true,.4f,true,1,900,nullptr,0,nullptr,0);
+  in.bmsSequence=in.chargerSequence=sample+1;
+  in.futureValid=result.valid;in.futureBatteryCeilingW=result.batteryCeilingW;
+  in.futureReason=result.reason;
+  const auto decision=controller.update(cfg,in,true,true,900,900,100+sample*1000);
+  if(sample>=5){
+   assert(decision.ceilingW==900&&!decision.direct);
+   assert(correctOutputCommand(decision.ceilingW,-130,900)==900);
+  }
+ }
+ std::cout<<"[MOCKED!] Complete power caps survive every remaining second; fractional budgets retain flooring\n";
+}
+
 static void freeGridDoesNotSpendStoredEnergy(){
  PreparedSettings cfg;cfg.valid=true;FuturePrices p;load(p,{0,0,0});DischargeBudget trace;
  const auto result=p.plan(t,100,cfg,true,20,0,10,1,true,0,false,1,900,nullptr,0,&trace);
@@ -432,5 +479,5 @@ static void laterSolarPaysReserveBeforeItsDemandCredit(){
  assert(result.availableWh==0&&red.watts[2]>=239&&result.chargeTargetW>2053&&result.chargeTargetW<2055);
  // Initial 513.8 Wh DC debt exceeds the 256.9 Wh DC usable capacity and must not be pruned.
 }
-int main(){laterSolarPaysReserveBeforeItsDemandCredit();profitableChargeRestoresReserveAndFutureNeed();chronologicalSolarRefillReleasesEarlierEnergy();contentRevisionIgnoresPollingTime();pvLoadTracksConfiguredMaximum();projectionRestoresReserveBeforeDischarge();completeDischargeProjection();readOnlyPriceLookup();freeGridDoesNotSpendStoredEnergy();ownerTariffsKeepStoredAndNewEnergySeparate();relativePricesAndExistingEnergy();dischargeBudgetTrace();economicTraces();creditNeverCreatesCurrentEnergy();pvCoverageBoundaries();energyDebitAndGaps();currentSlotAndCache();snapshotGapsAndConflicts();
+int main(){completePowerAllocationSurvivesEveryPartialSlot();laterSolarPaysReserveBeforeItsDemandCredit();profitableChargeRestoresReserveAndFutureNeed();chronologicalSolarRefillReleasesEarlierEnergy();contentRevisionIgnoresPollingTime();pvLoadTracksConfiguredMaximum();projectionRestoresReserveBeforeDischarge();completeDischargeProjection();readOnlyPriceLookup();freeGridDoesNotSpendStoredEnergy();ownerTariffsKeepStoredAndNewEnergySeparate();relativePricesAndExistingEnergy();dischargeBudgetTrace();economicTraces();creditNeverCreatesCurrentEnergy();pvCoverageBoundaries();energyDebitAndGaps();currentSlotAndCache();snapshotGapsAndConflicts();
  std::cout<<"Future price/PV traces, bounded credit, signed pool, snapshot gaps and cached planning passed; object="<<sizeof(FuturePrices)<<" bytes\n";}
