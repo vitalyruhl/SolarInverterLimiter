@@ -1,6 +1,7 @@
 #pragma once
 
 #include "PreparedControl.h"
+#include "PriceAssessment.h"
 #include "DischargeBudget.h"
 #include "JsonArena.h"
 #include "PvForecast.h"
@@ -34,26 +35,30 @@ public:
         pendingPoisoned_ = cacheValid_ = false;
         // Losing a schedule must never replenish the independently measured energy pool.
     }
-    const char *receive(const uint8_t *payload, unsigned length, uint32_t utc, uint32_t ms) {
+    const char *receive(const uint8_t *payload, unsigned length, uint32_t utc, uint32_t ms, bool shadowV2 = false) {
         if (utc < 1704067200UL) return "clock_invalid";
         if (!payload || !length || length > 768) return "packet_size";
         if (std::memchr(payload, 0, length)) return "packet_json";
         arena_.reset();
         JsonDocument doc(&arena_);
         if (deserializeJson(doc, payload, length)) return "packet_json";
-        if (!doc["v"].is<unsigned>() || doc["v"].as<unsigned>() != 1 ||
+        if (!doc["v"].is<unsigned>() || doc["v"].as<unsigned>() != (shadowV2 ? 2u : 1u) ||
             !doc["r"].is<uint32_t>() || !doc["t"].is<uint32_t>() ||
             !doc["n"].is<unsigned>() || !doc["k"].is<unsigned>() ||
             !doc["p"].is<JsonArray>()) return "packet_schema";
+        if (shadowV2 && (!doc["d"].is<unsigned>() || doc["d"].as<unsigned>() != 900 ||
+            !doc["o"].is<JsonArray>())) return "packet_origin";
         const uint32_t revision = doc["r"], start = doc["t"];
         const unsigned count = doc["n"], part = doc["k"];
         const JsonArrayConst prices = doc["p"].as<JsonArrayConst>();
+        const JsonArrayConst origins = doc["o"].as<JsonArrayConst>();
         const uint64_t coverageEnd = uint64_t(start) + uint64_t(count) * 900;
         // Retained recovery keeps original generation/coverage; receipt time is not expiry.
         if (uint64_t(revision) > uint64_t(utc) + 120 || uint64_t(utc) > uint64_t(revision) + 259200 ||
             start % 900 || start > revision || revision - start >= 900 || start > utc ||
             count > kSlots || part >= 12 || coverageEnd > UINT32_MAX ||
             (count && uint64_t(utc) >= coverageEnd)) return "packet_range";
+        if (shadowV2 && uint64_t(utc)>=uint64_t(revision)+180) return "test_price_stale";
         if (revision < activeRevision_ || revision < pendingRevision_) return "old_revision";
         if (!count) {
             if (part || prices.size()) return "packet_empty";
@@ -61,7 +66,8 @@ public:
                 pendingPoisoned_ = true; return "packet_conflict";
             }
             if (revision == activeRevision_) return activeCount_ ? "packet_conflict" : "duplicate";
-            clear(); activeRevision_ = revision;
+            if (shadowV2 && origins.size()) return "packet_origin";
+            clear(); activeRevision_ = revision; activeAcceptedUtc_ = utc; activeVersion_ = shadowV2 ? 2 : 1;
             return "withdrawn";
         }
         const unsigned offset = part * kChunk;
@@ -70,10 +76,16 @@ public:
         for (JsonVariantConst value : prices)
             if (!value.is<int32_t>() || value.as<int32_t>() < -2000000 || value.as<int32_t>() > 10000000)
                 return "packet_price";
+        if (shadowV2) {
+            if (origins.size() != prices.size()) return "packet_origin";
+            for (JsonVariantConst value : origins)
+                if (!value.is<unsigned>() || value.as<unsigned>() > 2) return "packet_origin";
+        }
         if (revision == activeRevision_) {
             if (start != activeStart_ || count != activeCount_) return "packet_conflict";
             for (unsigned i = 0; i < prices.size(); ++i)
-                if (active_[offset + i] != prices[i].as<int32_t>()) return "packet_conflict";
+                if (active_[offset + i] != prices[i].as<int32_t>() ||
+                    origins_[offset + i] != (shadowV2 ? origins[i].as<uint8_t>() : 0)) return "packet_conflict";
             return "duplicate";
         }
         if (revision == pendingRevision_ && pendingPoisoned_) return "packet_conflict";
@@ -86,18 +98,24 @@ public:
         }
         if (parts_ & (1u << part)) {
             for (unsigned i = 0; i < prices.size(); ++i)
-                if (pending_[offset + i] != prices[i].as<int32_t>()) {
+                if (pending_[offset + i] != prices[i].as<int32_t>() ||
+                    pendingOrigins_[offset + i] != (shadowV2 ? origins[i].as<uint8_t>() : 0)) {
                     pendingPoisoned_ = true; return "packet_conflict";
                 }
         }
-        for (unsigned i = 0; i < prices.size(); ++i) pending_[offset + i] = prices[i];
+        for (unsigned i = 0; i < prices.size(); ++i) {
+            pending_[offset + i] = prices[i];
+            pendingOrigins_[offset + i] = shadowV2 ? origins[i].as<uint8_t>() : 0;
+        }
         parts_ |= uint16_t(1u << part);
         const unsigned chunks = (count + kChunk - 1) / kChunk;
         if (parts_ != (1u << chunks) - 1) return "pending";
         if (activeStart_ != start || activeCount_ != count ||
-            std::memcmp(active_, pending_, count * sizeof(active_[0]))) ++contentRevision_;
+            std::memcmp(active_, pending_, count * sizeof(active_[0])) ||
+            std::memcmp(origins_, pendingOrigins_, count)) ++contentRevision_;
         std::memcpy(active_, pending_, count * sizeof(active_[0]));
-        activeStart_ = start; activeCount_ = count; activeRevision_ = revision; cacheValid_ = false;
+        std::memcpy(origins_, pendingOrigins_, count); activeVersion_ = shadowV2 ? 2 : 1;
+        activeStart_ = start; activeCount_ = count; activeRevision_ = revision; activeAcceptedUtc_ = utc; cacheValid_ = false;
         return "accepted";
     }
 
@@ -133,13 +151,14 @@ public:
         energySequence_ = sequence; energyAt_ = ms; lastBatteryW_ = batteryW; energyTickReady_ = true;
         energyWh_ = std::max(0.0f, std::min(energyWh_, socWh));
         out.availableWh = energyWh_ * kDischargeEfficiency;
-        if (!cfg.valid || !std::isfinite(factor) || factor <= 0 || factor > 5) {
+        if (!cfg.valid || !validPriceAssessment(cfg) || !std::isfinite(factor) || factor <= 0 || factor > 5) {
             out.reason = "forecast_settings"; return finish(out, trace);
         }
         if (utc < 1704067200UL || (lastUtc_ && uint64_t(utc) + 5 < lastUtc_)) {
             out.reason = "clock_invalid"; clear(); lastUtc_ = utc; return finish(out, trace);
         }
         lastUtc_ = utc;
+        if (activeVersion_==2 && !priceFresh(utc)) { out.reason=testPriceStatus(utc); return finish(out,trace); }
         if (!activeCount_ || utc < activeStart_ || uint64_t(utc) >= uint64_t(activeStart_) + activeCount_ * 900ULL ||
             uint64_t(utc) > uint64_t(activeRevision_) + 259200) return finish(out, trace);
         const unsigned first = (utc - activeStart_) / 900;
@@ -161,7 +180,8 @@ public:
             cachePrice_ != currentPrice || cacheFactor_ != factor || cacheMaximumW_ != maximumW ||
             cacheChargeCapW_ != chargeCapW || cacheCapacityAc_ != capacityAc ||
             cacheReserveDebtAc_ != initialReserveDeficitDc * kDischargeEfficiency ||
-            cacheReserve_ != cfg.reserveOffSocPercent || uint32_t(ms - cacheAt_) >= kReplanMs)
+            cacheReserve_ != cfg.reserveOffSocPercent || cacheTolerance_ != cfg.deferralToleranceEurKwh ||
+            cachePremium_ != cfg.predictionPremiumPct || uint32_t(ms - cacheAt_) >= kReplanMs)
             rebuild(first, end, utc, ms, cfg, currentPrice, factor, maximumW, pv, chargeCapW, capacityAc,
                 initialReserveDeficitDc * kDischargeEfficiency);
 
@@ -178,6 +198,25 @@ public:
         out.valid = true;
         out.reason = out.batteryCeilingW > 0 ? "forecast_release" : (out.shortfallWh > 0 ? "forecast_charge" : "forecast_hold");
         return finish(out, trace);
+    }
+    bool priceFresh(uint32_t utc) const {
+        return activeCount_ && utc>=activeStart_ && uint64_t(utc)<uint64_t(activeStart_)+activeCount_*900ULL &&
+            (activeVersion_!=2 || (uint64_t(utc)<uint64_t(activeRevision_)+180 && uint64_t(utc)<uint64_t(activeAcceptedUtc_)+180));
+    }
+    const char* testPriceStatus(uint32_t utc) const {
+        if (!activeCount_) return activeVersion_==2 && activeRevision_ ? "test_price_withdrawn" : "test_price_missing";
+        return priceFresh(utc) ? "ok" : "test_price_stale";
+    }
+    unsigned inputVersion() const { return activeVersion_; }
+    uint32_t start() const { return activeStart_; }
+    unsigned originAt(uint32_t utc) const {
+        return utc>=activeStart_ && uint64_t(utc)<uint64_t(activeStart_)+activeCount_*900ULL
+            ? origins_[(utc-activeStart_)/900] : 0;
+    }
+    bool assessedPriceAt(uint32_t utc,float factor,const PreparedSettings& cfg,float& value) const {
+        if (!validPriceAssessment(cfg) || !priceAt(utc,factor,value)) return false;
+        value=assessedPrice(value,PriceOrigin(originAt(utc)),cfg.predictionPremiumPct);
+        return std::isfinite(value);
     }
     uint32_t planningBuilds() const { return planningBuilds_; }
     uint32_t revision() const { return activeRevision_; }
@@ -205,10 +244,10 @@ private:
         if (trace) trace->finish(out.valid, out.reason);
         return out;
     }
-    static bool eligible(unsigned i, unsigned first, float p, float currentPrice) {
+    static bool eligible(unsigned i, unsigned first, float p, float currentPrice, float tolerance) {
         // Held energy has already paid acquisition losses/cycle costs. Defer its
         // current use only for a materially better future price; flat/cheaper slots cannot hoard it.
-        return p > 0 && (i == first || p >= currentPrice + kMinimumBenefitEurPerKwh);
+        return p > 0 && (i == first || higherValue(p, currentPrice, tolerance));
     }
     void project(DischargeBudget *trace, unsigned first, unsigned end, uint32_t utc,
                  float factor, int maximumW, FuturePlan &out, float capacityAc, float headroomDc,
@@ -296,9 +335,11 @@ private:
         cachePrice_ = currentPrice; cacheFactor_ = factor; cacheMaximumW_ = maximumW;
         cacheChargeCapW_ = chargeCapW; cacheReserve_ = cfg.reserveOffSocPercent; cacheCapacityAc_ = capacityAc;
         cacheReserveDebtAc_ = reserveDebtAc;
+        cacheTolerance_ = cfg.deferralToleranceEurKwh; cachePremium_ = cfg.predictionPremiumPct;
         cacheAt_ = ms; cacheValid_ = true; ++planningBuilds_;
         const unsigned count = end - first;
-        const auto price = [&](unsigned i) { return i == first ? currentPrice : float(active_[i]) * .000001f * factor; };
+        const auto rawPrice = [&](unsigned i) { return i == first ? currentPrice : float(active_[i]) * .000001f * factor; };
+        const auto price = [&](unsigned i) { return assessedPrice(rawPrice(i), PriceOrigin(origins_[i]), cfg.predictionPremiumPct); };
         for (unsigned i = 0; i < count; ++i) order_[i] = uint16_t(first + i);
         std::sort(order_, order_ + count, [&](unsigned a, unsigned b) { return price(a) == price(b) ? a < b : price(a) > price(b); });
         cacheOfferWh_ = cacheFirstOfferW_ = 0;
@@ -331,19 +372,19 @@ private:
             const float current = price(first + k);
             protectedWh_[k] = economicWh_[k] = protectedDebtWh_[k] = economicDebtWh_[k] = 0;
             targetIndex_[k] = uint16_t(count);
-            const float solarAc = current >= 0 ? std::min(solarW_[k], float(chargeCapW)) * .25f * kDischargeEfficiency : 0;
+            const float solarAc = rawPrice(first + k) >= 0 ? std::min(solarW_[k], float(chargeCapW)) * .25f * kDischargeEfficiency : 0;
             const float direct = std::min(solarAc, std::max(0.0f, float(maximumW)) * .25f);
             float freePv = std::max(0.0f, solarAc - direct), shiftablePv = direct, remainingCapacity = capacityAc;
             for (unsigned rank = 0; rank < count; ++rank) {
                 ++planningSteps_;
                 const unsigned j = order_[rank] - first;
                 if (j == k) {
-                    pendingWh_[j] = current > 0 ? std::max(0.0f, float(maximumW)) * .25f - shiftablePv : 0;
+                    pendingWh_[j] = rawPrice(first + k) > 0 ? std::max(0.0f, float(maximumW)) * .25f - shiftablePv : 0;
                     if (j == cacheDebtTarget_) { pendingDebt = reserveDebtAc; pendingWh_[j] += pendingDebt; }
                 }
                 else if (j > k && pendingWh_[j] > 0) {
                     const float future = price(first + j), need = pendingWh_[j];
-                    if (eligible(j, k, future, current)) {
+                    if (eligible(j, k, future, current, cfg.deferralToleranceEurKwh)) {
                         protectedWh_[k] += need;
                         if (j == cacheDebtTarget_) protectedDebtWh_[k] = pendingDebt;
                     }
@@ -369,7 +410,10 @@ private:
             }
         }
     }
+    uint8_t origins_[kSlots] = {}, pendingOrigins_[kSlots] = {}, activeVersion_ = 1;
+    float cacheTolerance_ = .03f, cachePremium_ = 0;
     int32_t active_[kSlots] = {}, pending_[kSlots] = {};
+    uint32_t activeAcceptedUtc_ = 0;
     uint32_t activeStart_ = 0, activeRevision_ = 0, pendingStart_ = 0, pendingRevision_ = 0;
     uint32_t pendingAt_ = 0, lastUtc_ = 0, contentRevision_ = 0;
     unsigned activeCount_ = 0, pendingCount_ = 0;

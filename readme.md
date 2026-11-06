@@ -1,5 +1,13 @@
 # ESP32 RS485 Solar Inverter Limiter
 
+## Planner comparison candidate (5.7.0)
+
+The experimental `planner_shadow` build compares configurable held-energy
+priority and forecast-origin valuation using real read inputs with hardware
+transmission disabled. Normal defaults remain unchanged. See the
+[profile, wire contract and provisioning boundaries](docs/planner-shadow-comparison.md).
+Hardware acceptance and publication are still pending.
+
 ## Full battery PV and manual MOS ownership (5.6.1)
 
 At a fresh, qualified 100% SOC, the automatic limiter allows household demand to

@@ -1,0 +1,169 @@
+"""Pure preparation and bounded provider cache for the isolated SIL shadow feed."""
+import datetime as dt
+from contextlib import contextmanager
+import json
+import math
+from pathlib import Path
+from urllib.parse import urlencode
+from urllib.request import urlopen
+
+ORIGINS={'market':1,'forecast':2}
+REQUEST_INTERVAL=3600
+MAX_SOURCE_AGE=4500
+
+@contextmanager
+def cache_guard(path):
+    """Serialize gate read/write across module reloads; never hold during HTTP."""
+    lock_path=Path(str(path)+'.lock')
+    lock_path.parent.mkdir(parents=True,exist_ok=True)
+    with lock_path.open('a+b') as handle:
+        try:
+            import fcntl
+        except ImportError:
+            import msvcrt
+            handle.seek(0,2)
+            if handle.tell()==0:handle.write(b'0');handle.flush()
+            handle.seek(0)
+            msvcrt.locking(handle.fileno(),msvcrt.LK_LOCK,1)
+            try:yield
+            finally:
+                handle.seek(0);msvcrt.locking(handle.fileno(),msvcrt.LK_UNLCK,1)
+        else:
+            fcntl.flock(handle.fileno(),fcntl.LOCK_EX)
+            try:yield
+            finally:fcntl.flock(handle.fileno(),fcntl.LOCK_UN)
+
+def _persist_cache(path,cache):
+    temporary=path.with_suffix('.next.json')
+    temporary.write_text(json.dumps(cache,separators=(',',':'),allow_nan=False),encoding='utf-8')
+    temporary.replace(path)
+
+def epoch(value):
+    if not isinstance(value,str): raise ValueError('provider_timestamp')
+    stamp=dt.datetime.fromisoformat(value)
+    if stamp.tzinfo is None: raise ValueError('provider_timezone')
+    number=stamp.timestamp()
+    if not number.is_integer(): raise ValueError('provider_timestamp')
+    return int(number)
+
+def number(value):
+    if isinstance(value,bool) or not isinstance(value,(int,float)) or not math.isfinite(value):
+        raise ValueError('provider_price')
+    return float(value)
+
+def total_price(raw,options):
+    # Match installed EPEX Spot 4.1.0 Marketprice and SourceShell rounding.
+    raw=round(number(raw),6)
+    absolute=number(options['absolute_surcharge'])
+    percentage=number(options['percentage_surcharge'])
+    tax=number(options['tax'])
+    return round((raw+abs(raw)*percentage/100+absolute)*(1+tax/100),6)
+
+def prepare(response,reference,options,now):
+    if options.get('duration')!=15: raise ValueError('provider_resolution')
+    rows=response.get('forecast',{}).get('data')
+    if not isinstance(rows,list) or not 2<=len(rows)<=8192: raise ValueError('provider_rows')
+    start=int(now)//900*900
+    selected={}
+    for row in rows:
+        stamp=epoch(row.get('start'))
+        if stamp<start or stamp>=start+288*900: continue
+        if stamp%900 or epoch(row.get('end'))!=stamp+900: raise ValueError('provider_resolution')
+        if stamp in selected: raise ValueError('provider_duplicate')
+        selected[stamp]=row
+    references={}
+    for row in reference:
+        stamp=epoch(row.get('start_time'))
+        if stamp in references: raise ValueError('reference_duplicate')
+        references[stamp]=row
+    prices=[];origins=[]
+    for stamp in sorted(selected):
+        if stamp!=start+len(prices)*900: raise ValueError('provider_gap')
+        row=selected[stamp]
+        price=total_price(row.get('price'),options)
+        if not -2<=price<=10: raise ValueError('provider_price_range')
+        source=references.get(stamp)
+        if source is None or epoch(source.get('end_time'))!=stamp+900:
+            raise ValueError('tariff_alignment_missing')
+        actual=number(source.get('price_per_kwh'))
+        if round(actual*1000000)!=round(price*1000000):
+            raise ValueError(f'tariff_alignment_mismatch:{stamp}:{actual:.6f}:{price:.6f}')
+        prices.append(round(price*1000000))
+        origins.append(ORIGINS.get(row.get('price_origin'),0))
+    if len(prices)<2: raise ValueError('provider_coverage')
+    frames=[]
+    for chunk,index in enumerate(range(0,len(prices),24)):
+        packet={'v':2,'r':int(now),'t':start,'d':900,'n':len(prices),'k':chunk,
+                'p':prices[index:index+24],'o':origins[index:index+24]}
+        frames.append(json.dumps(packet,separators=(',',':'),allow_nan=False))
+    return {'r':int(now),'t':start,'d':900,'n':len(prices),'p':prices,'o':origins,
+            'originUnknown':origins.count(0),'originMarket':origins.count(1),
+            'originUnknown36h':origins[:144].count(0),'originMarket36h':origins[:144].count(1),
+            'originForecast36h':origins[:144].count(2),
+            'originForecast':origins.count(2),'frames':frames,'tariff_aligned':True}
+
+def fetch_provider(token):
+    query=urlencode({'token':token,'fixed_cost_cent':0,'vat':0,
+                     'resolution':'QUARTER_HOURLY','market_zone':'DE-LU'})
+    try:
+        with urlopen('https://www.energyforecast.de/api/v1/predictions/prices_for_ha?'+query,timeout=20) as response:
+            body=response.read(2000001)
+        if len(body)>2000000: raise ValueError('provider_size')
+        raw=json.loads(body)
+        rows=raw['forecast']['data']
+        # Persist only price fields; never persist request URLs or authentication.
+        return {'forecast':{'data':[{key:row[key] for key in ('start','end','price','price_origin') if key in row}
+                                    for row in rows]}}
+    except Exception:
+        raise ValueError('provider_request_failed') from None
+
+def cached_provider(token,now,path,fetcher=None):
+    path=Path(path)
+    path.parent.mkdir(parents=True,exist_ok=True)
+    gate=int(now)+REQUEST_INTERVAL
+    with cache_guard(path):
+        cache=json.loads(path.read_text(encoding='utf-8')) if path.exists() else {}
+        if cache.get('next_request_at',0)>now:
+            if 'response' not in cache or cache.get('refresh_failed'):
+                raise ValueError('provider_retry_limited')
+            if not 0<=now-cache.get('fetched_at',0)<=MAX_SOURCE_AGE:
+                raise ValueError('provider_cache_expired')
+            return cache
+        # Claim the request before releasing the OS lock, including failed requests.
+        cache['next_request_at']=gate
+        cache['refresh_failed']=True
+        _persist_cache(path,cache)
+    try:
+        response=(fetcher or fetch_provider)(token)
+    except Exception:
+        raise ValueError('provider_request_failed') from None
+    with cache_guard(path):
+        cache=json.loads(path.read_text(encoding='utf-8'))
+        if cache.get('next_request_at')!=gate:raise ValueError('provider_request_superseded')
+        cache.update(response=response,fetched_at=int(now),refresh_failed=False)
+        _persist_cache(path,cache)
+    return cache
+
+def run(token,reference,options,now,cache_path):
+    cache=cached_provider(token,now,cache_path)
+    out=prepare(cache['response'],reference,options,now)
+    out['providerFetchedAt']=cache['fetched_at']
+    out['providerAgeS']=int(now)-cache['fetched_at']
+    out['nextProviderRequestAt']=cache['next_request_at']
+    return out
+
+def cache_evidence(path,now):
+    path=Path(path)
+    if not path.exists(): return {'providerCache':'not_fetched'}
+    cache=json.loads(path.read_text())
+    rows=cache.get('response',{}).get('forecast',{}).get('data',[])
+    selected=[row for row in rows if int(now)//900*900<=epoch(row['start'])<int(now)//900*900+288*900]
+    origins=[ORIGINS.get(row.get('price_origin'),0) for row in selected]
+    return {'providerFetchedAt':cache.get('fetched_at'),
+            'providerAgeS':int(now)-cache.get('fetched_at',int(now)),
+            'nextProviderRequestAt':cache.get('next_request_at'),
+            'providerRefreshFailed':cache.get('refresh_failed'),
+            'originMarket':origins.count(1),'originForecast':origins.count(2),
+            'originUnknown':origins.count(0),'providerSlots':len(selected),
+            'originUnknown36h':origins[:144].count(0),'originMarket36h':origins[:144].count(1),
+            'originForecast36h':origins[:144].count(2)}

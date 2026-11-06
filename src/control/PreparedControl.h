@@ -44,6 +44,8 @@ constexpr float kCandidateDischargeLowWarningC = -10.0f;
 constexpr float kCandidateDischargeLowBlockC = -15.0f;
 
 struct PreparedSettings {
+    float deferralToleranceEurKwh = kMinimumBenefitEurPerKwh;
+    float predictionPremiumPct = 0;
     int idleOutputW = 500;
     float reserveOffSocPercent = 2.0f;
     float reserveOnSocPercent = 10.0f;

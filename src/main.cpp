@@ -30,6 +30,7 @@
 #include "control/TelemetryAge.h"
 #include "control/NumericSafety.h"
 #include "control/FuturePrices.h"
+#include "control/ShadowProfile.h"
 #include "control/PlanCaptureContext.h"
 #include "control/PvForecast.h"
 #include "control/ChargePlan.h"
@@ -119,7 +120,7 @@ static constexpr uint32_t kI2cHz = 400000;
 #endif
 
 #ifndef VERSION
-#define VERSION "5.6.3"
+#define VERSION "5.7.0"
 #endif
 
 static sil::RuntimeDiagnostics runtimeDiagnostics;
@@ -149,6 +150,11 @@ static void logNetworkIpInfo(const char *context);
 static void setupLogging();
 static void setupMqtt();
 static void setupNetworkDefaults();
+static bool enforceShadowIsolation();
+#if defined(SIL_PLANNER_SHADOW) && SIL_PLANNER_SHADOW && defined(SIL_SHADOW_STAGE_TRACE) && SIL_SHADOW_STAGE_TRACE
+static uint32_t shadowRxCallbacks=0;
+static void shadowTraceStage(const char* stage,uint32_t previousFailures,uint32_t previousRx);
+#endif
 static void attachSystemSettings();
 static void syncStoredCodeVersion();
 static void registerProjectSettings();
@@ -236,11 +242,15 @@ struct LimiterSettings
 
     Config<String> priceScheduleInputTopic{ConfigOptions<String>{.key = "fcTopic", .name = "Price Schedule Topic", .category = "MQTT-Topics", .defaultValue = String("homeassistant/sensor/electricity_price/schedule"), .sortOrder = 54}};
     Config<String> pvScheduleInputTopic{ConfigOptions<String>{.key = "pvTopic", .name = "PV Forecast Topic", .category = "MQTT-Topics", .defaultValue = String("homeassistant/sensor/solar_forecast/shed/schedule"), .sortOrder = 55}};
+    Config<float> deferralToleranceEurKwh{ConfigOptions<float>{.key = "defTol", .name = "Held Energy Deferral Tolerance (EUR/kWh)", .category = "Limiter", .defaultValue = 0.03f, .sortOrder = 28}};
+    Config<float> predictionPremiumPct{ConfigOptions<float>{.key = "predPct", .name = "Forecast Price Uncertainty Premium (%)", .category = "Limiter", .defaultValue = 0.0f, .sortOrder = 29}};
     Config<float> forecastPriceFactor{ConfigOptions<float>{.key = "fcPriceF", .name = "Forecast Price Factor", .category = "Limiter", .defaultValue = 0.93137255f, .sortOrder = 27}};
 
     void attachTo(ConfigManagerClass &cfg)
     {
         cfg.addSetting(&forecastPriceFactor);
+        cfg.addSetting(&deferralToleranceEurKwh);
+        cfg.addSetting(&predictionPremiumPct);
         cfg.addSetting(&priceScheduleInputTopic);
         cfg.addSetting(&pvScheduleInputTopic);
         cfg.addSetting(&enableController);
@@ -703,9 +713,24 @@ void loop()
         }
     }
 #endif
+#if defined(SIL_PLANNER_SHADOW) && SIL_PLANNER_SHADOW && defined(SIL_SHADOW_STAGE_TRACE) && SIL_SHADOW_STAGE_TRACE
+    const uint32_t shadowwifiFailures=mqtt.getBoundedIoStats().txFailures;
+    const uint32_t shadowwifiRx=shadowRxCallbacks;
+#endif
     ConfigManager.getWiFiManager().update();
+#if defined(SIL_PLANNER_SHADOW) && SIL_PLANNER_SHADOW && defined(SIL_SHADOW_STAGE_TRACE) && SIL_SHADOW_STAGE_TRACE
+    shadowTraceStage("wifi",shadowwifiFailures,shadowwifiRx);
+#endif
     runtimeDiagnostics.enter(sil::RuntimeStage::Mqtt);
+    enforceShadowIsolation();
+#if defined(SIL_PLANNER_SHADOW) && SIL_PLANNER_SHADOW && defined(SIL_SHADOW_STAGE_TRACE) && SIL_SHADOW_STAGE_TRACE
+    const uint32_t shadowmqttFailures=mqtt.getBoundedIoStats().txFailures;
+    const uint32_t shadowmqttRx=shadowRxCallbacks;
+#endif
     mqtt.loop();
+#if defined(SIL_PLANNER_SHADOW) && SIL_PLANNER_SHADOW && defined(SIL_SHADOW_STAGE_TRACE) && SIL_SHADOW_STAGE_TRACE
+    shadowTraceStage("mqtt",shadowmqttFailures,shadowmqttRx);
+#endif
     if (mqttSettings.publishTopicBase.get() != modeConfiguredRoot) operatingModes.discardPendingMode();
     const char *previousModeStorage = operatingModes.storageReason();
     if (operatingModes.loop(uint32_t(time(nullptr)))) {
@@ -736,7 +761,14 @@ void loop()
 
     // Services managed by ConfigManager.
     runtimeDiagnostics.enter(sil::RuntimeStage::Config);
+#if defined(SIL_PLANNER_SHADOW) && SIL_PLANNER_SHADOW && defined(SIL_SHADOW_STAGE_TRACE) && SIL_SHADOW_STAGE_TRACE
+    const uint32_t shadowconfigFailures=mqtt.getBoundedIoStats().txFailures;
+    const uint32_t shadowconfigRx=shadowRxCallbacks;
+#endif
     ConfigManager.handleClient();
+#if defined(SIL_PLANNER_SHADOW) && SIL_PLANNER_SHADOW && defined(SIL_SHADOW_STAGE_TRACE) && SIL_SHADOW_STAGE_TRACE
+    shadowTraceStage("config",shadowconfigFailures,shadowconfigRx);
+#endif
     alarmManager.update();
 
     updateStatusLED();
@@ -1195,6 +1227,9 @@ static void setupMqtt()
     telemetryAge.attach(ConfigManager);
     mqtt.onMessage([](const char *topic, const byte *payload, unsigned int length)
                    {
+#if defined(SIL_PLANNER_SHADOW) && SIL_PLANNER_SHADOW && defined(SIL_SHADOW_STAGE_TRACE) && SIL_SHADOW_STAGE_TRACE
+        ++shadowRxCallbacks;
+#endif
         if (topic && topicModeCommand == topic) {
             const String &configuredRoot = mqttSettings.publishTopicBase.get();
             if (configuredRoot != modeConfiguredRoot) return;
@@ -1202,7 +1237,7 @@ static void setupMqtt()
             if (control::parseModeCommand(reinterpret_cast<const char *>(payload), length, uint32_t(time(nullptr)), command))
                 operatingModes.queueMode(command.mode, command.expiresAt);
         } else if (topic && priceScheduleTopic == topic) {
-            const char *result = futurePrices.receive(payload, length, uint32_t(time(nullptr)), millis());
+            const char *result = futurePrices.receive(payload, length, uint32_t(time(nullptr)), millis(), control::kPlannerShadowProfile);
             if (strcmp(result, "pending") && strcmp(result, "duplicate"))
                 lmg.logTag(!strcmp(result, "accepted") || !strcmp(result, "withdrawn") ? LL::Info : LL::Warn,
                     "FORECAST", "rx=%s rev=%lu slots=%u", result,
@@ -1260,6 +1295,8 @@ static void registerProjectSettings()
 static void refreshPreparedSettings()
 {
     forecastPriceFactor = limiterSettings.forecastPriceFactor.get();
+    preparedSettings.deferralToleranceEurKwh = limiterSettings.deferralToleranceEurKwh.get();
+    preparedSettings.predictionPremiumPct = limiterSettings.predictionPremiumPct.get();
     preparedSettings.idleOutputW = std::max(0, limiterSettings.idleOutput.get());
     const int timeout = limiterSettings.sbtTimeout.get();
     if (timeout < 1 || timeout > 9999) limiterSettings.sbtTimeout.set(180);
@@ -1271,7 +1308,7 @@ static void refreshPreparedSettings()
     preparedSettings.priceComfortEurPerKwh = limiterSettings.priceComfort.get();
     preparedSettings.priceDeadbandEurPerKwh = limiterSettings.priceDeadband.get();
     preparedSettings.priceHysteresisEurPerKwh = preparedSettings.priceDeadbandEurPerKwh / 3.0f;
-    preparedSettings.valid = std::isfinite(preparedSettings.reserveOffSocPercent) &&
+    preparedSettings.valid = control::validPriceAssessment(preparedSettings) && std::isfinite(preparedSettings.reserveOffSocPercent) &&
         std::isfinite(preparedSettings.reserveOnSocPercent) &&
         preparedSettings.reserveOffSocPercent >= 0.0f &&
         preparedSettings.reserveOffSocPercent < preparedSettings.reserveOnSocPercent &&
@@ -1294,6 +1331,8 @@ static void configureLimiterSettingsBehavior()
     limiterSettings.inverterEnabled.setCallback([](bool) { refreshPreparedSettings(); });
     limiterSettings.priceComfort.setCallback([](float) { refreshPreparedSettings(); });
     limiterSettings.priceDeadband.setCallback([](float) { refreshPreparedSettings(); });
+    limiterSettings.deferralToleranceEurKwh.setCallback([](float) { refreshPreparedSettings(); });
+    limiterSettings.predictionPremiumPct.setCallback([](float) { refreshPreparedSettings(); });
     limiterSettings.forecastPriceFactor.setCallback([](float) { refreshPreparedSettings(); });
 
     limiterSettings.forceMinOnNegativePrice.setCallback([](bool enabled)
@@ -1372,6 +1411,96 @@ static bool hasValidStationCredentials(const String &ssid, const String &passwor
     }
     return true;
 }
+
+#if defined(SIL_PLANNER_SHADOW) && SIL_PLANNER_SHADOW
+static_assert(kRs485MockTransport, "Shadow hardware TX must remain disabled");
+static_assert(FEATURE_ANY_RELAY_OUTPUTS==0, "Shadow relay outputs must remain disabled");
+static String shadowExpectedClient;
+static Config<String>* shadowTopicSetting(const char* id,const char* prefix) {
+    uint32_t hash=2166136261u;
+    for(const char* p=id;*p;++p){hash^=uint8_t(*p);hash*=16777619u;}
+    char hint[16];snprintf(hint,sizeof(hint),"%s%08X",prefix,unsigned(hash));
+    return static_cast<Config<String>*>(ConfigManager.findSettingByKeyHint("MQTT-Topics",hint));
+}
+static bool shadowRoutingValid() {
+    control::ShadowRouting r;
+    r.server=mqttSettings.server.get().c_str();r.port=mqttSettings.port.get();
+    r.root=mqttSettings.publishTopicBase.get().c_str();r.client=mqttSettings.clientId.get().c_str();
+    r.expectedClient=shadowExpectedClient.c_str();r.price=limiterSettings.priceScheduleInputTopic.get().c_str();
+    r.pv=limiterSettings.pvScheduleInputTopic.get().c_str();
+    auto* sbt=static_cast<Config<String>*>(ConfigManager.findSettingByKeyHint("MQTT-Topics","SBTInputRoot"));
+    if(!sbt)return false;r.sbt=sbt->get().c_str();
+    const char* ids[]={"grid_import_w","solar_power_w","negative_price","electricity_price"};
+    for(unsigned i=0;i<4;++i){
+        auto* topic=shadowTopicSetting(ids[i],"MQTTRT_");auto* key=shadowTopicSetting(ids[i],"MQTTRK_");
+        if(!topic||!key)return false;r.topics[i]=topic->get().c_str();r.keys[i]=key->get().c_str();
+    }
+    return control::validShadowRouting(r);
+}
+static bool enforceShadowIsolation() {
+    if(shadowRoutingValid())return true;
+    mqttSettings.enableMQTT.set(false);mqtt.disconnect();return false;
+}
+static bool shadowWebWriteAllowed(const String& category,const String& key,const String& value) {
+    BaseSetting* setting=ConfigManager.findSetting(category,key);
+    if(!setting)return false;
+    using F=control::ShadowField;
+    const auto check=[&](F field){return control::shadowWriteAllowed(field,value.c_str(),shadowExpectedClient.c_str(),shadowRoutingValid());};
+    if(setting==&mqttSettings.server)return check(F::Server);
+    if(setting==&mqttSettings.port)return check(F::Port);
+    if(setting==&mqttSettings.publishTopicBase)return check(F::Root);
+    if(setting==&mqttSettings.clientId)return check(F::Client);
+    if(setting==&mqttSettings.enableMQTT)return check(F::Enable);
+    if(setting==&limiterSettings.priceScheduleInputTopic)return check(F::Price);
+    if(setting==&limiterSettings.pvScheduleInputTopic)return check(F::Pv);
+    if(setting==ConfigManager.findSettingByKeyHint("MQTT-Topics","SBTInputRoot"))return check(F::Sbt);
+    const char* ids[]={"grid_import_w","solar_power_w","negative_price","electricity_price"};
+    for(unsigned i=0;i<4;++i) {
+        if(setting==shadowTopicSetting(ids[i],"MQTTRT_"))return check(static_cast<F>(unsigned(F::Topic0)+i));
+        if(setting==shadowTopicSetting(ids[i],"MQTTRK_"))return check(static_cast<F>(unsigned(F::Key0)+i));
+    }
+    if(setting==&limiterSettings.deferralToleranceEurKwh||setting==&limiterSettings.predictionPremiumPct) {
+        char* end=nullptr;const float number=std::strtof(value.c_str(),&end);
+        return end!=value.c_str()&&end&&!*end&&std::isfinite(number)&&number>=0&&
+            (setting!=&limiterSettings.predictionPremiumPct||number<=100);
+    }
+    return true;
+}
+static bool shadowWriteConfig(const String& category,const String& key,const String& value,bool save) {
+    if(!shadowWebWriteAllowed(category,key,value))return false;
+    return save?ConfigManager.updateSetting(category,key,value):ConfigManager.applySetting(category,key,value);
+}
+static void setupShadowIsolation() {
+    String mac=WiFi.macAddress();mac.replace(":","");
+    shadowExpectedClient="SolarLimiterTest-"+mac;
+    mqtt.setLastWill("SolarLimiterTest/System-Info/status","offline",true,0);
+    // Replace immediate CM routing publications; invalid changes disconnect before returning.
+    auto changed=[](auto){enforceShadowIsolation();};
+    mqttSettings.server.setCallback(changed);mqttSettings.port.setCallback(changed);
+    mqttSettings.clientId.setCallback(changed);mqttSettings.publishTopicBase.setCallback(changed);
+    limiterSettings.priceScheduleInputTopic.setCallback(changed);limiterSettings.pvScheduleInputTopic.setCallback(changed);
+    if(auto* sbt=static_cast<Config<String>*>(ConfigManager.findSettingByKeyHint("MQTT-Topics","SBTInputRoot")))sbt->setCallback(changed);
+    for(const char* id:{"grid_import_w","solar_power_w","negative_price","electricity_price"})
+        for(const char* prefix:{"MQTTRT_","MQTTRK_"})if(auto* value=shadowTopicSetting(id,prefix))value->setCallback(changed);
+    mqttSettings.enableMQTT.setCallback([](bool enabled){
+        if(!enabled){mqtt.disconnect();return;}
+        if(enforceShadowIsolation())mqtt.begin();
+    });
+    // Every HTTP apply/save/single/bulk/config_raw route passes these callbacks before mutation.
+    // Default reset would bypass setting callbacks, so it is deliberately unavailable in shadow.
+    ConfigManager.getWebManager().setCallbacks(
+        [](){return ConfigManager.toJSON(true);},
+        [](){return ConfigManager.getRuntime().runtimeValuesToJSON();},
+        ConfigManagerWeb::RuntimeMetaProvider([](){return ConfigManager.getRuntime().runtimeMetaJsonPayload();}),
+        [](){ConfigManager.reboot();},ConfigManagerWeb::SimpleCallback{},
+        [](const String& c,const String& k,const String& v){return shadowWriteConfig(c,k,v,true);},
+        [](const String& c,const String& k,const String& v){return shadowWriteConfig(c,k,v,false);});
+    if(enforceShadowIsolation()&&mqttSettings.enableMQTT.get())mqtt.begin();
+    Serial.printf("[I] SHADOW client=%s ready=%u\n",shadowExpectedClient.c_str(),unsigned(shadowRoutingValid()));
+}
+#else
+static bool enforceShadowIsolation(){return true;}
+#endif
 
 #if defined(SIL_MOCK_TRANSPORT) && SIL_MOCK_TRANSPORT
 static bool mockMqttIsIsolated()
@@ -1472,7 +1601,10 @@ static void setupNetworkDefaults()
 #endif
     }
 
-#if defined(SIL_MOCK_TRANSPORT) && SIL_MOCK_TRANSPORT
+#if defined(SIL_PLANNER_SHADOW) && SIL_PLANNER_SHADOW
+    wifiSettings.useDhcp.set(true);
+    setupShadowIsolation();
+#elif defined(SIL_MOCK_TRANSPORT) && SIL_MOCK_TRANSPORT
     // Never connect a newly flashed mock to production using inherited/default NVS.
     wifiSettings.useDhcp.set(true);
     mqttSettings.publishTopicBase.set("SILHardening/COM8/out");
@@ -1669,21 +1801,114 @@ struct JsonNumberText
 // Payloads are formatted on the stack so each publish needs one heap allocation.
 static String buildPlanningConfigPayload()
 {
-    char payload[256];
-    snprintf(payload, sizeof(payload),
-             "{\"v\":1,\"valid\":%s,\"resOff\":%s,\"resOn\":%s,\"mosMan\":%s,\"invEn\":%s,"
-             "\"priceC\":%s,\"priceDb\":%s,\"hystDb\":%s,\"fcPriceF\":%s,\"maxOutputW\":%d}",
-             preparedSettings.valid ? "true" : "false",
-             JsonNumberText(preparedSettings.reserveOffSocPercent, 4).text,
-             JsonNumberText(preparedSettings.reserveOnSocPercent, 4).text,
-             preparedSettings.mosManualMode ? "true" : "false",
-             preparedSettings.inverterEnabled ? "true" : "false",
-             JsonNumberText(preparedSettings.priceComfortEurPerKwh, 4).text,
-             JsonNumberText(preparedSettings.priceDeadbandEurPerKwh, 4).text,
-             JsonNumberText(preparedSettings.priceHysteresisEurPerKwh, 4).text,
-             JsonNumberText(forecastPriceFactor, 6).text, limiterSettings.maxOutput.get());
+    char payload[512];
+    snprintf(payload,sizeof(payload),
+        "{\"v\":1,\"valid\":%s,\"resOff\":%s,\"resOn\":%s,\"mosMan\":%s,\"invEn\":%s,"
+        "\"priceC\":%s,\"priceDb\":%s,\"hystDb\":%s,\"fcPriceF\":%s,\"maxOutputW\":%d,"
+        "\"deferralToleranceEurKwh\":%s,\"predictionPremiumPct\":%s,\"shadowProfile\":%s,\"priceInputVersion\":%u}",
+        preparedSettings.valid?"true":"false",JsonNumberText(preparedSettings.reserveOffSocPercent,4).text,
+        JsonNumberText(preparedSettings.reserveOnSocPercent,4).text,preparedSettings.mosManualMode?"true":"false",
+        preparedSettings.inverterEnabled?"true":"false",JsonNumberText(preparedSettings.priceComfortEurPerKwh,4).text,
+        JsonNumberText(preparedSettings.priceDeadbandEurPerKwh,4).text,JsonNumberText(preparedSettings.priceHysteresisEurPerKwh,4).text,
+        JsonNumberText(forecastPriceFactor,6).text,limiterSettings.maxOutput.get(),
+        JsonNumberText(preparedSettings.deferralToleranceEurKwh,8).text,JsonNumberText(preparedSettings.predictionPremiumPct,4).text,
+        control::kPlannerShadowProfile?"true":"false",control::kPlannerShadowProfile?2u:1u);
     return String(payload);
 }
+static String buildPlanningAssessmentPayload()
+{
+    const uint32_t utc=uint32_t(time(nullptr));
+    const auto source=sbtInputs.controlSnapshot(millis());
+    unsigned counts[3]={};
+    for(unsigned i=0;i<futurePrices.slots();++i)++counts[futurePrices.originAt(futurePrices.start()+i*900u)];
+    float raw=NAN,assessed=NAN;
+    futurePrices.priceAt(utc,1,raw);futurePrices.assessedPriceAt(utc,forecastPriceFactor,preparedSettings,assessed);
+    char payload[1100];
+    snprintf(payload,sizeof(payload),
+        "{\"v\":1,\"g\":%lu,\"valid\":%s,\"reason\":\"%s\",\"priceRevision\":%lu,\"priceStart\":%lu,\"priceSlots\":%u,\"priceAgeS\":%lu,"
+        "\"inputVersion\":%u,\"originUnknown\":%u,\"originMarket\":%u,\"originForecast\":%u,"
+        "\"deferralToleranceEurKwh\":%s,\"predictionPremiumPct\":%s,\"currentRawEurKwh\":%s,\"currentAssessedEurKwh\":%s,"
+        "\"currentMeasuredEurKwh\":%s,\"availableWh\":%s,\"fullCapacityAh\":%s,\"soc\":%s,\"batteryW\":%s,\"chargerW\":%s,"
+        "\"bmsSequence\":%lu,\"chargerSequence\":%lu,\"bmsValid\":%s,\"chargerValid\":%s,\"mockTransport\":%s,\"shadowProfile\":%s}",
+        ulong(utc),futurePrices.priceFresh(utc)?"true":"false",futurePrices.testPriceStatus(utc),ulong(futurePrices.revision()),ulong(futurePrices.start()),futurePrices.slots(),
+        ulong(utc>=futurePrices.revision()?utc-futurePrices.revision():0),futurePrices.inputVersion(),counts[0],counts[1],counts[2],
+        JsonNumberText(preparedSettings.deferralToleranceEurKwh,8).text,JsonNumberText(preparedSettings.predictionPremiumPct,4).text,
+        JsonNumberText(raw,8).text,JsonNumberText(assessed,8).text,JsonNumberText(electricityPriceEurKwh,8).text,
+        JsonNumberText(futurePlan.availableWh,2).text,JsonNumberText(source.bmsValid?source.fullCapacityAh:NAN,2).text,
+        JsonNumberText(source.bmsValid?source.soc:NAN,2).text,JsonNumberText(source.bmsValid?source.batteryW:NAN,2).text,
+        JsonNumberText(source.chargerValid?source.chargerW:NAN,2).text,ulong(source.bmsSequence),ulong(source.chargerSequence),
+        source.bmsValid?"true":"false",source.chargerValid?"true":"false",kRs485MockTransport?"true":"false",control::kPlannerShadowProfile?"true":"false");
+    return String(payload);
+}
+// Shadow-only pacing; normal transport and CM core publications retain their existing path.
+#if defined(SIL_PLANNER_SHADOW) && SIL_PLANNER_SHADOW
+static bool shadowAppPublishAccepted = false;
+static uint32_t shadowAppPublishAt = 0;
+static bool shadowAppPublishReady() {
+    return !shadowAppPublishAccepted || uint32_t(millis()-shadowAppPublishAt)>=250UL;
+}
+static void shadowAppPublished(bool accepted) {
+    if(accepted){shadowAppPublishAccepted=true;shadowAppPublishAt=millis();}
+}
+static void shadowTraceTx(const char* tag,size_t bytes,uint32_t previousFailures) {
+    const auto& stats=mqtt.getBoundedIoStats();
+    if(stats.txFailures!=previousFailures)
+        Serial.printf("[W] SHADOW_TX tag=%s len=%u fail=%lu timeout=%lu overflow=%lu\n",tag,unsigned(bytes),
+            ulong(stats.txFailures),ulong(stats.txTimeouts),ulong(stats.txOverflows));
+}
+#if defined(SIL_SHADOW_STAGE_TRACE) && SIL_SHADOW_STAGE_TRACE
+static void shadowTraceStage(const char* stage,uint32_t previousFailures,uint32_t previousRx) {
+    const auto& stats=mqtt.getBoundedIoStats();
+    if(stats.txFailures!=previousFailures)
+        Serial.printf("[W] SHADOW_STAGE ms=%lu stage=%s before=%lu after=%lu timeout=%lu overflow=%lu bp=%lu partial=%lu rx_delta=%lu\n",
+            ulong(millis()),stage,ulong(previousFailures),ulong(stats.txFailures),ulong(stats.txTimeouts),
+            ulong(stats.txOverflows),ulong(stats.txBackpressure),ulong(stats.txPartialWrites),ulong(shadowRxCallbacks-previousRx));
+}
+#endif
+#endif
+#if defined(SIL_PLANNER_SHADOW) && SIL_PLANNER_SHADOW
+static bool publishCheckedRaw(const char* topic,const char* payload,bool retained,bool* deferred=nullptr) {
+    if(deferred)*deferred=false;
+    if(!enforceShadowIsolation()||!control::shadowPublicationAllowed(topic))return false;
+    if(!shadowAppPublishReady()){if(deferred)*deferred=true;return false;}
+    const uint32_t failures=mqtt.getBoundedIoStats().txFailures;
+    const bool accepted=mqtt.publishRaw(topic,payload,retained);
+    shadowTraceTx(topic,strlen(payload),failures);
+    shadowAppPublished(accepted);return accepted;
+}
+#else
+static bool publishCheckedRaw(const char* topic,const char* payload,bool retained) {
+    return mqtt.publishRaw(topic,payload,retained);
+}
+#endif
+template<class Factory> static bool publishCheckedExtra(const char* id,const char* topic,Factory factory,bool retained) {
+#if defined(SIL_PLANNER_SHADOW) && SIL_PLANNER_SHADOW
+    if(!enforceShadowIsolation()||!control::shadowPublicationAllowed(topic)||!shadowAppPublishReady())return false;
+    const uint32_t failures=mqtt.getBoundedIoStats().txFailures;
+    size_t bytes=0;
+    const bool accepted=mqtt.publishExtraTopicLazy(id,topic,[&](){String value=factory();bytes=value.length();return value;},retained);
+    shadowTraceTx(id,bytes,failures);
+    shadowAppPublished(accepted);return accepted;
+#else
+    return mqtt.publishExtraTopicLazy(id,topic,factory,retained);
+#endif
+}
+#if defined(SIL_PLANNER_SHADOW) && SIL_PLANNER_SHADOW
+struct ShadowModeProgress { bool stateSent=false; uint32_t reconnects=UINT32_MAX; char status[256]=""; };
+static bool publishShadowModePair(ShadowModeProgress& progress,const char* stateTopic,const char* statusTopic,const char* state,const char* status) {
+    // A disconnect clears the FIFO, so accepted partial progress cannot cross reconnects.
+    if(progress.reconnects!=mqtt.getReconnectCount()) {
+        progress.reconnects=mqtt.getReconnectCount();progress.stateSent=false;
+    }
+    // Repeated dirty ticks must not restart an identical partly accepted pair.
+    if(strcmp(status,progress.status)) {
+        snprintf(progress.status,sizeof(progress.status),"%s",status);progress.stateSent=false;
+    }
+    if(!progress.stateSent)progress.stateSent=publishCheckedRaw(stateTopic,state,true);
+    if(!progress.stateSent||!publishCheckedRaw(statusTopic,status,true))return false;
+    progress.stateSent=false;return true;
+}
+#endif
 
 static String buildPlanningStatePayload()
 {
@@ -1747,9 +1972,16 @@ static void publishMqttNow()
                 reason, operatingModes.storageReason(), operatingModes.confirmed().chargeThreshold,
                 operatingModes.confirmed().inverterSharePercent);
             if (modePublishDirty || strcmp(status, publishedModeStatus)) {
-                const bool stateSent = mqtt.publishRaw(topicModeState.c_str(), control::operatingModeName(operatingModes.confirmed().mode), true);
-                const bool statusSent = mqtt.publishRaw(topicModeStatus.c_str(), status, true);
+#if defined(SIL_PLANNER_SHADOW) && SIL_PLANNER_SHADOW
+                static ShadowModeProgress progress;
+                modePublishDirty=!publishShadowModePair(progress,topicModeState.c_str(),topicModeStatus.c_str(),
+                    control::operatingModeName(operatingModes.confirmed().mode),status);
+                if(modePublishDirty)nextModeAttemptMs=nowMs+250UL;
+#else
+                const bool stateSent = publishCheckedRaw(topicModeState.c_str(), control::operatingModeName(operatingModes.confirmed().mode), true);
+                const bool statusSent = publishCheckedRaw(topicModeStatus.c_str(), status, true);
                 modePublishDirty = !(stateSent && statusSent);
+#endif
                 if (!modePublishDirty) snprintf(publishedModeStatus, sizeof(publishedModeStatus), "%s", status);
             }
         }
@@ -1798,31 +2030,49 @@ static void publishMqttNow()
         const size_t bytes = dischargeBudget.snapshot.serialize(dischargeBudget.payload, sizeof(dischargeBudget.payload));
         const bool fits = control::DischargeBudget::packetFits(topicPublishDischargeBudget.length(), bytes);
         // A failed buffer allocation, serialization or send affects only this diagnostic.
-        const bool sent = fits && mqtt.publishRaw(topicPublishDischargeBudget.c_str(), dischargeBudget.payload, false);
+#if defined(SIL_PLANNER_SHADOW) && SIL_PLANNER_SHADOW
+        bool deferred=false;
+        const bool sent = fits && publishCheckedRaw(topicPublishDischargeBudget.c_str(), dischargeBudget.payload, false,&deferred);
+        if(!deferred)dischargeBudget.published(sent, nowMs);
+        if (!sent && !deferred)
+#else
+        const bool sent = fits && publishCheckedRaw(topicPublishDischargeBudget.c_str(), dischargeBudget.payload, false);
         dischargeBudget.published(sent, nowMs);
-        if (!sent) lmg.logTag(LL::Warn, "FORECAST", "budget publish failed; retry 5s");
+        if (!sent)
+#endif
+            lmg.logTag(LL::Warn, "FORECAST", "budget publish failed; retry 5s");
     }
     if (chargePlan.publishDue(nowMs))
     {
         const size_t bytes = chargePlan.snapshot.serialize(chargePlan.payload, sizeof(chargePlan.payload));
         const bool fits = control::ChargePlan::packetFits(topicPublishChargePlan.length(), bytes);
-        const bool sent = fits && mqtt.publishRaw(topicPublishChargePlan.c_str(), chargePlan.payload, false);
+#if defined(SIL_PLANNER_SHADOW) && SIL_PLANNER_SHADOW
+        bool deferred=false;
+        const bool sent = fits && publishCheckedRaw(topicPublishChargePlan.c_str(), chargePlan.payload, false,&deferred);
+        if(!deferred)chargePlan.published(sent, nowMs);
+        if (!sent && !deferred)
+#else
+        const bool sent = fits && publishCheckedRaw(topicPublishChargePlan.c_str(), chargePlan.payload, false);
         chargePlan.published(sent, nowMs);
-        if (!sent) lmg.logTag(LL::Warn, "FORECAST", "charge plan publish failed; retry 5s");
+        if (!sent)
+#endif
+            lmg.logTag(LL::Warn, "FORECAST", "charge plan publish failed; retry 5s");
     }
-    mqtt.publishExtraTopicLazy("setvalue_w", topicPublishSetValueW.c_str(), []() { return String(inverterSetValue); }, false);
-    mqtt.publishExtraTopicLazy("calculated_w", topicPublishCalculatedValueW.c_str(), []() { return String(inverterCalculatedValue); }, false);
-    mqtt.publishExtraTopicLazy("runtime_diag", topicPublishRuntimeDiagnostics.c_str(), []() { return runtimeDiagnostics.mqttPayload(mqtt.getBoundedIoStats()); }, false);
-    mqtt.publishExtraTopicLazy("grid_import_w", topicPublishGridImportW.c_str(), []() { return String(currentGridImportW); }, false);
+    publishCheckedExtra("setvalue_w", topicPublishSetValueW.c_str(), []() { return String(inverterSetValue); }, false);
+    publishCheckedExtra("calculated_w", topicPublishCalculatedValueW.c_str(), []() { return String(inverterCalculatedValue); }, false);
+    publishCheckedExtra("runtime_diag", topicPublishRuntimeDiagnostics.c_str(), []() { return runtimeDiagnostics.mqttPayload(mqtt.getBoundedIoStats()); }, false);
+    publishCheckedExtra("grid_import_w", topicPublishGridImportW.c_str(), []() { return String(currentGridImportW); }, false);
     if (preparedSettingsLoaded)
     {
-        mqtt.publishExtraTopicLazy("planning_config", topicPublishPlanningConfig.c_str(), []() { return buildPlanningConfigPayload(); }, false);
-        mqtt.publishExtraTopicLazy("planning_state", topicPublishPlanningState.c_str(), []() { return buildPlanningStatePayload(); }, false);
+        publishCheckedExtra("planning_config", topicPublishPlanningConfig.c_str(), []() { return buildPlanningConfigPayload(); }, false);
+        publishCheckedExtra("planning_state", topicPublishPlanningState.c_str(), []() { return buildPlanningStatePayload(); }, false);
+        if(control::kPlannerShadowProfile)
+            publishCheckedExtra("planning_assessment","SolarLimiterTest/Planning/Assessment",[](){return buildPlanningAssessmentPayload();},false);
     }
 #if FEATURE_BME280_ENABLED
-    mqtt.publishExtraTopicLazy("temperature_c", topicPublishTempC.c_str(), []() { return String(temperature); }, false);
-    mqtt.publishExtraTopicLazy("humidity_pct", topicPublishHumidityPct.c_str(), []() { return String(Humidity); }, false);
-    mqtt.publishExtraTopicLazy("dewpoint_c", topicPublishDewpointC.c_str(), []() { return String(Dewpoint); }, false);
+    publishCheckedExtra("temperature_c", topicPublishTempC.c_str(), []() { return String(temperature); }, false);
+    publishCheckedExtra("humidity_pct", topicPublishHumidityPct.c_str(), []() { return String(Humidity); }, false);
+    publishCheckedExtra("dewpoint_c", topicPublishDewpointC.c_str(), []() { return String(Dewpoint); }, false);
 #endif
 }
 
@@ -2149,7 +2399,8 @@ static void processRS485Tick()
     planCaptureFaults.observe(source.chargerFaultKnown, source.chargerFault);
     const bool knownSourceFault = planCaptureFaults.blocked(source.genuineBmsFault);
     const bool manualMode = operatingModes.confirmed().mode != control::OperatingMode::Automatic;
-    const bool projectionHardInvalid = captureContext.hardInvalid(knownSourceFault) || manualMode;
+    const bool projectionHardInvalid = captureContext.hardInvalid(knownSourceFault) || manualMode ||
+        (control::kPlannerShadowProfile && !futurePrices.priceFresh(utc));
     const bool planSourceGrace = source.sourcesWithinGrace || source.bmsWithinGrace;
     dischargeBudget.observe(nowMs, utc, planContextEpoch, planSourceGrace, projectionHardInvalid, forecastCoverage);
     chargePlan.observe(nowMs, utc, planContextEpoch, planSourceGrace, projectionHardInvalid, forecastCoverage);
@@ -2199,6 +2450,13 @@ static void processRS485Tick()
         currentDecision.reason = modeDecision.reason;
         // Retain qualified PV recovery state only while the automatic fallback owns output.
         if (!modeDecision.automaticPvFallback) currentControl = control::CurrentControl{};
+    }
+    // The test feed gate has final priority over automatic and manual virtual demands.
+    if(control::kPlannerShadowProfile && !futurePrices.priceFresh(utc)) {
+        currentControl=control::CurrentControl{};currentDecision=control::CurrentDecision{};
+        currentDecision.direct=true;currentDecision.reason=futurePrices.testPriceStatus(utc);
+        modeDecision=control::ModeDecision{};modeDecision.reason=currentDecision.reason;
+        modePublishDirty=true;
     }
     // This projection consumes the decision but never participates in PID, MOS or inverter commands.
     control::ChargePlanInputs projection;
