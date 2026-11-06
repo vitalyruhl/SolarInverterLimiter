@@ -119,7 +119,7 @@ static constexpr uint32_t kI2cHz = 400000;
 #endif
 
 #ifndef VERSION
-#define VERSION "5.6.2"
+#define VERSION "5.6.3"
 #endif
 
 static sil::RuntimeDiagnostics runtimeDiagnostics;
@@ -2185,6 +2185,8 @@ static void processRS485Tick()
         limiterSettings.enableController.get(), kRs485MockTransport || rs485settings.enableRS485.get(),
         configuredMax, kRs485MockTransport ? lastMockBaseCommandW : lastIssuedBaseCommandW, nowMs);
     modeInputs.automaticSourceGrace = currentDecision.sourceGrace;
+    modeInputs.automaticPvOnly = currentDecision.pvOnly;
+    modeInputs.automaticPvQualified = !currentDecision.direct;
     const auto nextModeDecision = modePolicy.update(operatingModes.confirmed(), modeInputs);
     if (strcmp(modeDecision.effective, nextModeDecision.effective) || strcmp(modeDecision.reason, nextModeDecision.reason))
         modePublishDirty = true;
@@ -2195,7 +2197,8 @@ static void processRS485Tick()
         currentDecision.ceilingW = modeDecision.watts;
         currentDecision.strategy = modeDecision.effective;
         currentDecision.reason = modeDecision.reason;
-        currentControl = control::CurrentControl{};
+        // Retain qualified PV recovery state only while the automatic fallback owns output.
+        if (!modeDecision.automaticPvFallback) currentControl = control::CurrentControl{};
     }
     // This projection consumes the decision but never participates in PID, MOS or inverter commands.
     control::ChargePlanInputs projection;

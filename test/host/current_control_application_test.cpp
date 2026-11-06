@@ -36,7 +36,7 @@ static int lastMockBaseCommandW=0,lastIssuedBaseCommandW=0;
 static struct {Setting<bool> enableRS485{true};} rs485settings;
 static control::OperatingModePolicy modePolicy;
 static control::ModeDecision modeDecision;
-static bool modePublishDirty=false;
+static bool modePublishDirty=false,currentDecisionAvailable=false;
 static struct {control::ModeSettings confirmed() const {return {};}} operatingModes;
 static void sendToRS485(uint16_t watts){
  // Observe the signed command before its wire cast as well as the actual wire value.
@@ -210,6 +210,103 @@ static void productionModeGateKeepsBoundedReconnectOutput(){
   applyProductionModeGate(modeInputs,c);applyDecision();assert(issued==0);
  }
  limiterSettings.enableController.value=true;
+}
+
+static void applyAutomaticTestOutput() {
+ if (modeDecision.handled) applyProductionModeOutput();
+ else applyDecision();
+}
+
+static void automaticPvFallbackSurvivesMissingBms() {
+ // [MOCKED!] BMS outage, advancing Victron samples and physical TX; real policy/PID/application.
+ for (bool enabled : {false, true}) for (int correction : {-50, 50}) for (int demand : {80, 800}) {
+  control::PreparedSettings cfg; cfg.valid=true;
+  control::CurrentInputs in; in.chargerValid=in.metersValid=in.priceValid=true;
+  in.householdW=float(demand); in.chargerW=300; in.price=.2f;
+  control::CurrentControl controller;
+  control::ModeInputs modeInputs; modeInputs.metersValid=modeInputs.chargerValid=true;
+  modeInputs.householdW=float(demand); modeInputs.chargerW=300; modeInputs.maximumW=900; modeInputs.correctionW=correction;
+  configuredMin=700; configuredMax=900; offset=correction; negativePriceOverrideTarget=-1;
+  limiterSettings.enableController.value=enabled; currentInverterOutputW=0; signedGridPowerW=demand;
+  resetPidController();
+  for (unsigned i=0; i<8; ++i) {
+   in.chargerSequence=i+1; clockMs=180100+i*3000;
+   currentDecision=controller.update(cfg,in,enabled,true,900,900,clockMs);
+   applyProductionModeGate(modeInputs,controller);
+   applyAutomaticTestOutput();
+   assert(i<2 ? !modeDecision.handled : modeDecision.automaticPvFallback);
+   assert(issued>=0 && issued<=270 && !currentDecision.minimumOverrideAllowed);
+  }
+  const int expected=demand==800 ? 270 : (correction<0 ? 30 : 130);
+  assert(modeDecision.automaticPvFallback && issued==expected);
+  // Fresh BMS restoration must requalify battery operation from both sample streams.
+  in.bmsValid=in.batteryChargeAvailable=in.batteryDischargeIntentAvailable=true;
+  in.soc=50; modeInputs.bmsValid=modeInputs.dischargeAllowed=true; modeInputs.soc=50;
+  for (unsigned i=0; i<3; ++i) {
+   ++in.bmsSequence; ++in.chargerSequence; clockMs+=3000;
+   currentDecision=controller.update(cfg,in,enabled,true,900,0,clockMs);
+   applyProductionModeGate(modeInputs,controller); applyAutomaticTestOutput();
+   assert(!modeDecision.automaticPvFallback);
+   if (enabled && i<2) assert(issued==0);
+  }
+  // Losing Victron as well must immediately remove the only measured energy source.
+  in.bmsValid=in.batteryChargeAvailable=in.batteryDischargeIntentAvailable=false; modeInputs.bmsValid=false;
+  in.chargerValid=false; modeInputs.chargerValid=false; clockMs+=3000;
+  currentDecision=controller.update(cfg,in,enabled,true,900,900,clockMs);
+  applyProductionModeGate(modeInputs,controller); applyDecision(); assert(issued==0);
+ }
+ limiterSettings.enableController.value=true;
+}
+
+static void automaticPvFallbackExpiresGraceAndRequalifiesAfterStops() {
+ // [MOCKED!] Independent BMS/Victron availability and time; production controller and dispatch.
+ for (unsigned fault=0; fault<8; ++fault) {
+  control::PreparedSettings cfg; cfg.valid=true;
+  control::CurrentInputs in;
+  in.bmsValid=in.batteryDischargeIntentAvailable=in.batteryChargeAvailable=true;
+  in.chargerValid=in.metersValid=in.priceValid=true; in.bmsWithinGrace=true;
+  in.soc=50; in.chargerW=300; in.householdW=800; in.price=.4f;
+  in.futureValid=true; in.futureBatteryCeilingW=900;
+  control::CurrentControl controller;
+  control::ModeInputs modeInputs; modeInputs.metersValid=modeInputs.bmsValid=modeInputs.chargerValid=true;
+  modeInputs.soc=50; modeInputs.householdW=800; modeInputs.chargerW=300; modeInputs.maximumW=900;
+  configuredMin=700; configuredMax=900; offset=50; negativePriceOverrideTarget=-1;
+  limiterSettings.enableController.value=true; currentInverterOutputW=0; signedGridPowerW=800;
+  resetPidController();
+  auto tick = [&]() {
+   currentDecision=controller.update(cfg,in,true,true,900,500,clockMs);
+   applyProductionModeGate(modeInputs,controller); applyAutomaticTestOutput();
+  };
+  for (unsigned i=0; i<3; ++i) {
+   in.bmsSequence=in.chargerSequence=i+1; clockMs=100+i*3000; tick();
+  }
+  in.bmsValid=in.batteryDischargeIntentAvailable=in.batteryChargeAvailable=false;
+  modeInputs.bmsValid=false; clockMs=10000; tick();
+  assert(currentDecision.sourceGrace && !modeDecision.handled);
+  in.bmsWithinGrace=false; clockMs=180100; tick();
+  assert(issued==0 && !modeDecision.automaticPvFallback); // The expired battery grant is revoked first.
+  for (unsigned i=0; i<3; ++i) {
+   ++in.chargerSequence; clockMs=183100+i*3000; tick();
+   if (i<2) assert(issued==0 && !modeDecision.automaticPvFallback);
+   else assert(modeDecision.automaticPvFallback && issued==270);
+  }
+  const auto savedIn=in; const auto savedMode=modeInputs;
+  if (fault==0) in.chargerValid=modeInputs.chargerValid=false;
+  if (fault==1) in.metersValid=modeInputs.metersValid=false;
+  if (fault==2) in.chargerFault=modeInputs.chargerFault=true;
+  if (fault==3) in.alarmRestricted=modeInputs.genuineFault=true;
+  if (fault==4) in.price=-.1f;
+  if (fault==5) cfg.inverterEnabled=modeInputs.inverterEnabled=false;
+  if (fault==6) cfg.valid=modeInputs.settingsValid=false;
+  if (fault==7) modeInputs.transportEnabled=false;
+  clockMs+=3000; tick(); assert(issued==0 && !modeDecision.automaticPvFallback);
+  in=savedIn; modeInputs=savedMode; cfg.valid=cfg.inverterEnabled=true;
+  for (unsigned i=0; i<3; ++i) {
+   ++in.chargerSequence; clockMs+=3000; tick();
+   if (i<2) assert(issued==0 && !modeDecision.automaticPvFallback);
+   else assert(modeDecision.automaticPvFallback && issued==270);
+  }
+ }
 }
 
 static void chargeOnlyForecastAppliedThroughRealPid(){
@@ -404,6 +501,8 @@ static void fullBatteryRunsHouseholdPidWithoutMinimum(){
 }
 
 int main(){
+ automaticPvFallbackSurvivesMissingBms();
+ automaticPvFallbackExpiresGraceAndRequalifiesAfterStops();
  productionModeGateKeepsBoundedReconnectOutput();
  invalidPidArithmeticStopsWithoutConversionOverflow();
  minimumNeverOverridesRestrictions();
