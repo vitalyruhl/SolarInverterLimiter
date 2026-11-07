@@ -2,7 +2,7 @@
 
 #include <stdint.h>
 
-// Preparation constants only. These values do not drive the active controller.
+// Shared control constants and prepared settings used by the active controller and planner.
 namespace control {
 
 constexpr float kEconomicCeilingRampUpWPerSecond = 50.0f;
@@ -44,6 +44,11 @@ constexpr float kCandidateDischargeLowWarningC = -10.0f;
 constexpr float kCandidateDischargeLowBlockC = -15.0f;
 
 struct PreparedSettings {
+    bool relativeTimePolicy = false;
+    float cheapTimePct = 5, veryExpensiveTimePct = 10, additionalExpensiveTimePct = 30;
+    float storageMinimumNetAdvantageEurKwh = 0.05f;
+    float chargePriorityThreshold = 95;
+    int chargeInverterSharePct = 0;
     float deferralToleranceEurKwh = kMinimumBenefitEurPerKwh;
     float predictionPremiumPct = 0;
     int idleOutputW = 500;

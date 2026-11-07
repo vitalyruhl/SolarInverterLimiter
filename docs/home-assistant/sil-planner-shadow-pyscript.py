@@ -36,6 +36,48 @@ def _shadow_cache_evidence(now):
     spec.loader.exec_module(core)
     return core.cache_evidence('/config/data/sil_planner_shadow/provider-cache.json',now)
 
+@pyscript_executor
+def _shadow_energy_snapshot(production,test,production_context,test_context,now):
+    import importlib.util
+    import json
+    from pathlib import Path
+    spec=importlib.util.spec_from_file_location('sil_planner_shadow_energy_core','/config/pyscript/modules/sil_planner_shadow_core.py')
+    core=importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(core)
+    try:
+        packets=json.loads(Path('/config/data/shed_forecast/last-packets.json').read_bytes())
+    except Exception:
+        return {'status':'unavailable','reason':'shared_pv_snapshot_unavailable','start':now,'end':now+129600}
+    try:
+        return core.future_energy(packets,production,test,now,production_context,test_context)
+    except Exception:
+        return {'status':'unavailable','reason':'energy_snapshot_invalid','start':now,'end':now+129600}
+
+@time_trigger('startup','period(now + 35 sec, 1 min)')
+def sil_shadow_energy_tick(**kwargs):
+    """Read existing forecast artifacts only; never fetch providers or publish MQTT."""
+    task.unique('sil_shadow_energy_tick',kill_me=True)
+    now=int(datetime.datetime.now(datetime.timezone.utc).timestamp())
+    production=hass.states.get('sensor.solarlimiter_charge_plan')
+    test=hass.states.get('sensor.sil_shadow_charge_plan')
+    production_context=hass.states.get('sensor.solarlimiter_discharge_budget')
+    test_context=hass.states.get('sensor.sil_shadow_discharge_budget')
+    source=hass.states.get('sensor.sil_shadow_price_input')
+    assessment=hass.states.get('sensor.sil_shadow_assessment')
+    test_current=(source is not None and source.state=='ready' and 0<=now-source.attributes.get('lastPublishedAt',0)<=180
+                  and assessment is not None and assessment.attributes.get('valid') is True
+                  and -120<=now-assessment.attributes.get('g',0)<=180)
+    prod_data=dict(production.attributes) if production and production.state not in ('unknown','unavailable','invalid','stale') else {}
+    # Display plans retain their own valid cohort across soft price heartbeats.
+    # The orange assessed-price curve keeps its separate strict latest-input binding.
+    test_data=dict(test.attributes) if test and test_current else {}
+    prod_context=dict(production_context.attributes) if production_context and production_context.state not in ('unknown','unavailable','invalid','stale') else {}
+    test_context_data=dict(test_context.attributes) if test_context and test_current else {}
+    result=_shadow_energy_snapshot(prod_data,test_data,prod_context,test_context_data,now)
+    result.update(friendly_name='SIL forecast DC energy comparison',test_comparison=True,
+                  source='Existing shared PV wire snapshot and DC charge intents')
+    state.set('sensor.sil_comparison_future_energy',value=result['status'],new_attributes=result)
+
 def _shadow_input_matches(payload,now):
     source=hass.states.get('sensor.sil_shadow_price_input')
     if source is None or source.state!='ready': return False
@@ -139,3 +181,5 @@ def sil_shadow_observe(topic=None,payload_obj=None,retain=False,**kwargs):
     if topic in ('SolarLimiterTest/Planning/DischargeBudget','SolarLimiterTest/Planning/ChargePlan','SolarLimiterTest/Planning/Assessment'):
         if not _shadow_input_matches(payload_obj,now): status='input_blocked'
     state.set(entity_id,value=status,new_attributes=attributes)
+    if topic=='SolarLimiterTest/Planning/ChargePlan':
+        sil_shadow_energy_tick()

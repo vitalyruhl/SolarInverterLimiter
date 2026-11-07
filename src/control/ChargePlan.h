@@ -45,7 +45,7 @@ struct ChargePlan {
             !std::isfinite(in.fullCapacityAh) || in.fullCapacityAh <= 0 || in.fullCapacityAh > 389 ||
             !std::isfinite(in.currentChargerW) || in.currentChargerW < 0 ||
             !std::isfinite(in.maxChargeW) || in.maxChargeW < 0 ||
-            !std::isfinite(in.priceFactor) || in.priceFactor <= 0 || in.priceFactor > 5) return;
+            (!cfg.relativeTimePolicy && (!std::isfinite(in.priceFactor) || in.priceFactor <= 0 || in.priceFactor > 5))) return;
         if (!future.valid || !red.valid || red.count < 2 || red.count > kSlots || red.start % 900 ||
             utc < red.start || uint64_t(utc) >= uint64_t(red.start) + 900 ||
             uint64_t(red.start) + red.count * 900ULL > UINT32_MAX ||
@@ -54,8 +54,8 @@ struct ChargePlan {
             !std::isfinite(cfg.reserveOffSocPercent) || !std::isfinite(cfg.reserveOnSocPercent) ||
             cfg.reserveOffSocPercent < 0 || cfg.reserveOnSocPercent > 100 ||
             cfg.reserveOffSocPercent >= cfg.reserveOnSocPercent ||
-            !std::isfinite(cfg.priceComfortEurPerKwh) || !std::isfinite(cfg.priceDeadbandEurPerKwh) ||
-            cfg.priceDeadbandEurPerKwh < 0) {
+            (!cfg.relativeTimePolicy && (!std::isfinite(cfg.priceComfortEurPerKwh) || !std::isfinite(cfg.priceDeadbandEurPerKwh) ||
+            cfg.priceDeadbandEurPerKwh < 0))) {
             reason = "forecast_missing"; return;
         }
         start = red.start; count = red.count; targetAt = future.targetAt;

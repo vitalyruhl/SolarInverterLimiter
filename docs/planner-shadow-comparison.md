@@ -1,10 +1,10 @@
-# Planner shadow comparison (5.7.0 candidate)
+# Planner shadow comparison (5.8.0 candidate)
 
-This experimental profile is diagnostic. It must not be uploaded to a production
-inverter controller or interpreted as a future hardware command. Normal defaults
-remain a 0.03 EUR/kWh held-energy tolerance and a 0% uncertainty premium. The
-owner explicitly provisions the test ESP with 0 and 30%, and may persist those
-visible settings for restart continuity.
+This is an isolated, unpublished test profile. Do not merge the relative policy
+into production or upload this profile to a production inverter controller.
+The normal build retains the legacy allocation algorithm and normal settings.
+The owner's existing test uncertainty premium is **10%**; provisioning the new
+three time shares must not overwrite it or other stored settings.
 
 ## Assessment and physical accounting
 
@@ -22,27 +22,103 @@ connection failures occurred. The new assessment is not accepted for production.
 The owner may change the test settings; the initially provisioned 0/30 values
 are not a claim about its current persisted settings.
 
-Only forecast-origin tariffs receive the internal valuation
-`raw + abs(raw) * premium / 100`. Market and unknown values stay unchanged.
-The raw integer micro-EUR/kWh schedule and raw negative/zero-price physical gates
-remain unchanged. Acquisition losses, wear and the independent 0.03 EUR/kWh
-minimum acquisition benefit retain their existing meaning. A zero held-energy
-tolerance protects only strictly higher values; equal prices remain usable early.
+### Relative time groups
 
-Assessment changes do not create measured battery energy or PV energy. Separate
-production and shadow controllers can hold different conservative measured-energy
-histories. Their budgets can therefore differ even with the same current SOC.
-This experiment does not claim strict global optimality.
+Only the shadow profile selects `relative_time_tiers_v1`. All 144 quarter-hour
+prices use the accepted v2 schedule on the same basis: unchanged market/unknown
+prices and `raw + abs(raw) * premium / 100` for forecast-origin prices. The live
+current tariff independently gates physical output; it is not substituted into
+the ranking. Legacy comfort/deadband, held tolerance and future price factor do
+not control this policy and are hidden in the shadow settings UI.
 
-Settings in the Limiter category:
-
-| Key hint | Label | Default |
+| Key hint / API key in Limiter | Label | New default |
 | --- | --- | --- |
-| `defTol` | Held Energy Deferral Tolerance (EUR/kWh) | 0.03 |
-| `predPct` | Forecast Price Uncertainty Premium (%) | 0 |
+| `cheapPct` / `7483E2523305` | Cheap Time Share (%) | 5 |
+| `veryPct` / `38A4CC72FD22` | Very Expensive Time Share (%) | 10 |
+| `expPct` / `DBDB92234F99` | Additional Expensive Time Share (%) | 30 |
+| `storAdv` / `0464F65720FE` | Storage Minimum Net Advantage (EUR/kWh) | 0.05 |
 
-Tolerance must be finite and nonnegative. Premium must be finite and within
-0..100. Both invalidate the allocator and retained-plan context when changed.
+Shares must be finite, nonnegative and total at most 100%. Each setting write is
+validated before mutation. CM bulk routes process settings individually, so a
+rejected bulk request can leave earlier valid writes applied; they are not an
+all-or-nothing transaction. They express time shares, not price or
+energy percentages. Whole equal-price blocks stay together. The cheapest and
+highest boundaries include the entire boundary block; conflicting middle space
+is reduced without splitting ties or overlapping groups. Positive cheap/high
+shares retain the bottom/top block of a nonflat curve. Additional-expensive can
+be empty, particularly with two price levels. Actual slot counts are published
+because plateaus can expand a group beyond its target. Additional-expensive time
+is counted below the actual expanded very-expensive boundary; a top plateau
+does not silently consume its additional 30% quota. Cheap-boundary conflicts can
+still leave less space. A fully flat curve is
+neutral and creates no artificial peaks.
+
+### New PV acquisition economics
+
+The storage allowance is finite and nonnegative. Its default 0.05 EUR/kWh combines
+the old 0.02 wear and 0.03 minimum-gain allowances per later delivered AC kWh; it
+is configurable and does not claim the owner's exact cell replacement cost.
+It applies only to acquiring/shifting new PV energy, never to deferring use
+of already held inventory. Large margins must not erase or release that inventory.
+
+The relative test model fixes charging at 90% and discharge at 90%:
+100 Wh PV offer -> 90 Wh stored battery DC -> 81 Wh later AC. Actual measured BMS
+energy and power enter the real ledger unchanged; they are not charged another
+90% factor. Normal legacy efficiency/economic behavior is unchanged.
+
+For discretionary storage, require:
+
+minimumTargetTierAssessedPrice - storageIntervalAssessedPrice / 0.90 >= storageMinimumNetAdvantageEurKwh
+
+Both prices use the accepted schedule and the same origin-premium rule. The
+0.90 divisor is direct-route efficiency (0.90) divided by cycle efficiency (0.81),
+so the direct-route common loss is not billed twice. Evaluate the target tier's
+minimum assessed price among remaining raw-positive intervals, a conservative
+acquisition-price hurdle compatible with uniform allocation and PV caps on an
+isolated peak. One profitable peak cannot authorize the entire tier. This is
+not a guarantee of realized profit or that the acquired energy will all be
+discharged in the forecast horizon. Only strictly higher-tier, unfunded demand
+with possible battery acceptance qualifies. Forecast direct PV already covering
+every target output interval creates no additional battery demand. Funding still follows very-expensive before additional-expensive.
+Physical reserve restoration and otherwise curtailed PV are separate needs;
+zero/negative raw-price hard gates still apply.
+
+### Chronological energy and priorities
+
+Very-expensive demand has first claim on measured inventory. Additional-expensive
+can use only inventory above the remaining very-expensive MAX demand. Each tier
+spreads its usable budget over its remaining duration; the partially elapsed
+current quarter uses its actual remaining seconds. Neutral and cheap slots have
+no economic battery discharge. No absolute-price fallback replaces an invalid
+relative plan; full 144-slot coverage and the test feed lifetime are required.
+
+PV storage enters only at its chronological arrival, bounded by charging power,
+physical headroom and reserve restoration. Neutral PV can fund future expensive
+and very-expensive deficits when that acquisition passes the economic gate;
+expensive PV can fund a profitable strictly higher future tier.
+High-tier PV is used directly rather than charged merely for another same-tier
+slot. A charging slot never also discharges, and stored PV is removed from direct
+PV. ChargePlan.w is stored battery-side DC, after the charge loss. Direct PV
+subtracts the diverted PV input (stored battery DC / 0.90) before its own
+0.90 direct-output factor. Forecast PV never lowers today's measured-inventory reservation for a future
+higher tier. Unknown PV adds no energy; reported SOC is never assumed to be 100%.
+
+Cheap periods with solar use the existing charge-priority threshold/share
+semantics (normally 95% / 0%), and discretionary storage must also pass the same
+acquisition economics gate. This does not change the explicit manual
+charge_priority operating mode. The real current cheap-window full latch survives
+replanning until SOC falls below the threshold; it ends with that cheap window.
+Only the actual current latch is retained, never a full SOC projected in the
+future. Other explicit operating modes retain their existing behavior.
+
+Raw zero/negative intervals create no reservable demand or allocation duration.
+Raw zero/negative scheduled prices and the fresh current tariff gate automatic
+shadow output independently of assessment. Current source qualification, MOS,
+faults, reserves and correction/MAX limits remain authoritative. The relative
+path disables the legacy MIN economic override, and final corrected output stays
+within its current approved ceiling. No battery permission follows from a PV
+fallback. Separate production/test measured ledgers can differ despite equal SOC.
+The allocator is bounded and conservative, not a claim of global optimality.
 
 ## Isolated profile
 
@@ -119,9 +195,52 @@ accepted price revision/start/count/age, origin counts, assessment settings,
 raw and assessed current scheduled prices, the independently received current
 tariff, measured energy/SOC/capacity/power and source sequences/validity.
 
-The current planner slot continues using the received live tariff; future
-scheduled prices use the existing forecast price factor. The scheduled diagnostic
-assessment applies that same positive factor to the risk-adjusted raw schedule.
-The comparison must bind raw/assessed curves to identical accepted input revision
-and coverage, and visibly mark missing, old or unmatched data. Unknown origin is
-never inferred from time.
+For the relative profile, current and future scheduled assessment use the same
+basis without the legacy price factor. `currentMeasuredEurKwh` remains a separate
+physical input. Config and Assessment add `allocationPolicy`, `priceBasis`,
+`legacyPriceControlsActive`, `cheapTimePct`, `veryExpensiveTimePct` and
+`additionalExpensiveTimePct`, `storageMinimumNetAdvantageEurKwh`,
+`chargeEfficiencyPct` (90) and `dischargeEfficiencyPct` (90). Assessment adds `tiersValid`, `currentPriceTier`,
+`tierStart`, `tierSlots`, actual `tierCheapSlots`, `tierNeutralSlots`,
+`tierExpensiveSlots`, `tierVeryExpensiveSlots`, and three assessed-price boundaries:
+`cheapMaxAssessedEurKwh`, `expensiveMinAssessedEurKwh`,
+`veryExpensiveMinAssessedEurKwh`. Empty/flat groups have null boundaries. Consumers
+must bind the actual accepted price revision and coverage before rendering tiers.
+
+ChargePlan v1 remains DC: `w` is intended storage power. `s[0]` is the current
+measured MPPT override; later `s` slots are qualified forecast inputs. It must not
+be presented as a pure original-forecast curve or an AC inverter command.
+
+### Candidate verification boundary
+
+The uploaded 5.8.0 test image completed 1200 seconds without Guru, panic or an
+unexpected reset; 238 advancing serial diagnostics reported zero monitored MQTT
+error and flow counters on the final boot. All 80 returned configuration values
+matched the post-save reference after a deliberate reset. The new shares were
+5/10/30%, storage allowance 0.05 EUR/kWh, and the owner's 10% forecast premium and
+80/10 charge-priority settings were preserved. Nondefault new settings were also
+saved and verified across a reset before restoring these final values.
+
+A qualified 310-second real-source window passed functional planning checks.
+Overall stability still failed because one HTTP verification timed out, including
+its HA fallback; earlier provisioning also recorded MQTT connection/overflow
+errors. Test-only withdrawal reached hold/virtual zero within 3.656 seconds and
+natural HA recovery completed within 104.718 seconds. A subsequent real-PV plan
+had matching budget/charge cohorts and spread energy across the selected high
+tier. A separate observer incorrectly required an unchanged mode to arrive as
+nonretained MQTT; its failed gate is preserved independently of the device
+evidence. None of these results authorizes production adoption.
+
+The 5.8.0 host regressions cover measured priority before uncertain sunlight,
+fair duration/partial quarters, future PV arrival and headroom, strictly higher
+storage, equal-price blocks/flat curves, raw stops, legacy-knob independence,
+origin/premium changes, source gaps, cheap-window latch continuity, exact/below
+storage-margin boundaries, conservative minimum-tier acquisition valuation and direct-PV acceptance caps, both forecast-price
+sides, two physical loss factors and unchanged measured-energy integration.
+An integration test compiles the actual main price/mode/feed bindings: positive
+fresh tariffs preserve the original 180-second BMS grace, then qualified PV
+fallback; live negative prices or missing test prices stop output. Hardware
+acceptance is separate. Existing MQTT backpressure/overflow/timeout observations
+remain a known limitation; pacing and the optional stage trace are diagnostic
+experiments, not proof that network stalls are solved. No CM dependency changes
+or production adoption are part of this candidate.

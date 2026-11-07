@@ -1,12 +1,16 @@
 # ESP32 RS485 Solar Inverter Limiter
 
-## Planner comparison candidate (5.7.0)
+## Planner comparison candidate (5.8.0)
 
-The experimental `planner_shadow` build compares configurable held-energy
-priority and forecast-origin valuation using real read inputs with hardware
-transmission disabled. Normal defaults remain unchanged. See the
+The experimental `planner_shadow` build uses three relative price-time groups,
+chronological PV storage, configurable new-storage economics and the owner's
+retained forecast-origin premium.
+It uses real read inputs with hardware transmission disabled. The normal build
+retains its legacy algorithm. Do not merge this test policy into production. See the
 [profile, wire contract and provisioning boundaries](docs/planner-shadow-comparison.md).
-Hardware acceptance and publication are still pending.
+The test device completed a 20-minute run without panic or unexpected reset;
+functional checks passed, while intermittent HTTP timeouts remain unresolved.
+Production acceptance is still pending.
 
 ## Full battery PV and manual MOS ownership (5.6.1)
 

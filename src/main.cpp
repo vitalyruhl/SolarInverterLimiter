@@ -120,7 +120,7 @@ static constexpr uint32_t kI2cHz = 400000;
 #endif
 
 #ifndef VERSION
-#define VERSION "5.7.0"
+#define VERSION "5.8.0"
 #endif
 
 static sil::RuntimeDiagnostics runtimeDiagnostics;
@@ -237,18 +237,28 @@ struct LimiterSettings
     Config<float> reserveOnSoc{ConfigOptions<float>{.key = "resOn", .name = "Reserve ON SOC (%)", .category = "Limiter", .defaultValue = 10.0f, .sortOrder = 21}};
     Config<bool> mosManualMode{ConfigOptions<bool>{.key = "mosMan", .name = "MOS Hand Mode", .category = "Limiter", .defaultValue = true, .sortOrder = 23}};
     Config<bool> inverterEnabled{ConfigOptions<bool>{.key = "invEn", .name = "Inverter Enabled", .category = "Limiter", .defaultValue = true, .sortOrder = 24}};
-    Config<float> priceComfort{ConfigOptions<float>{.key = "priceC", .name = "Price Comfort (EUR/kWh)", .category = "Limiter", .defaultValue = 0.25f, .sortOrder = 25}};
-    Config<float> priceDeadband{ConfigOptions<float>{.key = "priceDb", .name = "Price Deadband (EUR/kWh)", .category = "Limiter", .defaultValue = 0.06f, .sortOrder = 26}};
+    Config<float> priceComfort{ConfigOptions<float>{.key = "priceC", .name = "Price Comfort (EUR/kWh)", .category = "Limiter", .defaultValue = 0.25f, .showInWeb = !control::kPlannerShadowProfile, .sortOrder = 25}};
+    Config<float> priceDeadband{ConfigOptions<float>{.key = "priceDb", .name = "Price Deadband (EUR/kWh)", .category = "Limiter", .defaultValue = 0.06f, .showInWeb = !control::kPlannerShadowProfile, .sortOrder = 26}};
 
     Config<String> priceScheduleInputTopic{ConfigOptions<String>{.key = "fcTopic", .name = "Price Schedule Topic", .category = "MQTT-Topics", .defaultValue = String("homeassistant/sensor/electricity_price/schedule"), .sortOrder = 54}};
     Config<String> pvScheduleInputTopic{ConfigOptions<String>{.key = "pvTopic", .name = "PV Forecast Topic", .category = "MQTT-Topics", .defaultValue = String("homeassistant/sensor/solar_forecast/shed/schedule"), .sortOrder = 55}};
-    Config<float> deferralToleranceEurKwh{ConfigOptions<float>{.key = "defTol", .name = "Held Energy Deferral Tolerance (EUR/kWh)", .category = "Limiter", .defaultValue = 0.03f, .sortOrder = 28}};
+    Config<float> deferralToleranceEurKwh{ConfigOptions<float>{.key = "defTol", .name = "Held Energy Deferral Tolerance (EUR/kWh)", .category = "Limiter", .defaultValue = 0.03f, .showInWeb = !control::kPlannerShadowProfile, .sortOrder = 28}};
     Config<float> predictionPremiumPct{ConfigOptions<float>{.key = "predPct", .name = "Forecast Price Uncertainty Premium (%)", .category = "Limiter", .defaultValue = 0.0f, .sortOrder = 29}};
-    Config<float> forecastPriceFactor{ConfigOptions<float>{.key = "fcPriceF", .name = "Forecast Price Factor", .category = "Limiter", .defaultValue = 0.93137255f, .sortOrder = 27}};
+    Config<float> forecastPriceFactor{ConfigOptions<float>{.key = "fcPriceF", .name = "Forecast Price Factor", .category = "Limiter", .defaultValue = 0.93137255f, .showInWeb = !control::kPlannerShadowProfile, .sortOrder = 27}};
 
+#if defined(SIL_PLANNER_SHADOW) && SIL_PLANNER_SHADOW
+    Config<float> storageMinimumNetAdvantageEurKwh{ConfigOptions<float>{.key="storAdv",.name="Storage Minimum Net Advantage (EUR/kWh)",.category="Limiter",.defaultValue=0.05f,.sortOrder=33}};
+    Config<float> cheapTimePct{ConfigOptions<float>{.key="cheapPct",.name="Cheap Time Share (%)",.category="Limiter",.defaultValue=5,.sortOrder=30}};
+    Config<float> veryExpensiveTimePct{ConfigOptions<float>{.key="veryPct",.name="Very Expensive Time Share (%)",.category="Limiter",.defaultValue=10,.sortOrder=31}};
+    Config<float> additionalExpensiveTimePct{ConfigOptions<float>{.key="expPct",.name="Additional Expensive Time Share (%)",.category="Limiter",.defaultValue=30,.sortOrder=32}};
+#endif
     void attachTo(ConfigManagerClass &cfg)
     {
         cfg.addSetting(&forecastPriceFactor);
+#if defined(SIL_PLANNER_SHADOW) && SIL_PLANNER_SHADOW
+        cfg.addSetting(&cheapTimePct);cfg.addSetting(&veryExpensiveTimePct);cfg.addSetting(&additionalExpensiveTimePct);
+        cfg.addSetting(&storageMinimumNetAdvantageEurKwh);
+#endif
         cfg.addSetting(&deferralToleranceEurKwh);
         cfg.addSetting(&predictionPremiumPct);
         cfg.addSetting(&priceScheduleInputTopic);
@@ -734,6 +744,9 @@ void loop()
     if (mqttSettings.publishTopicBase.get() != modeConfiguredRoot) operatingModes.discardPendingMode();
     const char *previousModeStorage = operatingModes.storageReason();
     if (operatingModes.loop(uint32_t(time(nullptr)))) {
+#if defined(SIL_PLANNER_SHADOW) && SIL_PLANNER_SHADOW
+        refreshPreparedSettings();
+#endif
         resetPidController();
         currentControl = control::CurrentControl{};
         modePolicy = control::OperatingModePolicy{};
@@ -1297,6 +1310,15 @@ static void refreshPreparedSettings()
     forecastPriceFactor = limiterSettings.forecastPriceFactor.get();
     preparedSettings.deferralToleranceEurKwh = limiterSettings.deferralToleranceEurKwh.get();
     preparedSettings.predictionPremiumPct = limiterSettings.predictionPremiumPct.get();
+    preparedSettings.relativeTimePolicy=control::kPlannerShadowProfile;
+#if defined(SIL_PLANNER_SHADOW) && SIL_PLANNER_SHADOW
+    preparedSettings.cheapTimePct=limiterSettings.cheapTimePct.get();
+    preparedSettings.storageMinimumNetAdvantageEurKwh=limiterSettings.storageMinimumNetAdvantageEurKwh.get();
+    preparedSettings.veryExpensiveTimePct=limiterSettings.veryExpensiveTimePct.get();
+    preparedSettings.additionalExpensiveTimePct=limiterSettings.additionalExpensiveTimePct.get();
+    preparedSettings.chargePriorityThreshold=operatingModes.confirmed().chargeThreshold;
+    preparedSettings.chargeInverterSharePct=operatingModes.confirmed().inverterSharePercent;
+#endif
     preparedSettings.idleOutputW = std::max(0, limiterSettings.idleOutput.get());
     const int timeout = limiterSettings.sbtTimeout.get();
     if (timeout < 1 || timeout > 9999) limiterSettings.sbtTimeout.set(180);
@@ -1308,14 +1330,14 @@ static void refreshPreparedSettings()
     preparedSettings.priceComfortEurPerKwh = limiterSettings.priceComfort.get();
     preparedSettings.priceDeadbandEurPerKwh = limiterSettings.priceDeadband.get();
     preparedSettings.priceHysteresisEurPerKwh = preparedSettings.priceDeadbandEurPerKwh / 3.0f;
-    preparedSettings.valid = control::validPriceAssessment(preparedSettings) && std::isfinite(preparedSettings.reserveOffSocPercent) &&
+    preparedSettings.valid = (preparedSettings.relativeTimePolicy?control::validRelativeTiers(preparedSettings):control::validPriceAssessment(preparedSettings)) && std::isfinite(preparedSettings.reserveOffSocPercent) &&
         std::isfinite(preparedSettings.reserveOnSocPercent) &&
         preparedSettings.reserveOffSocPercent >= 0.0f &&
         preparedSettings.reserveOffSocPercent < preparedSettings.reserveOnSocPercent &&
         preparedSettings.reserveOnSocPercent <= 100.0f &&
-        std::isfinite(preparedSettings.priceComfortEurPerKwh) &&
+        (preparedSettings.relativeTimePolicy || (std::isfinite(preparedSettings.priceComfortEurPerKwh) &&
         std::isfinite(preparedSettings.priceDeadbandEurPerKwh) &&
-        preparedSettings.priceDeadbandEurPerKwh >= 0.0f;
+        preparedSettings.priceDeadbandEurPerKwh >= 0.0f));
     preparedState.recalculationDirty = true;
     preparedSettingsLoaded = true;
 }
@@ -1334,6 +1356,12 @@ static void configureLimiterSettingsBehavior()
     limiterSettings.deferralToleranceEurKwh.setCallback([](float) { refreshPreparedSettings(); });
     limiterSettings.predictionPremiumPct.setCallback([](float) { refreshPreparedSettings(); });
     limiterSettings.forecastPriceFactor.setCallback([](float) { refreshPreparedSettings(); });
+#if defined(SIL_PLANNER_SHADOW) && SIL_PLANNER_SHADOW
+    limiterSettings.cheapTimePct.setCallback([](float){refreshPreparedSettings();});
+    limiterSettings.storageMinimumNetAdvantageEurKwh.setCallback([](float){refreshPreparedSettings();});
+    limiterSettings.veryExpensiveTimePct.setCallback([](float){refreshPreparedSettings();});
+    limiterSettings.additionalExpensiveTimePct.setCallback([](float){refreshPreparedSettings();});
+#endif
 
     limiterSettings.forceMinOnNegativePrice.setCallback([](bool enabled)
                                                         {
@@ -1458,6 +1486,16 @@ static bool shadowWebWriteAllowed(const String& category,const String& key,const
     for(unsigned i=0;i<4;++i) {
         if(setting==shadowTopicSetting(ids[i],"MQTTRT_"))return check(static_cast<F>(unsigned(F::Topic0)+i));
         if(setting==shadowTopicSetting(ids[i],"MQTTRK_"))return check(static_cast<F>(unsigned(F::Key0)+i));
+    }
+    if(setting==&limiterSettings.cheapTimePct||setting==&limiterSettings.veryExpensiveTimePct||setting==&limiterSettings.additionalExpensiveTimePct||setting==&limiterSettings.storageMinimumNetAdvantageEurKwh) {
+        char* end=nullptr;const float number=std::strtof(value.c_str(),&end);
+        if(end==value.c_str()||!end||*end||!std::isfinite(number))return false;
+        auto candidate=preparedSettings;
+        if(setting==&limiterSettings.cheapTimePct)candidate.cheapTimePct=number;
+        if(setting==&limiterSettings.storageMinimumNetAdvantageEurKwh)candidate.storageMinimumNetAdvantageEurKwh=number;
+        if(setting==&limiterSettings.veryExpensiveTimePct)candidate.veryExpensiveTimePct=number;
+        if(setting==&limiterSettings.additionalExpensiveTimePct)candidate.additionalExpensiveTimePct=number;
+        return control::validRelativeTiers(candidate);
     }
     if(setting==&limiterSettings.deferralToleranceEurKwh||setting==&limiterSettings.predictionPremiumPct) {
         char* end=nullptr;const float number=std::strtof(value.c_str(),&end);
@@ -1799,6 +1837,35 @@ struct JsonNumberText
 };
 
 // Payloads are formatted on the stack so each publish needs one heap allocation.
+#if defined(SIL_PLANNER_SHADOW) && SIL_PLANNER_SHADOW
+static String addRelativeDiagnostics(const char* base,bool tierState) {
+    String result(base);
+    if(result.endsWith("}"))result.remove(result.length()-1);
+    char fields[1100];
+    const bool ready=tierState&&futurePlan.valid&&preparedSettings.relativeTimePolicy;
+    snprintf(fields,sizeof(fields),
+        ",\"allocationPolicy\":\"relative_time_tiers_v1\",\"priceBasis\":\"schedule_origin_assessed\",\"legacyPriceControlsActive\":false,"
+        "\"cheapTimePct\":%s,\"veryExpensiveTimePct\":%s,\"additionalExpensiveTimePct\":%s,"
+        "\"storageMinimumNetAdvantageEurKwh\":%s,\"chargeEfficiencyPct\":90,\"dischargeEfficiencyPct\":90",
+        JsonNumberText(preparedSettings.cheapTimePct,6).text,JsonNumberText(preparedSettings.veryExpensiveTimePct,6).text,
+        JsonNumberText(preparedSettings.additionalExpensiveTimePct,6).text,JsonNumberText(preparedSettings.storageMinimumNetAdvantageEurKwh,8).text);
+    result+=fields;
+    if(tierState){
+        snprintf(fields,sizeof(fields),
+            ",\"tiersValid\":%s,\"currentPriceTier\":\"%s\",\"tierStart\":%lu,\"tierSlots\":%u,"
+            "\"tierCheapSlots\":%u,\"tierNeutralSlots\":%u,\"tierExpensiveSlots\":%u,\"tierVeryExpensiveSlots\":%u,"
+            "\"cheapMaxAssessedEurKwh\":%s,\"expensiveMinAssessedEurKwh\":%s,\"veryExpensiveMinAssessedEurKwh\":%s",
+            ready?"true":"false",ready?futurePrices.currentPriceTier():"unknown",ulong(ready?futurePrices.tierStart():0),ready?144u:0u,
+            ready?futurePrices.tierCount(control::PriceTier::Cheap):0,ready?futurePrices.tierCount(control::PriceTier::Neutral):0,
+            ready?futurePrices.tierCount(control::PriceTier::Expensive):0,ready?futurePrices.tierCount(control::PriceTier::VeryExpensive):0,
+            JsonNumberText(ready?futurePrices.tierBoundary(control::PriceTier::Cheap):NAN,8).text,
+            JsonNumberText(ready?futurePrices.tierBoundary(control::PriceTier::Expensive):NAN,8).text,
+            JsonNumberText(ready?futurePrices.tierBoundary(control::PriceTier::VeryExpensive):NAN,8).text);
+        result+=fields;
+    }
+    result+="}";return result;
+}
+#endif
 static String buildPlanningConfigPayload()
 {
     char payload[512];
@@ -1813,7 +1880,11 @@ static String buildPlanningConfigPayload()
         JsonNumberText(forecastPriceFactor,6).text,limiterSettings.maxOutput.get(),
         JsonNumberText(preparedSettings.deferralToleranceEurKwh,8).text,JsonNumberText(preparedSettings.predictionPremiumPct,4).text,
         control::kPlannerShadowProfile?"true":"false",control::kPlannerShadowProfile?2u:1u);
+#if defined(SIL_PLANNER_SHADOW) && SIL_PLANNER_SHADOW
+    return addRelativeDiagnostics(payload,false);
+#else
     return String(payload);
+#endif
 }
 static String buildPlanningAssessmentPayload()
 {
@@ -1822,7 +1893,7 @@ static String buildPlanningAssessmentPayload()
     unsigned counts[3]={};
     for(unsigned i=0;i<futurePrices.slots();++i)++counts[futurePrices.originAt(futurePrices.start()+i*900u)];
     float raw=NAN,assessed=NAN;
-    futurePrices.priceAt(utc,1,raw);futurePrices.assessedPriceAt(utc,forecastPriceFactor,preparedSettings,assessed);
+    futurePrices.priceAt(utc,1,raw);futurePrices.assessedPriceAt(utc,preparedSettings.relativeTimePolicy?1:forecastPriceFactor,preparedSettings,assessed);
     char payload[1100];
     snprintf(payload,sizeof(payload),
         "{\"v\":1,\"g\":%lu,\"valid\":%s,\"reason\":\"%s\",\"priceRevision\":%lu,\"priceStart\":%lu,\"priceSlots\":%u,\"priceAgeS\":%lu,"
@@ -1838,7 +1909,11 @@ static String buildPlanningAssessmentPayload()
         JsonNumberText(source.bmsValid?source.soc:NAN,2).text,JsonNumberText(source.bmsValid?source.batteryW:NAN,2).text,
         JsonNumberText(source.chargerValid?source.chargerW:NAN,2).text,ulong(source.bmsSequence),ulong(source.chargerSequence),
         source.bmsValid?"true":"false",source.chargerValid?"true":"false",kRs485MockTransport?"true":"false",control::kPlannerShadowProfile?"true":"false");
+#if defined(SIL_PLANNER_SHADOW) && SIL_PLANNER_SHADOW
+    return addRelativeDiagnostics(payload,true);
+#else
     return String(payload);
+#endif
 }
 // Shadow-only pacing; normal transport and CM core publications retain their existing path.
 #if defined(SIL_PLANNER_SHADOW) && SIL_PLANNER_SHADOW
@@ -2270,6 +2345,10 @@ static void issueInverterCommand(int watts, int maximumW, int outputOffsetW, int
         currentDecision.chargeTargetW = 0;
     }
     watts = max(watts, minimumW);
+#if defined(SIL_PLANNER_SHADOW) && SIL_PLANNER_SHADOW
+    if(preparedSettings.relativeTimePolicy&&operatingModes.confirmed().mode==control::OperatingMode::Automatic)
+        watts=std::min(watts,std::max(0,currentDecision.ceilingW));
+#endif
     inverterSetValue = watts;
     if (kRs485MockTransport)
     {
@@ -2394,8 +2473,8 @@ static void processRS485Tick()
     }
     float coveredPrice = 0;
     const bool forecastCoverage = utc <= UINT32_MAX - 900UL &&
-        futurePrices.priceAt(utc, forecastPriceFactor, coveredPrice) &&
-        futurePrices.priceAt(utc + 900UL, forecastPriceFactor, coveredPrice);
+        futurePrices.priceAt(utc, preparedSettings.relativeTimePolicy?1:forecastPriceFactor, coveredPrice) &&
+        futurePrices.priceAt(utc + 900UL, preparedSettings.relativeTimePolicy?1:forecastPriceFactor, coveredPrice);
     planCaptureFaults.observe(source.chargerFaultKnown, source.chargerFault);
     const bool knownSourceFault = planCaptureFaults.blocked(source.genuineBmsFault);
     const bool manualMode = operatingModes.confirmed().mode != control::OperatingMode::Automatic;
@@ -2429,6 +2508,10 @@ static void processRS485Tick()
         dischargeBudget.select(dischargeBudget.candidate, nowMs, planContextEpoch);
     }
     inputs.futureValid = futurePlan.valid;
+    float relativeRawPrice=0;
+    inputs.relativePricePositive=futurePrices.priceAt(utc,1,relativeRawPrice)&&relativeRawPrice>0&&priceFresh&&measuredPrice>0;
+    inputs.futurePvCeilingW=futurePlan.directPvCeilingW;
+    inputs.futurePriceTier=futurePrices.currentPriceTier();
     inputs.futureBatteryCeilingW = futurePlan.batteryCeilingW;
     inputs.futureChargeTargetW = futurePlan.chargeTargetW;
     inputs.futureReason = futurePlan.reason;

@@ -2,6 +2,7 @@
 
 #include "PreparedControl.h"
 #include "PriceAssessment.h"
+#include "RelativeTiers.h"
 #include "DischargeBudget.h"
 #include "JsonArena.h"
 #include "PvForecast.h"
@@ -12,6 +13,8 @@
 
 namespace control {
 struct FuturePlan {
+    bool relativePricePositive=false;
+    int directPvCeilingW=0;
     bool valid = false, pvQualified = false, coupledProjection = false;
     float offeredPvWh = 0; // Sum of known DC offers; unknown intervals contribute no invented energy.
     float usablePvWh = 0;  // AC-deliverable energy actually stored in the private chronological projection.
@@ -29,6 +32,9 @@ public:
     static_assert(kPlanSlots == DischargeBudget::kSlots, "Trace must cover the entire allocation window");
     void clear() {
         projectionCount_ = 0;
+#if defined(SIL_PLANNER_SHADOW) && SIL_PLANNER_SHADOW
+        relativeCheapFull_=relativeWasCheap_=false;
+#endif
         if (activeCount_) ++contentRevision_;
         activeCount_ = pendingCount_ = 0; parts_ = 0;
         activeRevision_ = pendingRevision_ = 0;
@@ -130,13 +136,16 @@ public:
         const bool energyValid = bmsValid && std::isfinite(fullAh) && fullAh > 0 && fullAh <= 389 &&
             std::isfinite(soc) && soc >= 0 && soc <= 100 && std::isfinite(batteryW);
         if (!energyValid) {
+#if defined(SIL_PLANNER_SHADOW) && SIL_PLANNER_SHADOW
+            relativeCheapFull_=relativeWasCheap_=false;
+#endif
             energyTickReady_ = false; // Preserve known debits; never integrate an unknown outage.
             out.reason = "energy_missing"; return finish(out, trace);
         }
         if (!std::isfinite(cfg.reserveOffSocPercent) || !std::isfinite(cfg.reserveOnSocPercent) ||
             cfg.reserveOffSocPercent < 0 || cfg.reserveOnSocPercent > 100 ||
-            cfg.reserveOffSocPercent >= cfg.reserveOnSocPercent || !std::isfinite(cfg.priceComfortEurPerKwh) ||
-            !std::isfinite(cfg.priceDeadbandEurPerKwh) || cfg.priceDeadbandEurPerKwh < 0) {
+            cfg.reserveOffSocPercent >= cfg.reserveOnSocPercent || (!cfg.relativeTimePolicy && (!std::isfinite(cfg.priceComfortEurPerKwh) ||
+            !std::isfinite(cfg.priceDeadbandEurPerKwh) || cfg.priceDeadbandEurPerKwh < 0))) {
             out.reason = "forecast_settings"; return finish(out, trace);
         }
         const float fullWh = fullAh * 51.38f;
@@ -151,7 +160,10 @@ public:
         energySequence_ = sequence; energyAt_ = ms; lastBatteryW_ = batteryW; energyTickReady_ = true;
         energyWh_ = std::max(0.0f, std::min(energyWh_, socWh));
         out.availableWh = energyWh_ * kDischargeEfficiency;
-        if (!cfg.valid || !validPriceAssessment(cfg) || !std::isfinite(factor) || factor <= 0 || factor > 5) {
+#if defined(SIL_PLANNER_SHADOW) && SIL_PLANNER_SHADOW
+        lastSoc_=soc;
+#endif
+        if (!cfg.valid || (cfg.relativeTimePolicy ? !validRelativeTiers(cfg) : (!validPriceAssessment(cfg) || !std::isfinite(factor) || factor <= 0 || factor > 5))) {
             out.reason = "forecast_settings"; return finish(out, trace);
         }
         if (utc < 1704067200UL || (lastUtc_ && uint64_t(utc) + 5 < lastUtc_)) {
@@ -167,6 +179,13 @@ public:
         if (!currentPriceValid || !std::isfinite(currentPrice)) {
             out.reason = "current_price_missing"; return finish(out, trace);
         }
+#if defined(SIL_PLANNER_SHADOW) && SIL_PLANNER_SHADOW
+        if(cfg.relativeTimePolicy) {
+            if(end-first!=kPlanSlots){out.reason="relative_coverage";return finish(out,trace);}
+            return relativeProject(first,utc,cfg,currentPrice,maximumW,pv,qualifiedMaxChargeW,currentChargerW,
+                fullWh,out,trace);
+        }
+#endif
         // Cap resolution follows the whole-watt forecast wire contract, not arbitrary noise percentages.
         // 12000 W is the maximum encoded offer (10000 W * maximum calibration 1.2), not a plant limit.
         const int chargeCapW = std::isfinite(qualifiedMaxChargeW) && qualifiedMaxChargeW > 0
@@ -214,7 +233,7 @@ public:
             ? origins_[(utc-activeStart_)/900] : 0;
     }
     bool assessedPriceAt(uint32_t utc,float factor,const PreparedSettings& cfg,float& value) const {
-        if (!validPriceAssessment(cfg) || !priceAt(utc,factor,value)) return false;
+        if ((cfg.relativeTimePolicy?!validRelativeTiers(cfg):!validPriceAssessment(cfg)) || !priceAt(utc,factor,value)) return false;
         value=assessedPrice(value,PriceOrigin(originAt(utc)),cfg.predictionPremiumPct);
         return std::isfinite(value);
     }
@@ -230,6 +249,28 @@ public:
         price = float(active_[(utc - activeStart_) / 900UL]) * .000001f * factor;
         return std::isfinite(price);
     }
+    const char* currentPriceTier()const {
+#if defined(SIL_PLANNER_SHADOW) && SIL_PLANNER_SHADOW
+        return priceTierName(relative_.tier(0));
+#else
+        return "unknown";
+#endif
+    }
+    unsigned tierCount(PriceTier tier)const {
+#if defined(SIL_PLANNER_SHADOW) && SIL_PLANNER_SHADOW
+        return relative_.count(tier);
+#else
+        (void)tier;return 0;
+#endif
+    }
+    double tierBoundary(PriceTier tier)const {
+#if defined(SIL_PLANNER_SHADOW) && SIL_PLANNER_SHADOW
+        return relative_.boundary(tier);
+#else
+        (void)tier;return NAN;
+#endif
+    }
+    uint32_t tierStart()const{return projectionStart_;}
     bool projectionMatches(uint32_t utc, uint32_t start, unsigned count) const {
         return projectionCount_ && projectionUtc_ == utc && projectionStart_ == start && projectionCount_ == count;
     }
@@ -244,6 +285,133 @@ private:
         if (trace) trace->finish(out.valid, out.reason);
         return out;
     }
+#if defined(SIL_PLANNER_SHADOW) && SIL_PLANNER_SHADOW
+    FuturePlan relativeProject(unsigned first,uint32_t utc,const PreparedSettings& cfg,float currentPrice,int maximumW,
+        const PvForecast* pv,float qualifiedChargeW,float currentSolarW,float fullWh,FuturePlan out,DischargeBudget* trace) {
+        const float maximum=std::max(0.0f,float(maximumW));
+        const float chargeCap=std::isfinite(qualifiedChargeW)?std::max(0.0f,std::min(qualifiedChargeW,12000.0f)):0;
+        projectionStart_=activeStart_+first*900UL;projectionUtc_=utc;
+        for(unsigned k=0;k<kPlanSlots;++k){
+            const double micro=double(active_[first+k]);
+            const double assessed=PriceOrigin(origins_[first+k])==PriceOrigin::Forecast?
+                micro+std::fabs(micro)*double(cfg.predictionPremiumPct)/100:micro;
+            relative_.set(k,assessed*.000001);
+        }
+        if(!relative_.classify(cfg)){out.reason="relative_settings";return finish(out,trace);}
+        ++planningBuilds_;
+        float highHours=0,mediumHours=0;
+        for(unsigned k=0;k<kPlanSlots;++k){
+            const float hours=float(projectionStart_+(k+1)*900UL-(k?projectionStart_+k*900UL:utc))/3600;
+            // A physically stopped raw-price interval has no demand to reserve or spread over.
+            if(active_[first+k]<=0||(!k&&currentPrice<=0))continue;
+            if(relative_.tier(k)==PriceTier::VeryExpensive)highHours+=hours;
+            if(relative_.tier(k)==PriceTier::Expensive)mediumHours+=hours;
+        }
+        float pool=out.availableWh;
+        const float capacity=std::max(0.0f,(100-cfg.reserveOffSocPercent)*.01f*fullWh*kDischargeEfficiency);
+        float headroom=std::max(0.0f,(100-lastSoc_)*.01f*fullWh);
+        float debt=std::max(0.0f,(cfg.reserveOffSocPercent-lastSoc_)*.01f*fullWh);
+        const bool continuous=relativeWasCheap_&&utc>=relativeLiveAt_&&utc-relativeLiveAt_<=180;
+        bool cheapFull=continuous&&relativeCheapFull_,previousCheap=continuous;
+        out.offeredPvWh=0;out.pvQualified=pv&&pv->valid(utc)&&chargeCap>0;
+        if(trace){trace->start=projectionStart_;trace->count=kPlanSlots;}
+        for(unsigned k=0;k<kPlanSlots;++k){
+            const uint32_t start=projectionStart_+k*900UL;
+            const float hours=float(start+900UL-(k?start:utc))/3600;
+            const auto tier=relative_.tier(k);
+            const bool cheap=tier==PriceTier::Cheap;
+            if(!cheap||!previousCheap)cheapFull=false;
+            previousCheap=cheap;
+            float forecast=0;
+            const bool known=pv&&pv->valid(start+899)&&pv->wattsAt(start,forecast);
+            if(known)out.offeredPvWh+=forecast*hours;
+            const bool measured=!k&&std::isfinite(currentSolarW)&&currentSolarW>=0;
+            const float solar=measured?std::min(currentSolarW,12000.0f):(k&&known?std::min(forecast,chargeCap/float(kRelativeChargeEfficiency)):0);
+            storageKnown_[k]=measured||(k&&known);solarW_[k]=solar;
+            if(!k)projectionFirstSolarW_=storageKnown_[0]?solar:-1;
+            const float raw=float(active_[first+k])*.000001f;
+            const bool positive=raw>0&&(k||currentPrice>0);
+            const float physicalSoc=fullWh>0?(fullWh-headroom)/fullWh*100:0;
+            if(cheap){if(physicalSoc<cfg.chargePriorityThreshold)cheapFull=false;if(physicalSoc>=100)cheapFull=true;}
+            // Persist only the real current window, never a full SOC simulated later in the forecast.
+            if(!k){relativeWasCheap_=cheap;relativeCheapFull_=cheapFull;relativeLiveAt_=utc;}
+            float desiredStore=0;
+            if(positive){
+                // Only otherwise curtailed input and physical reserve restoration bypass acquisition economics.
+                desiredStore=std::max(0.0f,solar-maximum/kDischargeEfficiency);
+                desiredStore=std::max(desiredStore,std::min(solar,debt/float(kRelativeChargeEfficiency)/hours));
+                float eligibleAc=0;
+                const float highFunded=highHours>0?std::min(maximum,pool/highHours):0;
+                const float mediumFunded=mediumHours>0?std::min(maximum,std::max(0.0f,pool-maximum*highHours)/mediumHours):0;
+                double highMinimum=NAN,mediumMinimum=NAN;
+                float highDeficit=0,mediumDeficit=0;
+                for(unsigned j=k+1;j<kPlanSlots;++j){
+                    const auto targetTier=relative_.tier(j);
+                    if(active_[first+j]<=0||targetTier<=tier||targetTier<PriceTier::Expensive)continue;
+                    const double valuation=relative_.assessed(j);
+                    float targetPv=0;
+                    const uint32_t targetAt=projectionStart_+j*900UL;
+                    const bool targetKnown=pv&&pv->valid(targetAt+899)&&pv->wattsAt(targetAt,targetPv);
+                    const float targetSolar=targetKnown?std::min(targetPv,chargeCap/float(kRelativeChargeEfficiency)):0;
+                    const float possibleBattery=std::max(0.0f,maximum-targetSolar*kDischargeEfficiency);
+                    if(targetTier==PriceTier::VeryExpensive){
+                        highMinimum=std::isfinite(highMinimum)?std::min(highMinimum,valuation):valuation;
+                        highDeficit+=std::max(0.0f,possibleBattery-highFunded)*.25f;
+                    }else{
+                        mediumMinimum=std::isfinite(mediumMinimum)?std::min(mediumMinimum,valuation):valuation;
+                        mediumDeficit+=std::max(0.0f,possibleBattery-mediumFunded)*.25f;
+                    }
+                }
+                // A conservative acquisition hurdle, not a promise of future realized profit.
+                // The minimum tier value survives uniform spreading and direct-PV caps on an isolated peak.
+                const bool highProfitable=std::isfinite(highMinimum)&&relativeStorageProfitable(highMinimum,
+                    relative_.assessed(k),cfg.storageMinimumNetAdvantageEurKwh);
+                if(highProfitable)eligibleAc=highDeficit;
+                if((highDeficit<=0||highProfitable)&&std::isfinite(mediumMinimum)&&
+                    relativeStorageProfitable(mediumMinimum,relative_.assessed(k),cfg.storageMinimumNetAdvantageEurKwh))
+                    eligibleAc+=mediumDeficit;
+                const float economicPv=eligibleAc>0?
+                    std::min(solar,(debt+eligibleAc/kDischargeEfficiency)/float(kRelativeChargeEfficiency)/hours):0;
+                if(tier==PriceTier::Neutral||tier==PriceTier::Expensive)desiredStore=std::max(desiredStore,economicPv);
+                if(cheap&&!cheapFull){
+                    const float share=physicalSoc<cfg.chargePriorityThreshold?0:float(cfg.chargeInverterSharePct)/100;
+                    desiredStore=std::max(desiredStore,std::min(economicPv,solar*(1-share)));
+                }
+            }
+            // Charge power/headroom are battery DC. The diverted PV input includes charge losses.
+            float stored=std::max(0.0f,std::min({desiredStore*hours*float(kRelativeChargeEfficiency),chargeCap*hours,headroom,
+                debt+std::max(0.0f,capacity-pool)/kDischargeEfficiency}));
+            float allocation=0;
+            // A charging slot never also discharges. Direct PV is exactly the non-stored part.
+            const float direct=positive?std::min(maximum,std::max(0.0f,solar-stored/float(kRelativeChargeEfficiency)/hours)*kDischargeEfficiency):0;
+            if(positive&&stored<=0&&debt<=0){
+                float level=0;
+                if(tier==PriceTier::VeryExpensive&&highHours>0)level=std::min(maximum,pool/highHours);
+                if(tier==PriceTier::Expensive&&mediumHours>0)
+                    level=std::min(maximum,std::max(0.0f,pool-maximum*highHours)/mediumHours);
+                allocation=std::min({pool,std::max(0.0f,maximum-direct)*hours,level*hours});
+            }
+            pool=std::max(0.0f,pool-allocation);headroom+=allocation/kDischargeEfficiency;
+            const float restored=std::min(debt,stored);debt=std::max(0.0f,debt-restored);
+            pool=std::min(capacity,pool+(stored-restored)*kDischargeEfficiency);headroom=std::max(0.0f,headroom-stored);
+            projectedChargeW_[k]=stored/hours;out.usablePvWh+=(stored-restored)*kDischargeEfficiency;
+            const int watts=int(std::max(0.0f,std::min(maximum,allocation/hours)));
+            if(trace)trace->watts[k]=watts;
+            if(!k){out.batteryCeilingW=watts;out.chargeTargetW=stored/hours;out.directPvCeilingW=int(direct);
+                out.relativePricePositive=positive;out.reservedWh=std::min(pool,maximum*highHours);
+                out.shortfallWh=std::max(0.0f,maximum*highHours-pool);out.projectedUnmetWhDC=out.shortfallWh/kDischargeEfficiency;}
+            if(positive&&tier==PriceTier::VeryExpensive)highHours=std::max(0.0f,highHours-hours);
+            if(positive&&tier==PriceTier::Expensive)mediumHours=std::max(0.0f,mediumHours-hours);
+        }
+        projectionCount_=kPlanSlots;out.valid=true;out.coupledProjection=true;
+        out.reason=out.batteryCeilingW>0?"relative_release":(out.chargeTargetW>0?"relative_charge":"relative_hold");
+        return finish(out,trace);
+    }
+    RelativeTiers relative_;
+    float lastSoc_=0;
+    bool relativeCheapFull_=false,relativeWasCheap_=false;
+    uint32_t relativeLiveAt_=0;
+#endif
     static bool eligible(unsigned i, unsigned first, float p, float currentPrice, float tolerance) {
         // Held energy has already paid acquisition losses/cycle costs. Defer its
         // current use only for a materially better future price; flat/cheaper slots cannot hoard it.

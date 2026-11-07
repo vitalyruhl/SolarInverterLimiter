@@ -555,6 +555,54 @@ cards:
 
         {% set c=''sensor.sil_shadow_config'' %}{% set pc=''sensor.sil_comparison_production_config'' %}
 
+        {% if state_attr(c,''allocationPolicy'')==''relative_time_tiers_v1'' %}
+
+        **Test: relative Zeitbereiche**
+
+
+        | Einstellung | Produktion | Test |
+
+        |---|---:|---:|
+
+        | Maximale Leistung | {{ state_attr(pc,''maxOutputW'') or ''unklar'' }} W | {{ state_attr(c,''maxOutputW'') or ''noch
+        offen'' }} W |
+
+        | Günstige Zeit | bisherige Planung | {{ state_attr(c,''cheapTimePct'') if is_number(state_attr(c,''cheapTimePct''))
+        else ''noch offen'' }} % |
+
+        | Sehr teure Zeit | bisherige Planung | {{ state_attr(c,''veryExpensiveTimePct'') if is_number(state_attr(c,''veryExpensiveTimePct''))
+        else ''noch offen'' }} % |
+
+        | Zusätzlich teure Zeit | bisherige Planung | {{ state_attr(c,''additionalExpensiveTimePct'') if is_number(state_attr(c,''additionalExpensiveTimePct''))
+        else ''noch offen'' }} % |
+
+        | Prognoseaufschlag | {{ state_attr(pc,''predictionPremiumPct'') or 0 }} % | {{ state_attr(c,''predictionPremiumPct'')
+        if is_number(state_attr(c,''predictionPremiumPct'')) else ''noch offen'' }} % |
+
+        | Mindestvorteil neuer Speicherung | bisheriges Modell | {% if is_number(state_attr(c,''storageMinimumNetAdvantageEurKwh''))
+        %}{{ (state_attr(c,''storageMinimumNetAdvantageEurKwh'')|float*100)|round(2) }} ct/kWh{% else %}noch offen{% endif
+        %} |
+
+        | Ladewirkungsgrad | bisheriges Modell | {{ state_attr(c,''chargeEfficiencyPct'') if is_number(state_attr(c,''chargeEfficiencyPct''))
+        else ''noch offen'' }} % |
+
+        | Entladewirkungsgrad | bisheriges Modell | {{ state_attr(c,''dischargeEfficiencyPct'') if is_number(state_attr(c,''dischargeEfficiencyPct''))
+        else ''noch offen'' }} % |
+
+
+        Der Mindestvorteil betrifft nur neue Speicherung. Bereits vorhandene Energie bleibt zuerst für die sehr teuren Zeiten
+        reserviert. Komfortpreis, alte Preistoleranz und alter Preisfaktor sind im Test **nicht aktiv**; Altwerte stehen nur
+        in den Prüfdetails.
+
+        {% if is_number(state_attr(c,''chargeEfficiencyPct'')) and is_number(state_attr(c,''dischargeEfficiencyPct'')) %}
+
+        Testmodell: 100 Wh Solar-DC → {{ state_attr(c,''chargeEfficiencyPct'')|round(1) }} Wh Batterie-DC → {{ (state_attr(c,''chargeEfficiencyPct'')*state_attr(c,''dischargeEfficiencyPct'')/100)|round(1)
+        }} Wh AC. Die Produktions-Ladeabsicht folgt ihrem bisherigen Verlustmodell; die Solarprognose bleibt unverändert.
+
+        {% endif %}
+
+        {% else %}
+
         | | Produktion | Test |
 
         |---|---:|---:|
@@ -568,6 +616,11 @@ cards:
 
         | Prognoseaufschlag | {{ state_attr(pc,''predictionPremiumPct'') or 0 }} % | {% if is_number(state_attr(c,''predictionPremiumPct''))
         %}{{ state_attr(c,''predictionPremiumPct'') }} %{% else %}noch offen{% endif %} |
+
+
+        **Relative Zeitbereiche (5.8): noch nicht gemeldet.** Aktuell gemeldete Einstellungen stehen oben.
+
+        {% endif %}
 
         '
   - type: custom:apexcharts-card
@@ -696,7 +749,7 @@ cards:
 
         if(x.priceRevision!==a.r||x.priceStart!==a.t||x.priceSlots!==a.n||!Array.isArray(a.o)||a.o.length!==a.n) return [];
 
-        const pct=Number(q.predictionPremiumPct), factor=Number(q.fcPriceF);
+        const pct=Number(q.predictionPremiumPct), factor=q.allocationPolicy===''relative_time_tiers_v1''?1:Number(q.fcPriceF);
 
         if(!Number.isFinite(pct)||pct<0||pct>100||!Number.isFinite(factor)||factor<=0) return [];
 
@@ -922,6 +975,80 @@ cards:
         labels:
           datetimeUTC: false
   - type: markdown
+    content: '### Solarenergie und geplante Einlagerung · nächste 36 Stunden
+
+      {% set e=''sensor.sil_comparison_future_energy'' %}{% set stamp=state_attr(e,''start'') %}
+
+      {% set current=states(e)==''ready'' and stamp is number and 0 <= as_timestamp(now())-stamp < 180 and as_timestamp(now())
+      < state_attr(e,''pvExpiresAt'')|float(0) %}
+
+      {% if current %}
+
+      Gleicher Zeitraum: **{{ stamp|timestamp_custom(''%d.%m. %H:%M'') }} bis {{ state_attr(e,''end'')|timestamp_custom(''%d.%m.
+      %H:%M'') }}**. Alle Werte **kWh DC**, Prognose bzw. Ladeabsicht, keine gemessene Einlagerung und keine Zusage für einen
+      vollen Akku.
+
+
+      {% set pv=state_attr(e,''pv'') %}{% set prod=state_attr(e,''production'') %}{% set test=state_attr(e,''test'') %}
+
+      {% if prod and as_timestamp(now())-prod.generatedAt >= 180 %}{% set prod=none %}{% endif %}
+
+      {% if test and as_timestamp(now())-test.generatedAt >= 180 %}{% set test=none %}{% endif %}
+
+
+      | Zeitraum | Solarprognose | Laden Produktion | Laden Test |
+
+      |---|---:|---:|---:|
+
+      | 36 h, bekannter Anteil | {{ pv.kwh|round(3) if pv.kwh is number else ''offen'' }} | {{ prod.kwh|round(3) if prod and
+      prod.kwh is number else ''offen'' }} | {{ test.kwh|round(3) if test and test.kwh is number else ''offen'' }} |
+
+      {% for day in pv.days -%}
+
+      {% set pd=prod.days[loop.index0] if prod else none %}{% set td=test.days[loop.index0] if test else none -%}
+
+      | {{ day.date }}{% if not day.fullDay %} (Teil des Tages){% endif %} | {{ day.kwh|round(3) if day.kwh is number else
+      ''offen'' }}{% if day.missingSeconds %} · Lücke{% endif %} | {{ pd.kwh|round(3) if pd and pd.kwh is number else ''offen''
+      }}{% if pd and pd.missingSeconds %} · Lücke{% endif %} | {{ td.kwh|round(3) if td and td.kwh is number else ''offen''
+      }}{% if td and td.missingSeconds %} · Lücke{% endif %} |
+
+      {% endfor %}
+
+
+      **Abdeckung Solar:** {{ (pv.coveredSeconds/3600)|round(2) }} / 36 h{% if pv.missingSeconds %}; {{ (pv.missingSeconds/60)|round(1)
+      }} min fehlen (nicht als null gerechnet){% endif %}.
+
+      **Abdeckung Ladeabsicht:** Produktion {{ (prod.coveredSeconds/3600)|round(2) if prod else ''offen'' }} h · Test {{ (test.coveredSeconds/3600)|round(2)
+      if test else ''offen'' }} h.
+
+      {% set efficiency=state_attr(''sensor.sil_shadow_config'',''chargeEfficiencyPct'') %}
+
+      **Test · reservierte Solarenergie → Einlagerung:** {% if test and test.kwh is number and is_number(efficiency) and 0
+      < efficiency <= 100 %}{{ (test.kwh*100/efficiency)|round(3) }} kWh Solar-DC → {{ test.kwh|round(3) }} kWh Batterie-DC
+      (gemeldeter Ladewirkungsgrad {{ efficiency }} %, gleicher bekannter Plananteil).{% else %}noch offen: aktueller Ladeplan
+      oder gemeldeter Ladewirkungsgrad fehlt.{% endif %} Für die Produktion wird ohne ausdrücklich gemeldeten Ladewirkungsgrad
+      keine Solar-Eingangsenergie abgeleitet.
+
+
+      **Stand der eigenen Ladepläne:** Produktion {% if prod %}{{ prod.generatedAt|timestamp_custom(''%d.%m. %H:%M:%S'') }}
+      ({{ (as_timestamp(now())-prod.generatedAt)|round(0) }} s){% else %}offen{% endif %} · Test {% if test %}{{ test.generatedAt|timestamp_custom(''%d.%m.
+      %H:%M:%S'') }} ({{ (as_timestamp(now())-test.generatedAt)|round(0) }} s){% else %}offen{% endif %}. Jeder Ladeplan bleibt
+      an seine eigene gültige Preis-/Solarkohorte gebunden; ein neuer Preisheartbeat allein ersetzt ihn nicht.
+
+      Ein vollständiger, lückenloser Kalendertag enthält die gesamte prognostizierte Sonnenperiode. Teil-Tage enthalten ausschließlich
+      den oben genannten Zeitraum. Solarwerte enthalten die bestehende DC-Kalibrierung (Faktor {{ state_attr(e,''calibrationFactor'')
+      }}). Ladeabsichten werden bei veraltetem Plan oder anderer Solarrevision zurückgehalten; bekannte Energie bleibt bei
+      Randlücken sichtbar.
+
+      {% else %}
+
+      **Energievergleich offen:** keine aktuelle gemeinsame, gültige Solargrundlage. Fehlende oder veraltete Daten werden
+      nicht als 0 kWh angezeigt.
+
+      {% endif %}
+
+      '
+  - type: markdown
     title: Prüfdetails
     content: '## TEST - diagnostic comparison only
 
@@ -963,8 +1090,9 @@ cards:
 
       | Maximum output W | {{ state_attr(pc,''maxOutputW'') }} | {{ state_attr(c,''maxOutputW'') }} |
 
-      | Deferral tolerance EUR/kWh | {{ state_attr(pc,''deferralToleranceEurKwh'') if state_attr(pc,''deferralToleranceEurKwh'')
-      is not none else ''0.03 (5.6.3 baseline)'' }} | {{ state_attr(c,''deferralToleranceEurKwh'') }} |
+      | Legacy deferral tolerance EUR/kWh | {{ state_attr(pc,''deferralToleranceEurKwh'') if state_attr(pc,''deferralToleranceEurKwh'')
+      is not none else ''0.03 (5.6.3 baseline)'' }} | {{ state_attr(c,''deferralToleranceEurKwh'') }}{% if state_attr(c,''allocationPolicy'')==''relative_time_tiers_v1''
+      %} (inactive){% endif %} |
 
       | Forecast premium % | {{ state_attr(pc,''predictionPremiumPct'') if state_attr(pc,''predictionPremiumPct'') is not
       none else ''0 (5.6.3 baseline)'' }} | {{ state_attr(c,''predictionPremiumPct'') }} |
@@ -972,7 +1100,8 @@ cards:
       | Reserve off/on % | {{ state_attr(pc,''resOff'') }} / {{ state_attr(pc,''resOn'') }} | {{ state_attr(c,''resOff'')
       }} / {{ state_attr(c,''resOn'') }} |
 
-      | Price factor | {{ state_attr(pc,''fcPriceF'') }} | {{ state_attr(c,''fcPriceF'') }} |
+      | Legacy price factor | {{ state_attr(pc,''fcPriceF'') }} | {{ state_attr(c,''fcPriceF'') }}{% if state_attr(c,''allocationPolicy'')==''relative_time_tiers_v1''
+      %} (inactive){% endif %} |
 
       | Full capacity Ah | {{ states(''sensor.sbt_bms_full_capacity_ah'') }} | {{ state_attr(a,''fullCapacityAh'') }} |
 
