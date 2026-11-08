@@ -169,6 +169,25 @@ def cache_evidence(path,now):
             'originForecast36h':origins[:144].count(2)}
 
 
+def production_from_cache(reference,options,now,path):
+    """Consume the shared validated cache without HTTP or request-gate changes."""
+    path=Path(path)
+    try:
+        with cache_guard(path):
+            cache=json.loads(path.read_text(encoding='utf-8'))
+    except (OSError,ValueError,TypeError):
+        raise ValueError('provider_cache_unavailable') from None
+    if not isinstance(cache,dict):raise ValueError('provider_cache_unavailable')
+    fetched=cache.get('fetched_at')
+    if (type(fetched) is not int or not isinstance(cache.get('response'),dict)
+        or cache.get('refresh_failed')):raise ValueError('provider_cache_unavailable')
+    if not 0<=now-fetched<=MAX_SOURCE_AGE:raise ValueError('provider_cache_expired')
+    prepared=prepare(cache['response'],reference,options,now)
+    prepared.update(providerFetchedAt=fetched,providerAgeS=int(now)-fetched,
+                    nextProviderRequestAt=cache.get('next_request_at'),providerCacheReadOnly=True)
+    return prepared
+
+
 def integrate_future(start, duration, values, now, end, timezone='Europe/Berlin'):
     """Integrate known future DC step intervals, retaining explicit unknown coverage."""
     from zoneinfo import ZoneInfo

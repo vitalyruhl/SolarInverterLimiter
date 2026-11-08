@@ -43,7 +43,7 @@ public:
         bytes.assign(static_cast<const uint8_t *>(data),static_cast<const uint8_t *>(data)+n);return n;
     }
 };
-template<class T> struct ConfigOptions {const char *key,*name,*category;T defaultValue;int sortOrder;};
+template<class T> struct ConfigOptions {const char *key,*name,*category;T defaultValue;int sortOrder;const char* card=nullptr;const char* cardPretty=nullptr;int cardOrder=100;};
 class BaseSetting {
 protected: bool modified=false;
 public:

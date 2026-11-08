@@ -25,6 +25,7 @@
 #include "mqtt/MQTTManager.h"
 #include "sbt/SbtService.h"
 #include "control/PreparedControl.h"
+#include "control/ApplicationProfile.h"
 #include "control/CurrentControl.h"
 #include "control/OutputCorrection.h"
 #include "control/TelemetryAge.h"
@@ -120,7 +121,7 @@ static constexpr uint32_t kI2cHz = 400000;
 #endif
 
 #ifndef VERSION
-#define VERSION "5.8.0"
+#define VERSION "5.8.1"
 #endif
 
 static sil::RuntimeDiagnostics runtimeDiagnostics;
@@ -218,44 +219,56 @@ void ProjectConfig();
 #pragma region configuration variables
 
 // Project settings (ConfigOptions API)
+enum class RelativeValue { Cheap, VeryExpensive, Expensive, StorageAdvantage, PredictionPremium };
+static bool validateRelativeValue(RelativeValue field,float value);
+// Validate before Config::set; normal and shadow HTTP paths share this numeric contract.
+class RelativeFloatSetting : public Config<float> {
+    RelativeValue field_;
+public:
+    RelativeFloatSetting(RelativeValue field,const ConfigOptions<float>& options):Config<float>(options),field_(field){}
+    bool fromJSON(const JsonVariant& value) override {
+        if(!value.is<float>()||!validateRelativeValue(field_,value.as<float>()))return false;
+        return Config<float>::fromJSON(value);
+    }
+};
 struct LimiterSettings
 {
-    Config<bool> enableController{ConfigOptions<bool>{.key = "LimiterEnable", .name = "Limiter Enabled", .category = "Limiter", .defaultValue = true, .sortOrder = 1}};
-    Config<int> maxOutput{ConfigOptions<int>{.key = "LimiterMaxW", .name = "Max Output (W)", .category = "Limiter", .defaultValue = 1100, .sortOrder = 2}};
-    Config<int> idleOutput{ConfigOptions<int>{.key = "LimiterIdleW", .name = "Idle Output (W)", .category = "Limiter", .defaultValue = 500, .sortOrder = 3}};
-    Config<int> sbtTimeout{ConfigOptions<int>{.key = "sbtAgeS", .name = "SBT Data Timeout (s)", .category = "Limiter", .defaultValue = 180, .sortOrder = 19}};
-    Config<int> minOutput{ConfigOptions<int>{.key = "LimiterMinW", .name = "Min Output (W)", .category = "Limiter", .defaultValue = 500, .sortOrder = 4}};
-    Config<int> inputCorrectionOffset{ConfigOptions<int>{.key = "LimiterCorrW", .name = "Output Correction Offset (W)", .category = "Limiter", .defaultValue = 50, .sortOrder = 5}};
-    Config<float> pidKp{ConfigOptions<float>{.key = "LimiterPIDKp", .name = "PID Kp", .category = "Limiter", .defaultValue = 0.35f, .sortOrder = 7}};
-    Config<float> pidKi{ConfigOptions<float>{.key = "LimiterPIDKi", .name = "PID Ki", .category = "Limiter", .defaultValue = 0.05f, .sortOrder = 8}};
-    Config<float> pidKd{ConfigOptions<float>{.key = "LimiterPIDKd", .name = "PID Kd", .category = "Limiter", .defaultValue = 0.02f, .sortOrder = 9}};
-    Config<bool> forceMinOnNegativePrice{ConfigOptions<bool>{.key = "LimiterNegPrice", .name = "Force Min On Negative Price", .category = "Limiter", .defaultValue = false, .sortOrder = 10}};
-    Config<bool> setZeroOnNegativePrice{ConfigOptions<bool>{.key = "LimNegZero", .name = "Set 0 On Negative Price", .category = "Limiter", .defaultValue = false, .sortOrder = 11}};
-    Config<float> RS232PublishPeriod{ConfigOptions<float>{.key = "LimiterRS485P", .name = "RS485 Publish Period (s)", .category = "Limiter", .defaultValue = 2.0f, .sortOrder = 12}};
+    Config<bool> enableController{ConfigOptions<bool>{.key = "LimiterEnable", .name = "Limiter Enabled", .category = "Limiter", .defaultValue=control::ApplicationDefaults::limiterEnabled, .sortOrder=1,.card="Limiter",.cardPretty="Limiter",.cardOrder=0}};
+    Config<int> maxOutput{ConfigOptions<int>{.key = "LimiterMaxW", .name = "Max Output (W)", .category = "Limiter", .defaultValue=control::ApplicationDefaults::maxOutputW, .sortOrder=3,.card="Limiter",.cardPretty="Limiter",.cardOrder=0}};
+    Config<int> idleOutput{ConfigOptions<int>{.key = "LimiterIdleW", .name = "Idle Output (W)", .category = "Limiter", .defaultValue=control::ApplicationDefaults::idleOutputW, .sortOrder=6,.card="Limiter",.cardPretty="Limiter",.cardOrder=0}};
+    Config<int> sbtTimeout{ConfigOptions<int>{.key = "sbtAgeS", .name = "SBT Data Timeout (s)", .category="MQTT", .defaultValue=control::ApplicationDefaults::sourceTimeoutS, .sortOrder=90}};
+    Config<int> minOutput{ConfigOptions<int>{.key = "LimiterMinW", .name = "Min Output (W)", .category = "Limiter", .defaultValue=control::ApplicationDefaults::minOutputW, .sortOrder=4,.card="Limiter",.cardPretty="Limiter",.cardOrder=0}};
+    Config<int> inputCorrectionOffset{ConfigOptions<int>{.key = "LimiterCorrW", .name = "Output Correction Offset (W)", .category = "Limiter", .defaultValue=control::ApplicationDefaults::outputCorrectionW, .sortOrder=5,.card="Limiter",.cardPretty="Limiter",.cardOrder=0}};
+    Config<float> pidKp{ConfigOptions<float>{.key = "LimiterPIDKp", .name = "PID Kp", .category = "Limiter", .defaultValue=control::ApplicationDefaults::pidKp, .sortOrder=1,.card="Automatic Household PID",.cardPretty="Automatic Household PID",.cardOrder=1}};
+    Config<float> pidKi{ConfigOptions<float>{.key = "LimiterPIDKi", .name = "PID Ki", .category = "Limiter", .defaultValue=control::ApplicationDefaults::pidKi, .sortOrder=2,.card="Automatic Household PID",.cardPretty="Automatic Household PID",.cardOrder=1}};
+    Config<float> pidKd{ConfigOptions<float>{.key = "LimiterPIDKd", .name = "PID Kd", .category = "Limiter", .defaultValue=control::ApplicationDefaults::pidKd, .sortOrder=3,.card="Automatic Household PID",.cardPretty="Automatic Household PID",.cardOrder=1}};
+    Config<bool> forceMinOnNegativePrice{ConfigOptions<bool>{.key = "LimiterNegPrice", .name = "Force Min On Negative Price", .category="I/O", .defaultValue=control::ApplicationDefaults::forceMinNegative, .sortOrder=1,.card="Controller Policy",.cardPretty="Controller Policy",.cardOrder=-10}};
+    Config<bool> setZeroOnNegativePrice{ConfigOptions<bool>{.key = "LimNegZero", .name = "Set 0 On Negative Price", .category="I/O", .defaultValue=control::ApplicationDefaults::setZeroNegative, .sortOrder=2,.card="Controller Policy",.cardPretty="Controller Policy",.cardOrder=-10}};
+    Config<float> RS232PublishPeriod{ConfigOptions<float>{.key = "LimiterRS485P", .name = "RS485 Publish Period (s)", .category="RS485", .defaultValue=control::ApplicationDefaults::rs485PeriodS, .sortOrder=6}};
 
-    Config<float> reserveOffSoc{ConfigOptions<float>{.key = "resOff", .name = "Reserve OFF SOC (%)", .category = "Limiter", .defaultValue = 2.0f, .sortOrder = 20}};
-    Config<float> reserveOnSoc{ConfigOptions<float>{.key = "resOn", .name = "Reserve ON SOC (%)", .category = "Limiter", .defaultValue = 10.0f, .sortOrder = 21}};
-    Config<bool> mosManualMode{ConfigOptions<bool>{.key = "mosMan", .name = "MOS Hand Mode", .category = "Limiter", .defaultValue = true, .sortOrder = 23}};
-    Config<bool> inverterEnabled{ConfigOptions<bool>{.key = "invEn", .name = "Inverter Enabled", .category = "Limiter", .defaultValue = true, .sortOrder = 24}};
-    Config<float> priceComfort{ConfigOptions<float>{.key = "priceC", .name = "Price Comfort (EUR/kWh)", .category = "Limiter", .defaultValue = 0.25f, .showInWeb = !control::kPlannerShadowProfile, .sortOrder = 25}};
-    Config<float> priceDeadband{ConfigOptions<float>{.key = "priceDb", .name = "Price Deadband (EUR/kWh)", .category = "Limiter", .defaultValue = 0.06f, .showInWeb = !control::kPlannerShadowProfile, .sortOrder = 26}};
+    Config<float> reserveOffSoc{ConfigOptions<float>{.key = "resOff", .name = "Reserve OFF SOC (%)", .category = "Limiter", .defaultValue=control::ApplicationDefaults::reserveOffSoc, .sortOrder=25,.card="Limiter",.cardPretty="Limiter",.cardOrder=0}};
+    Config<float> reserveOnSoc{ConfigOptions<float>{.key = "resOn", .name = "Reserve ON SOC (%)", .category = "Limiter", .defaultValue=control::ApplicationDefaults::reserveOnSoc, .sortOrder=26,.card="Limiter",.cardPretty="Limiter",.cardOrder=0}};
+    Config<bool> mosManualMode{ConfigOptions<bool>{.key = "mosMan", .name = "MOS Hand Mode", .category="I/O", .defaultValue=control::ApplicationDefaults::mosManual, .sortOrder=3,.card="Controller Policy",.cardPretty="Controller Policy",.cardOrder=-10}};
+    Config<bool> inverterEnabled{ConfigOptions<bool>{.key = "invEn", .name = "Inverter Enabled", .category="I/O", .defaultValue=control::ApplicationDefaults::inverterEnabled, .sortOrder=4,.card="Controller Policy",.cardPretty="Controller Policy",.cardOrder=-10}};
+    Config<float> priceComfort{ConfigOptions<float>{.key = "priceC", .name = "Price Comfort (EUR/kWh)", .category = "Limiter", .defaultValue = 0.25f, .showInWeb = !control::kRelativeTimePolicy, .sortOrder = 25,.card="Limiter",.cardPretty="Limiter",.cardOrder=0}};
+    Config<float> priceDeadband{ConfigOptions<float>{.key = "priceDb", .name = "Price Deadband (EUR/kWh)", .category = "Limiter", .defaultValue = 0.06f, .showInWeb = !control::kRelativeTimePolicy, .sortOrder = 26,.card="Limiter",.cardPretty="Limiter",.cardOrder=0}};
 
-    Config<String> priceScheduleInputTopic{ConfigOptions<String>{.key = "fcTopic", .name = "Price Schedule Topic", .category = "MQTT-Topics", .defaultValue = String("homeassistant/sensor/electricity_price/schedule"), .sortOrder = 54}};
+    Config<String> priceScheduleInputTopic{ConfigOptions<String>{.key = "fcTopic", .name = "Price Schedule Topic", .category = "MQTT-Topics", .defaultValue = String(control::kDefaultPriceScheduleTopic), .sortOrder = 54}};
     Config<String> pvScheduleInputTopic{ConfigOptions<String>{.key = "pvTopic", .name = "PV Forecast Topic", .category = "MQTT-Topics", .defaultValue = String("homeassistant/sensor/solar_forecast/shed/schedule"), .sortOrder = 55}};
-    Config<float> deferralToleranceEurKwh{ConfigOptions<float>{.key = "defTol", .name = "Held Energy Deferral Tolerance (EUR/kWh)", .category = "Limiter", .defaultValue = 0.03f, .showInWeb = !control::kPlannerShadowProfile, .sortOrder = 28}};
-    Config<float> predictionPremiumPct{ConfigOptions<float>{.key = "predPct", .name = "Forecast Price Uncertainty Premium (%)", .category = "Limiter", .defaultValue = 0.0f, .sortOrder = 29}};
-    Config<float> forecastPriceFactor{ConfigOptions<float>{.key = "fcPriceF", .name = "Forecast Price Factor", .category = "Limiter", .defaultValue = 0.93137255f, .showInWeb = !control::kPlannerShadowProfile, .sortOrder = 27}};
+    Config<float> deferralToleranceEurKwh{ConfigOptions<float>{.key = "defTol", .name = "Held Energy Deferral Tolerance (EUR/kWh)", .category = "Limiter", .defaultValue = 0.03f, .showInWeb = !control::kRelativeTimePolicy, .sortOrder = 28,.card="Limiter",.cardPretty="Limiter",.cardOrder=0}};
+    RelativeFloatSetting predictionPremiumPct{RelativeValue::PredictionPremium,ConfigOptions<float>{.key = "predPct", .name = "Forecast Price Uncertainty Premium (%)", .category = "Limiter", .defaultValue=control::ApplicationDefaults::predictionPremiumPct, .sortOrder=14,.card="Limiter",.cardPretty="Limiter",.cardOrder=0}};
+    Config<float> forecastPriceFactor{ConfigOptions<float>{.key = "fcPriceF", .name = "Forecast Price Factor", .category = "Limiter", .defaultValue = 0.93137255f, .showInWeb = !control::kRelativeTimePolicy, .sortOrder = 27,.card="Limiter",.cardPretty="Limiter",.cardOrder=0}};
 
-#if defined(SIL_PLANNER_SHADOW) && SIL_PLANNER_SHADOW
-    Config<float> storageMinimumNetAdvantageEurKwh{ConfigOptions<float>{.key="storAdv",.name="Storage Minimum Net Advantage (EUR/kWh)",.category="Limiter",.defaultValue=0.05f,.sortOrder=33}};
-    Config<float> cheapTimePct{ConfigOptions<float>{.key="cheapPct",.name="Cheap Time Share (%)",.category="Limiter",.defaultValue=5,.sortOrder=30}};
-    Config<float> veryExpensiveTimePct{ConfigOptions<float>{.key="veryPct",.name="Very Expensive Time Share (%)",.category="Limiter",.defaultValue=10,.sortOrder=31}};
-    Config<float> additionalExpensiveTimePct{ConfigOptions<float>{.key="expPct",.name="Additional Expensive Time Share (%)",.category="Limiter",.defaultValue=30,.sortOrder=32}};
+#if SIL_RELATIVE_TIME_POLICY
+    RelativeFloatSetting storageMinimumNetAdvantageEurKwh{RelativeValue::StorageAdvantage,ConfigOptions<float>{.key="storAdv",.name="Storage Minimum Net Advantage (EUR/kWh)",.category="Limiter",.defaultValue=control::ApplicationDefaults::storageMinimumNetAdvantageEurKwh,.sortOrder=13,.card="Limiter",.cardPretty="Limiter",.cardOrder=0}};
+    RelativeFloatSetting cheapTimePct{RelativeValue::Cheap,ConfigOptions<float>{.key="cheapPct",.name="Cheap Time Share (%)",.category="Limiter",.defaultValue=control::ApplicationDefaults::cheapTimePct,.sortOrder=10,.card="Limiter",.cardPretty="Limiter",.cardOrder=0}};
+    RelativeFloatSetting veryExpensiveTimePct{RelativeValue::VeryExpensive,ConfigOptions<float>{.key="veryPct",.name="Very Expensive Time Share (%)",.category="Limiter",.defaultValue=control::ApplicationDefaults::veryExpensiveTimePct,.sortOrder=11,.card="Limiter",.cardPretty="Limiter",.cardOrder=0}};
+    RelativeFloatSetting additionalExpensiveTimePct{RelativeValue::Expensive,ConfigOptions<float>{.key="expPct",.name="Additional Expensive Time Share (%)",.category="Limiter",.defaultValue=control::ApplicationDefaults::additionalExpensiveTimePct,.sortOrder=12,.card="Limiter",.cardPretty="Limiter",.cardOrder=0}};
 #endif
     void attachTo(ConfigManagerClass &cfg)
     {
         cfg.addSetting(&forecastPriceFactor);
-#if defined(SIL_PLANNER_SHADOW) && SIL_PLANNER_SHADOW
+#if SIL_RELATIVE_TIME_POLICY
         cfg.addSetting(&cheapTimePct);cfg.addSetting(&veryExpensiveTimePct);cfg.addSetting(&additionalExpensiveTimePct);
         cfg.addSetting(&storageMinimumNetAdvantageEurKwh);
 #endif
@@ -436,6 +449,7 @@ static String topicPublishCalculatedValueW;
 static String topicPublishRuntimeDiagnostics;
 static String topicPublishGridImportW;
 static String topicPublishPlanningConfig;
+String topicPublishPlanningAssessment;
 static String topicPublishPlanningState;
 static String topicPublishDischargeBudget;
 static String topicPublishChargePlan;
@@ -516,7 +530,7 @@ struct PidControllerState
 };
 
 static PidControllerState pidController;
-static control::PreparedSettings preparedSettings;
+static control::PreparedSettings preparedSettings=control::applicationDefaultSettings();
 static control::RuntimeState preparedState;
 static bool preparedSettingsLoaded = false;
 static control::CurrentControl currentControl;
@@ -744,7 +758,7 @@ void loop()
     if (mqttSettings.publishTopicBase.get() != modeConfiguredRoot) operatingModes.discardPendingMode();
     const char *previousModeStorage = operatingModes.storageReason();
     if (operatingModes.loop(uint32_t(time(nullptr)))) {
-#if defined(SIL_PLANNER_SHADOW) && SIL_PLANNER_SHADOW
+#if SIL_RELATIVE_TIME_POLICY
         refreshPreparedSettings();
 #endif
         resetPidController();
@@ -1250,7 +1264,7 @@ static void setupMqtt()
             if (control::parseModeCommand(reinterpret_cast<const char *>(payload), length, uint32_t(time(nullptr)), command))
                 operatingModes.queueMode(command.mode, command.expiresAt);
         } else if (topic && priceScheduleTopic == topic) {
-            const char *result = futurePrices.receive(payload, length, uint32_t(time(nullptr)), millis(), control::kPlannerShadowProfile);
+            const char *result = futurePrices.receive(payload, length, uint32_t(time(nullptr)), millis(), control::kPriceInputVersion==2);
             if (strcmp(result, "pending") && strcmp(result, "duplicate"))
                 lmg.logTag(!strcmp(result, "accepted") || !strcmp(result, "withdrawn") ? LL::Info : LL::Warn,
                     "FORECAST", "rx=%s rev=%lu slots=%u", result,
@@ -1305,13 +1319,24 @@ static void registerProjectSettings()
 
 // Called once after load and on setting changes, never from the control cycle.
 // Invalid combinations remain visible as entered; future modules must require valid.
+static bool validateRelativeValue(RelativeValue field,float value) {
+    auto candidate=preparedSettings;
+    switch(field){
+    case RelativeValue::Cheap:candidate.cheapTimePct=value;break;
+    case RelativeValue::VeryExpensive:candidate.veryExpensiveTimePct=value;break;
+    case RelativeValue::Expensive:candidate.additionalExpensiveTimePct=value;break;
+    case RelativeValue::StorageAdvantage:candidate.storageMinimumNetAdvantageEurKwh=value;break;
+    case RelativeValue::PredictionPremium:candidate.predictionPremiumPct=value;break;
+    }
+    return control::validRelativeTiers(candidate);
+}
 static void refreshPreparedSettings()
 {
     forecastPriceFactor = limiterSettings.forecastPriceFactor.get();
     preparedSettings.deferralToleranceEurKwh = limiterSettings.deferralToleranceEurKwh.get();
     preparedSettings.predictionPremiumPct = limiterSettings.predictionPremiumPct.get();
-    preparedSettings.relativeTimePolicy=control::kPlannerShadowProfile;
-#if defined(SIL_PLANNER_SHADOW) && SIL_PLANNER_SHADOW
+    preparedSettings.relativeTimePolicy=control::kRelativeTimePolicy;
+#if SIL_RELATIVE_TIME_POLICY
     preparedSettings.cheapTimePct=limiterSettings.cheapTimePct.get();
     preparedSettings.storageMinimumNetAdvantageEurKwh=limiterSettings.storageMinimumNetAdvantageEurKwh.get();
     preparedSettings.veryExpensiveTimePct=limiterSettings.veryExpensiveTimePct.get();
@@ -1356,7 +1381,7 @@ static void configureLimiterSettingsBehavior()
     limiterSettings.deferralToleranceEurKwh.setCallback([](float) { refreshPreparedSettings(); });
     limiterSettings.predictionPremiumPct.setCallback([](float) { refreshPreparedSettings(); });
     limiterSettings.forecastPriceFactor.setCallback([](float) { refreshPreparedSettings(); });
-#if defined(SIL_PLANNER_SHADOW) && SIL_PLANNER_SHADOW
+#if SIL_RELATIVE_TIME_POLICY
     limiterSettings.cheapTimePct.setCallback([](float){refreshPreparedSettings();});
     limiterSettings.storageMinimumNetAdvantageEurKwh.setCallback([](float){refreshPreparedSettings();});
     limiterSettings.veryExpensiveTimePct.setCallback([](float){refreshPreparedSettings();});
@@ -1812,6 +1837,7 @@ static void updateMqttTopics()
     topicPublishRuntimeDiagnostics = mqttBaseTopic + "/Diagnostics/Runtime";
     topicPublishGridImportW = mqttBaseTopic + "/GetValue";
     topicPublishPlanningConfig = mqttBaseTopic + "/Planning/Config";
+    topicPublishPlanningAssessment = mqttBaseTopic + "/Planning/Assessment";
     topicPublishPlanningState = mqttBaseTopic + "/Planning/State";
     topicPublishDischargeBudget = mqttBaseTopic + "/Planning/DischargeBudget";
     topicPublishChargePlan = mqttBaseTopic + "/Planning/ChargePlan";
@@ -1837,7 +1863,7 @@ struct JsonNumberText
 };
 
 // Payloads are formatted on the stack so each publish needs one heap allocation.
-#if defined(SIL_PLANNER_SHADOW) && SIL_PLANNER_SHADOW
+#if SIL_RELATIVE_TIME_POLICY
 static String addRelativeDiagnostics(const char* base,bool tierState) {
     String result(base);
     if(result.endsWith("}"))result.remove(result.length()-1);
@@ -1879,8 +1905,8 @@ static String buildPlanningConfigPayload()
         JsonNumberText(preparedSettings.priceDeadbandEurPerKwh,4).text,JsonNumberText(preparedSettings.priceHysteresisEurPerKwh,4).text,
         JsonNumberText(forecastPriceFactor,6).text,limiterSettings.maxOutput.get(),
         JsonNumberText(preparedSettings.deferralToleranceEurKwh,8).text,JsonNumberText(preparedSettings.predictionPremiumPct,4).text,
-        control::kPlannerShadowProfile?"true":"false",control::kPlannerShadowProfile?2u:1u);
-#if defined(SIL_PLANNER_SHADOW) && SIL_PLANNER_SHADOW
+        control::kPlannerShadowProfile?"true":"false",control::kPriceInputVersion);
+#if SIL_RELATIVE_TIME_POLICY
     return addRelativeDiagnostics(payload,false);
 #else
     return String(payload);
@@ -1909,22 +1935,18 @@ static String buildPlanningAssessmentPayload()
         JsonNumberText(source.bmsValid?source.soc:NAN,2).text,JsonNumberText(source.bmsValid?source.batteryW:NAN,2).text,
         JsonNumberText(source.chargerValid?source.chargerW:NAN,2).text,ulong(source.bmsSequence),ulong(source.chargerSequence),
         source.bmsValid?"true":"false",source.chargerValid?"true":"false",kRs485MockTransport?"true":"false",control::kPlannerShadowProfile?"true":"false");
-#if defined(SIL_PLANNER_SHADOW) && SIL_PLANNER_SHADOW
+#if SIL_RELATIVE_TIME_POLICY
     return addRelativeDiagnostics(payload,true);
 #else
     return String(payload);
 #endif
 }
-// Shadow-only pacing; normal transport and CM core publications retain their existing path.
+// Application publication pacing; CM core telemetry and physical control cadence are unchanged.
+static bool appPublishAccepted=false;
+static uint32_t appPublishAt=0;
+static bool appPublishReady(){return !appPublishAccepted||uint32_t(millis()-appPublishAt)>=250UL;}
+static void appPublished(bool accepted){if(accepted){appPublishAccepted=true;appPublishAt=millis();}}
 #if defined(SIL_PLANNER_SHADOW) && SIL_PLANNER_SHADOW
-static bool shadowAppPublishAccepted = false;
-static uint32_t shadowAppPublishAt = 0;
-static bool shadowAppPublishReady() {
-    return !shadowAppPublishAccepted || uint32_t(millis()-shadowAppPublishAt)>=250UL;
-}
-static void shadowAppPublished(bool accepted) {
-    if(accepted){shadowAppPublishAccepted=true;shadowAppPublishAt=millis();}
-}
 static void shadowTraceTx(const char* tag,size_t bytes,uint32_t previousFailures) {
     const auto& stats=mqtt.getBoundedIoStats();
     if(stats.txFailures!=previousFailures)
@@ -1941,49 +1963,54 @@ static void shadowTraceStage(const char* stage,uint32_t previousFailures,uint32_
 }
 #endif
 #endif
-#if defined(SIL_PLANNER_SHADOW) && SIL_PLANNER_SHADOW
 static bool publishCheckedRaw(const char* topic,const char* payload,bool retained,bool* deferred=nullptr) {
     if(deferred)*deferred=false;
+#if defined(SIL_PLANNER_SHADOW) && SIL_PLANNER_SHADOW
     if(!enforceShadowIsolation()||!control::shadowPublicationAllowed(topic))return false;
-    if(!shadowAppPublishReady()){if(deferred)*deferred=true;return false;}
-    const uint32_t failures=mqtt.getBoundedIoStats().txFailures;
-    const bool accepted=mqtt.publishRaw(topic,payload,retained);
-    shadowTraceTx(topic,strlen(payload),failures);
-    shadowAppPublished(accepted);return accepted;
-}
-#else
-static bool publishCheckedRaw(const char* topic,const char* payload,bool retained) {
-    return mqtt.publishRaw(topic,payload,retained);
-}
 #endif
+    if(!appPublishReady()){if(deferred)*deferred=true;return false;}
+#if defined(SIL_PLANNER_SHADOW) && SIL_PLANNER_SHADOW
+    const uint32_t failures=mqtt.getBoundedIoStats().txFailures;
+#endif
+    const bool accepted=mqtt.publishRaw(topic,payload,retained);
+#if defined(SIL_PLANNER_SHADOW) && SIL_PLANNER_SHADOW
+    shadowTraceTx(topic,strlen(payload),failures);
+#endif
+    appPublished(accepted);return accepted;
+}
 template<class Factory> static bool publishCheckedExtra(const char* id,const char* topic,Factory factory,bool retained) {
 #if defined(SIL_PLANNER_SHADOW) && SIL_PLANNER_SHADOW
-    if(!enforceShadowIsolation()||!control::shadowPublicationAllowed(topic)||!shadowAppPublishReady())return false;
-    const uint32_t failures=mqtt.getBoundedIoStats().txFailures;
-    size_t bytes=0;
+    if(!enforceShadowIsolation()||!control::shadowPublicationAllowed(topic))return false;
+#endif
+    if(!appPublishReady())return false;
+#if defined(SIL_PLANNER_SHADOW) && SIL_PLANNER_SHADOW
+    const uint32_t failures=mqtt.getBoundedIoStats().txFailures;size_t bytes=0;
     const bool accepted=mqtt.publishExtraTopicLazy(id,topic,[&](){String value=factory();bytes=value.length();return value;},retained);
     shadowTraceTx(id,bytes,failures);
-    shadowAppPublished(accepted);return accepted;
 #else
-    return mqtt.publishExtraTopicLazy(id,topic,factory,retained);
+    const bool accepted=mqtt.publishExtraTopicLazy(id,topic,factory,retained);
 #endif
+    appPublished(accepted);return accepted;
 }
-#if defined(SIL_PLANNER_SHADOW) && SIL_PLANNER_SHADOW
 struct ShadowModeProgress { bool stateSent=false; uint32_t reconnects=UINT32_MAX; char status[256]=""; };
 static bool publishShadowModePair(ShadowModeProgress& progress,const char* stateTopic,const char* statusTopic,const char* state,const char* status) {
-    // A disconnect clears the FIFO, so accepted partial progress cannot cross reconnects.
-    if(progress.reconnects!=mqtt.getReconnectCount()) {
+    if(progress.reconnects!=mqtt.getReconnectCount()){
         progress.reconnects=mqtt.getReconnectCount();progress.stateSent=false;
     }
-    // Repeated dirty ticks must not restart an identical partly accepted pair.
-    if(strcmp(status,progress.status)) {
+    if(strcmp(status,progress.status)){
         snprintf(progress.status,sizeof(progress.status),"%s",status);progress.stateSent=false;
     }
     if(!progress.stateSent)progress.stateSent=publishCheckedRaw(stateTopic,state,true);
     if(!progress.stateSent||!publishCheckedRaw(statusTopic,status,true))return false;
     progress.stateSent=false;return true;
 }
-#endif
+// Rotate only after ownership of a frame was accepted; interval no-ops and defers consume nothing.
+template<class Publish>static void publishAppExtrasFair(unsigned& next,unsigned count,Publish publish){
+    for(unsigned i=0;i<count;++i){
+        const unsigned item=(next+i)%count;
+        if(publish(item)){next=(item+1)%count;return;}
+    }
+}
 
 static String buildPlanningStatePayload()
 {
@@ -2047,16 +2074,10 @@ static void publishMqttNow()
                 reason, operatingModes.storageReason(), operatingModes.confirmed().chargeThreshold,
                 operatingModes.confirmed().inverterSharePercent);
             if (modePublishDirty || strcmp(status, publishedModeStatus)) {
-#if defined(SIL_PLANNER_SHADOW) && SIL_PLANNER_SHADOW
                 static ShadowModeProgress progress;
                 modePublishDirty=!publishShadowModePair(progress,topicModeState.c_str(),topicModeStatus.c_str(),
                     control::operatingModeName(operatingModes.confirmed().mode),status);
                 if(modePublishDirty)nextModeAttemptMs=nowMs+250UL;
-#else
-                const bool stateSent = publishCheckedRaw(topicModeState.c_str(), control::operatingModeName(operatingModes.confirmed().mode), true);
-                const bool statusSent = publishCheckedRaw(topicModeStatus.c_str(), status, true);
-                modePublishDirty = !(stateSent && statusSent);
-#endif
                 if (!modePublishDirty) snprintf(publishedModeStatus, sizeof(publishedModeStatus), "%s", status);
             }
         }
@@ -2105,50 +2126,40 @@ static void publishMqttNow()
         const size_t bytes = dischargeBudget.snapshot.serialize(dischargeBudget.payload, sizeof(dischargeBudget.payload));
         const bool fits = control::DischargeBudget::packetFits(topicPublishDischargeBudget.length(), bytes);
         // A failed buffer allocation, serialization or send affects only this diagnostic.
-#if defined(SIL_PLANNER_SHADOW) && SIL_PLANNER_SHADOW
         bool deferred=false;
         const bool sent = fits && publishCheckedRaw(topicPublishDischargeBudget.c_str(), dischargeBudget.payload, false,&deferred);
         if(!deferred)dischargeBudget.published(sent, nowMs);
         if (!sent && !deferred)
-#else
-        const bool sent = fits && publishCheckedRaw(topicPublishDischargeBudget.c_str(), dischargeBudget.payload, false);
-        dischargeBudget.published(sent, nowMs);
-        if (!sent)
-#endif
             lmg.logTag(LL::Warn, "FORECAST", "budget publish failed; retry 5s");
     }
     if (chargePlan.publishDue(nowMs))
     {
         const size_t bytes = chargePlan.snapshot.serialize(chargePlan.payload, sizeof(chargePlan.payload));
         const bool fits = control::ChargePlan::packetFits(topicPublishChargePlan.length(), bytes);
-#if defined(SIL_PLANNER_SHADOW) && SIL_PLANNER_SHADOW
         bool deferred=false;
         const bool sent = fits && publishCheckedRaw(topicPublishChargePlan.c_str(), chargePlan.payload, false,&deferred);
         if(!deferred)chargePlan.published(sent, nowMs);
         if (!sent && !deferred)
-#else
-        const bool sent = fits && publishCheckedRaw(topicPublishChargePlan.c_str(), chargePlan.payload, false);
-        chargePlan.published(sent, nowMs);
-        if (!sent)
-#endif
             lmg.logTag(LL::Warn, "FORECAST", "charge plan publish failed; retry 5s");
     }
-    publishCheckedExtra("setvalue_w", topicPublishSetValueW.c_str(), []() { return String(inverterSetValue); }, false);
-    publishCheckedExtra("calculated_w", topicPublishCalculatedValueW.c_str(), []() { return String(inverterCalculatedValue); }, false);
-    publishCheckedExtra("runtime_diag", topicPublishRuntimeDiagnostics.c_str(), []() { return runtimeDiagnostics.mqttPayload(mqtt.getBoundedIoStats()); }, false);
-    publishCheckedExtra("grid_import_w", topicPublishGridImportW.c_str(), []() { return String(currentGridImportW); }, false);
-    if (preparedSettingsLoaded)
-    {
-        publishCheckedExtra("planning_config", topicPublishPlanningConfig.c_str(), []() { return buildPlanningConfigPayload(); }, false);
-        publishCheckedExtra("planning_state", topicPublishPlanningState.c_str(), []() { return buildPlanningStatePayload(); }, false);
-        if(control::kPlannerShadowProfile)
-            publishCheckedExtra("planning_assessment","SolarLimiterTest/Planning/Assessment",[](){return buildPlanningAssessmentPayload();},false);
-    }
+    static unsigned nextExtra=0;
+    publishAppExtrasFair(nextExtra,10,[&](unsigned item){
+        switch(item){
+        case 0:return publishCheckedExtra("setvalue_w",topicPublishSetValueW.c_str(),[](){return String(inverterSetValue);},false);
+        case 1:return publishCheckedExtra("calculated_w",topicPublishCalculatedValueW.c_str(),[](){return String(inverterCalculatedValue);},false);
+        case 2:return publishCheckedExtra("runtime_diag",topicPublishRuntimeDiagnostics.c_str(),[](){return runtimeDiagnostics.mqttPayload(mqtt.getBoundedIoStats());},false);
+        case 3:return publishCheckedExtra("grid_import_w",topicPublishGridImportW.c_str(),[](){return String(currentGridImportW);},false);
+        case 4:return preparedSettingsLoaded&&publishCheckedExtra("planning_config",topicPublishPlanningConfig.c_str(),[](){return buildPlanningConfigPayload();},false);
+        case 5:return preparedSettingsLoaded&&publishCheckedExtra("planning_state",topicPublishPlanningState.c_str(),[](){return buildPlanningStatePayload();},false);
+        case 6:return preparedSettingsLoaded&&publishCheckedExtra("planning_assessment",topicPublishPlanningAssessment.c_str(),[](){return buildPlanningAssessmentPayload();},false);
 #if FEATURE_BME280_ENABLED
-    publishCheckedExtra("temperature_c", topicPublishTempC.c_str(), []() { return String(temperature); }, false);
-    publishCheckedExtra("humidity_pct", topicPublishHumidityPct.c_str(), []() { return String(Humidity); }, false);
-    publishCheckedExtra("dewpoint_c", topicPublishDewpointC.c_str(), []() { return String(Dewpoint); }, false);
+        case 7:return publishCheckedExtra("temperature_c",topicPublishTempC.c_str(),[](){return String(temperature);},false);
+        case 8:return publishCheckedExtra("humidity_pct",topicPublishHumidityPct.c_str(),[](){return String(Humidity);},false);
+        case 9:return publishCheckedExtra("dewpoint_c",topicPublishDewpointC.c_str(),[](){return String(Dewpoint);},false);
 #endif
+        default:return false;
+        }
+    });
 }
 
 static void resetPidController()
@@ -2345,7 +2356,7 @@ static void issueInverterCommand(int watts, int maximumW, int outputOffsetW, int
         currentDecision.chargeTargetW = 0;
     }
     watts = max(watts, minimumW);
-#if defined(SIL_PLANNER_SHADOW) && SIL_PLANNER_SHADOW
+#if SIL_RELATIVE_TIME_POLICY
     if(preparedSettings.relativeTimePolicy&&operatingModes.confirmed().mode==control::OperatingMode::Automatic)
         watts=std::min(watts,std::max(0,currentDecision.ceilingW));
 #endif
@@ -2479,7 +2490,7 @@ static void processRS485Tick()
     const bool knownSourceFault = planCaptureFaults.blocked(source.genuineBmsFault);
     const bool manualMode = operatingModes.confirmed().mode != control::OperatingMode::Automatic;
     const bool projectionHardInvalid = captureContext.hardInvalid(knownSourceFault) || manualMode ||
-        (control::kPlannerShadowProfile && !futurePrices.priceFresh(utc));
+        (control::kPriceInputVersion==2 && !futurePrices.priceFresh(utc));
     const bool planSourceGrace = source.sourcesWithinGrace || source.bmsWithinGrace;
     dischargeBudget.observe(nowMs, utc, planContextEpoch, planSourceGrace, projectionHardInvalid, forecastCoverage);
     chargePlan.observe(nowMs, utc, planContextEpoch, planSourceGrace, projectionHardInvalid, forecastCoverage);
@@ -2534,8 +2545,8 @@ static void processRS485Tick()
         // Retain qualified PV recovery state only while the automatic fallback owns output.
         if (!modeDecision.automaticPvFallback) currentControl = control::CurrentControl{};
     }
-    // The test feed gate has final priority over automatic and manual virtual demands.
-    if(control::kPlannerShadowProfile && !futurePrices.priceFresh(utc)) {
+    // Origin-price freshness has final priority; explicit production modes retain their existing independence.
+    if(control::priceInputRequiredForMode(operatingModes.confirmed().mode==control::OperatingMode::Automatic) && !futurePrices.priceFresh(utc)) {
         currentControl=control::CurrentControl{};currentDecision=control::CurrentDecision{};
         currentDecision.direct=true;currentDecision.reason=futurePrices.testPriceStatus(utc);
         modeDecision=control::ModeDecision{};modeDecision.reason=currentDecision.reason;

@@ -8,7 +8,9 @@ cards:
   - type: markdown
     content: '## SIL Prod/Test · 36 Stunden
 
-      **Der Test steuert keine Geräte.** Die Produktion verwendet weiter die bisherige Planung.'
+      **Der Test steuert keine Geräte.** {% if state_attr(''sensor.sil_comparison_production_config'',''allocationPolicy'')==''relative_time_tiers_v1''
+      %}Die Produktion meldet die relative Planung; ihre tatsächlich gemeldeten Einstellungen stehen unten.{% else %}Die Produktion
+      verwendet weiter die bisherige Planung.{% endif %}'
   - type: markdown
     content: '### Original aus Overview · Produktion
 
@@ -499,7 +501,28 @@ cards:
 
         **Noch kein aktueller, gültiger Entladeplan.**
 
-        {% endif %}'
+        {% endif %}
+
+
+        {% set pc=''sensor.sil_comparison_production_config'' %}
+
+        {% if state_attr(pc,''allocationPolicy'')==''relative_time_tiers_v1'' %}
+
+        **Relative Planung:** günstig {{ state_attr(pc,''cheapTimePct'') if is_number(state_attr(pc,''cheapTimePct'')) else
+        ''offen'' }} % · sehr teuer {{ state_attr(pc,''veryExpensiveTimePct'') if is_number(state_attr(pc,''veryExpensiveTimePct''))
+        else ''offen'' }} % · zusätzlich teuer {{ state_attr(pc,''additionalExpensiveTimePct'') if is_number(state_attr(pc,''additionalExpensiveTimePct''))
+        else ''offen'' }} %.
+
+        **Prognoseaufschlag:** {{ state_attr(pc,''predictionPremiumPct'') if is_number(state_attr(pc,''predictionPremiumPct''))
+        else ''offen'' }} % · **Mindestvorteil neuer Speicherung:** {% if is_number(state_attr(pc,''storageMinimumNetAdvantageEurKwh''))
+        %}{{ (state_attr(pc,''storageMinimumNetAdvantageEurKwh'')*100)|round(2) }} ct/kWh{% else %}offen{% endif %} · **Wirkungsgrade
+        Laden/Entladen:** {{ state_attr(pc,''chargeEfficiencyPct'') if is_number(state_attr(pc,''chargeEfficiencyPct'')) else
+        ''offen'' }} / {{ state_attr(pc,''dischargeEfficiencyPct'') if is_number(state_attr(pc,''dischargeEfficiencyPct''))
+        else ''offen'' }} %.
+
+        {% endif %}
+
+        '
     grid_options:
       columns: full
   - type: grid
@@ -555,9 +578,10 @@ cards:
 
         {% set c=''sensor.sil_shadow_config'' %}{% set pc=''sensor.sil_comparison_production_config'' %}
 
-        {% if state_attr(c,''allocationPolicy'')==''relative_time_tiers_v1'' %}
+        {% if state_attr(c,''allocationPolicy'')==''relative_time_tiers_v1'' or state_attr(pc,''allocationPolicy'')==''relative_time_tiers_v1''
+        %}
 
-        **Test: relative Zeitbereiche**
+        **Relative Zeitbereiche · tatsächlich gemeldete Einstellungen**
 
 
         | Einstellung | Produktion | Test |
@@ -567,37 +591,47 @@ cards:
         | Maximale Leistung | {{ state_attr(pc,''maxOutputW'') or ''unklar'' }} W | {{ state_attr(c,''maxOutputW'') or ''noch
         offen'' }} W |
 
-        | Günstige Zeit | bisherige Planung | {{ state_attr(c,''cheapTimePct'') if is_number(state_attr(c,''cheapTimePct''))
+        | Planung | {{ ''relativ'' if state_attr(pc,''allocationPolicy'')==''relative_time_tiers_v1'' else ''bisherige Planung''
+        }} | {{ ''relativ'' if state_attr(c,''allocationPolicy'')==''relative_time_tiers_v1'' else ''bisherige Planung'' }}
+        |
+
+        | Günstige Zeit | {{ state_attr(pc,''cheapTimePct'') if is_number(state_attr(pc,''cheapTimePct'')) else ''noch offen''
+        }} % | {{ state_attr(c,''cheapTimePct'') if is_number(state_attr(c,''cheapTimePct'')) else ''noch offen'' }} % |
+
+        | Sehr teure Zeit | {{ state_attr(pc,''veryExpensiveTimePct'') if is_number(state_attr(pc,''veryExpensiveTimePct''))
+        else ''noch offen'' }} % | {{ state_attr(c,''veryExpensiveTimePct'') if is_number(state_attr(c,''veryExpensiveTimePct''))
         else ''noch offen'' }} % |
 
-        | Sehr teure Zeit | bisherige Planung | {{ state_attr(c,''veryExpensiveTimePct'') if is_number(state_attr(c,''veryExpensiveTimePct''))
-        else ''noch offen'' }} % |
-
-        | Zusätzlich teure Zeit | bisherige Planung | {{ state_attr(c,''additionalExpensiveTimePct'') if is_number(state_attr(c,''additionalExpensiveTimePct''))
+        | Zusätzlich teure Zeit | {{ state_attr(pc,''additionalExpensiveTimePct'') if is_number(state_attr(pc,''additionalExpensiveTimePct''))
+        else ''noch offen'' }} % | {{ state_attr(c,''additionalExpensiveTimePct'') if is_number(state_attr(c,''additionalExpensiveTimePct''))
         else ''noch offen'' }} % |
 
         | Prognoseaufschlag | {{ state_attr(pc,''predictionPremiumPct'') or 0 }} % | {{ state_attr(c,''predictionPremiumPct'')
         if is_number(state_attr(c,''predictionPremiumPct'')) else ''noch offen'' }} % |
 
-        | Mindestvorteil neuer Speicherung | bisheriges Modell | {% if is_number(state_attr(c,''storageMinimumNetAdvantageEurKwh''))
+        | Mindestvorteil neuer Speicherung | {% if is_number(state_attr(pc,''storageMinimumNetAdvantageEurKwh'')) %}{{ (state_attr(pc,''storageMinimumNetAdvantageEurKwh'')|float*100)|round(2)
+        }} ct/kWh{% else %}bisheriges Modell{% endif %} | {% if is_number(state_attr(c,''storageMinimumNetAdvantageEurKwh''))
         %}{{ (state_attr(c,''storageMinimumNetAdvantageEurKwh'')|float*100)|round(2) }} ct/kWh{% else %}noch offen{% endif
         %} |
 
-        | Ladewirkungsgrad | bisheriges Modell | {{ state_attr(c,''chargeEfficiencyPct'') if is_number(state_attr(c,''chargeEfficiencyPct''))
+        | Ladewirkungsgrad | {{ state_attr(pc,''chargeEfficiencyPct'') if is_number(state_attr(pc,''chargeEfficiencyPct''))
+        else ''noch offen'' }} % | {{ state_attr(c,''chargeEfficiencyPct'') if is_number(state_attr(c,''chargeEfficiencyPct''))
         else ''noch offen'' }} % |
 
-        | Entladewirkungsgrad | bisheriges Modell | {{ state_attr(c,''dischargeEfficiencyPct'') if is_number(state_attr(c,''dischargeEfficiencyPct''))
+        | Entladewirkungsgrad | {{ state_attr(pc,''dischargeEfficiencyPct'') if is_number(state_attr(pc,''dischargeEfficiencyPct''))
+        else ''noch offen'' }} % | {{ state_attr(c,''dischargeEfficiencyPct'') if is_number(state_attr(c,''dischargeEfficiencyPct''))
         else ''noch offen'' }} % |
 
 
         Der Mindestvorteil betrifft nur neue Speicherung. Bereits vorhandene Energie bleibt zuerst für die sehr teuren Zeiten
-        reserviert. Komfortpreis, alte Preistoleranz und alter Preisfaktor sind im Test **nicht aktiv**; Altwerte stehen nur
-        in den Prüfdetails.
+        reserviert. Komfortpreis, alte Preistoleranz und alter Preisfaktor sind bei relativer Planung **nicht aktiv**; Altwerte
+        stehen nur in den Prüfdetails.
 
         {% if is_number(state_attr(c,''chargeEfficiencyPct'')) and is_number(state_attr(c,''dischargeEfficiencyPct'')) %}
 
         Testmodell: 100 Wh Solar-DC → {{ state_attr(c,''chargeEfficiencyPct'')|round(1) }} Wh Batterie-DC → {{ (state_attr(c,''chargeEfficiencyPct'')*state_attr(c,''dischargeEfficiencyPct'')/100)|round(1)
-        }} Wh AC. Die Produktions-Ladeabsicht folgt ihrem bisherigen Verlustmodell; die Solarprognose bleibt unverändert.
+        }} Wh AC. Die Solarprognose bleibt unverändert; jede Ladeabsicht folgt den tatsächlich gemeldeten Einstellungen ihres
+        Geräts.
 
         {% endif %}
 
@@ -758,6 +792,35 @@ cards:
       name: Shadow assessment - NOT tariff
       color: '#ffa726'
       stroke_dash: 5
+    - entity: sensor.sil_production_price_input
+      yaxis_id: uurprijs
+      float_precision: 3
+      type: line
+      curve: stepline
+      extend_to: false
+      show:
+        extremas: true
+      data_generator: 'const a=entity?.attributes, s=hass.states[''sensor.sil_comparison_production_assessment''], c=hass.states[''sensor.sil_comparison_production_config''];
+
+        if(entity?.state!==''ready''||!a?.tariff_aligned||s?.state!==''ready''||c?.attributes?.valid!==true||Date.now()/1000-a.r>180)
+        return [];
+
+        const x=s.attributes,q=c.attributes;
+
+        if(x.valid!==true||Date.now()/1000-x.g>180||x.priceRevision!==a.r||x.priceStart!==a.t||x.priceSlots!==a.n||!Array.isArray(a.o)||a.o.length!==a.n||!Array.isArray(a.p)||a.p.length!==a.n)
+        return [];
+
+        if(q.allocationPolicy!==''relative_time_tiers_v1''||q.priceBasis!==''schedule_origin_assessed'') return [];
+
+        const pct=Number(q.predictionPremiumPct);
+
+        if(!Number.isFinite(pct)||pct<0||pct>100) return [];
+
+        return a.p.map((v,i)=>{const p=v/1e6;return [(a.t+i*900)*1000,a.o[i]===2?p+Math.abs(p)*pct/100:p];}).filter(([t])=>t>=start.getTime()&&t<end.getTime());'
+      stroke_width: 1
+      name: 'Produktion: Preisbewertung'
+      color: '#42a5f5'
+      stroke_dash: 5
     - entity: sensor.sil_configured_maximum_output
       name: SIL configured maximum output
       yaxis_id: discharge_w
@@ -828,6 +891,7 @@ cards:
         - 1
         - 1
         - 1
+        - 1
         - 0
         - 0
         curve: stepline
@@ -842,6 +906,7 @@ cards:
         - 2
         - 3
         - 4
+        - 5
         x:
           show: true
           format: dd.MM. HH:mm

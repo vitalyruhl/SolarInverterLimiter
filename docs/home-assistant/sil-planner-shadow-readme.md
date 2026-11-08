@@ -1,6 +1,6 @@
 # Isolated SIL planner comparison in Home Assistant
 
-This diagnostic example preserves production firmware, tariffs, price/PV automations, and the original Test-Vivil Home view. It requires a separately reviewed hardware-mocked shadow firmware profile. It does not send inverter or BMS commands.
+This example keeps production and hardware-mocked test price lifecycles separate. Existing tariffs, shared v1 price/PV automations and the Test-Vivil Home view remain unchanged. Device profile promotion and input-topic selection require their separate firmware gate. The HA adapter sends price input only, never inverter or BMS commands.
 
 ## Persistent adapter
 
@@ -21,6 +21,16 @@ The existing total-price calculation is reproduced exactly, including the provid
 A blocked feed sends a separate v2 withdrawal (`n=0`, `k=0`, empty `p`/`o`) and immediately hides old test output locally. Status distinguishes zero published price chunks from a withdrawal message. The shadow firmware independently expires test input after 180 seconds without a fresh revision, preserving its measured-energy ledger. Diagnostic output alone cannot make an expired or mismatched price revision appear current. Retained configuration is marked retained rather than described as newly measured telemetry.
 
 Current upstream schemas define `market` as actual EPEX SPOT data and `forecast` as a prediction. Unknown/missing strings remain unknown. The provider origin is separate from the fetch time: a fresh request does not prove market confirmation.
+
+## Dedicated production v2 input
+
+`pyscript.sil_production_publish_prices` publishes only `SolarLimiter/Input/PriceSchedule`, non-retained QoS 1, on its own minute timer. Its own `sensor.sil_production_price_input`, task guard, revision and withdrawal are independent of test configuration, Assessment validity and device availability. Test withdrawals cannot address the production topic; production failures cannot withdraw the test topic. Both consumers require matching v2 firmware with a 180-second input TTL. Do not point production at `SolarLimiterTest` or send v2 into the existing shared v1 topic.
+
+The production reader calls `production_from_cache`, which reads the existing provider cache under its OS lock, checks source age (at most 4500 seconds), rejects failed refreshes and repeats exact HA tariff alignment. It neither calls the provider nor changes the persisted request gate. Raw micro-EUR/kWh and per-slot origins remain unchanged; the device applies its reported forecast-only premium. Missing, expired or mismatched data sends only an isolated production withdrawal. Source-alignment gaps remain visible rather than being filled or relabeled.
+
+The existing minute cache-maintenance path remains required even if the test ESP is unplugged. That path checks only the real EPEX entry identity, coordinator and reference tariff; it does not depend on the test device, test config or test Assessment. Its hourly persisted request gate and authentication handling remain unchanged. Removing that maintenance path would eventually expire both cached consumers; it must remain installed independently of whether the test device is used.
+
+Production Assessment is observed separately as `sensor.sil_comparison_production_assessment`. Its assessment curve requires its own fresh accepted price revision/start/count to match `sensor.sil_production_price_input`, plus actual relative-policy metadata. Production and test accepted revisions are never equated. Raw tariff curves and the configured maximum plus 100 W anchor are preserved.
 
 ## Comparison entities and view
 

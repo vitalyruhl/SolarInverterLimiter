@@ -1,6 +1,7 @@
 #pragma once
 #include "ConfigManager.h"
 #include "ModeProfile.h"
+#include "ApplicationProfile.h"
 
 namespace control {
 
@@ -51,8 +52,8 @@ class ModeSettingsRuntime {
             if constexpr(std::is_same_v<T,String>) owner_.queueMode(OperatingMode::Automatic);
             else {
                 portENTER_CRITICAL(&owner_.pendingMux_);
-                if(field_==Field::Threshold) {owner_.pending_.threshold=true;owner_.pending_.values.chargeThreshold=95;}
-                else {owner_.pending_.share=true;owner_.pending_.values.inverterSharePercent=0;}
+                if(field_==Field::Threshold) {owner_.pending_.threshold=true;owner_.pending_.values.chargeThreshold=ApplicationDefaults::chargeThreshold;}
+                else {owner_.pending_.share=true;owner_.pending_.values.inverterSharePercent=ApplicationDefaults::chargeInverterSharePct;}
                 portEXIT_CRITICAL(&owner_.pendingMux_);
             }
         }
@@ -63,9 +64,9 @@ class ModeSettingsRuntime {
         }
         void confirm(const T &value) { Config<T>::set(value); this->modified=false; }
     };
-    DeferredSetting<String> mode_{*this,Field::Mode,ConfigOptions<String>{.key="opMode",.name="Operating Mode (automatic / household_follow / charge_priority / pv_follow)",.category="Limiter",.defaultValue=String("automatic"),.sortOrder=30}};
-    DeferredSetting<float> threshold_{*this,Field::Threshold,ConfigOptions<float>{.key="opChargeSoc",.name="Charge Priority Threshold (%)",.category="Limiter",.defaultValue=95.0f,.sortOrder=31}};
-    DeferredSetting<int> share_{*this,Field::Share,ConfigOptions<int>{.key="opPvShare",.name="Charge Priority Inverter Share (%)",.category="Limiter",.defaultValue=0,.sortOrder=32}};
+    DeferredSetting<String> mode_{*this,Field::Mode,ConfigOptions<String>{.key="opMode",.name="Operating Mode (automatic / household_follow / charge_priority / pv_follow)",.category="Limiter",.defaultValue=String("automatic"),.sortOrder=2,.card="Limiter",.cardPretty="Limiter",.cardOrder=0}};
+    DeferredSetting<float> threshold_{*this,Field::Threshold,ConfigOptions<float>{.key="opChargeSoc",.name="Charge Priority Threshold (%)",.category="Limiter",.defaultValue=ApplicationDefaults::chargeThreshold,.sortOrder=20,.card="Limiter",.cardPretty="Limiter",.cardOrder=0}};
+    DeferredSetting<int> share_{*this,Field::Share,ConfigOptions<int>{.key="opPvShare",.name="Charge Priority Inverter Share (%)",.category="Limiter",.defaultValue=ApplicationDefaults::chargeInverterSharePct,.sortOrder=21,.card="Limiter",.cardPretty="Limiter",.cardOrder=0}};
     void confirmUi() {
         if(uiMutex_) xSemaphoreTake(uiMutex_,portMAX_DELAY);
         const auto &cfg=transaction_.confirmed();
@@ -86,7 +87,8 @@ public:
     void attachTo(ConfigManagerClass &cfg) {cfg.addSetting(&mode_);cfg.addSetting(&threshold_);cfg.addSetting(&share_);}
     void begin() {
         if(!uiMutex_) uiMutex_=xSemaphoreCreateMutex();
-        ModeSettings settings; uint8_t bytes[kModeProfileBytes]={}; Preferences prefs;
+        ModeSettings settings;settings.chargeThreshold=ApplicationDefaults::chargeThreshold;settings.inverterSharePercent=ApplicationDefaults::chargeInverterSharePct;
+        uint8_t bytes[kModeProfileBytes]={}; Preferences prefs;
         storageReason_="profile_missing";
         if(prefs.begin("SILModes",true)) {
             const size_t n=prefs.getBytesLength("profile");

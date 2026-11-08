@@ -3,6 +3,7 @@
 #include "PreparedControl.h"
 #include "PriceAssessment.h"
 #include "RelativeTiers.h"
+#include "ApplicationProfile.h"
 #include "DischargeBudget.h"
 #include "JsonArena.h"
 #include "PvForecast.h"
@@ -32,7 +33,7 @@ public:
     static_assert(kPlanSlots == DischargeBudget::kSlots, "Trace must cover the entire allocation window");
     void clear() {
         projectionCount_ = 0;
-#if defined(SIL_PLANNER_SHADOW) && SIL_PLANNER_SHADOW
+#if SIL_RELATIVE_TIME_POLICY
         relativeCheapFull_=relativeWasCheap_=false;
 #endif
         if (activeCount_) ++contentRevision_;
@@ -41,18 +42,18 @@ public:
         pendingPoisoned_ = cacheValid_ = false;
         // Losing a schedule must never replenish the independently measured energy pool.
     }
-    const char *receive(const uint8_t *payload, unsigned length, uint32_t utc, uint32_t ms, bool shadowV2 = false) {
+    const char *receive(const uint8_t *payload, unsigned length, uint32_t utc, uint32_t ms, bool originV2 = false) {
         if (utc < 1704067200UL) return "clock_invalid";
         if (!payload || !length || length > 768) return "packet_size";
         if (std::memchr(payload, 0, length)) return "packet_json";
         arena_.reset();
         JsonDocument doc(&arena_);
         if (deserializeJson(doc, payload, length)) return "packet_json";
-        if (!doc["v"].is<unsigned>() || doc["v"].as<unsigned>() != (shadowV2 ? 2u : 1u) ||
+        if (!doc["v"].is<unsigned>() || doc["v"].as<unsigned>() != (originV2 ? 2u : 1u) ||
             !doc["r"].is<uint32_t>() || !doc["t"].is<uint32_t>() ||
             !doc["n"].is<unsigned>() || !doc["k"].is<unsigned>() ||
             !doc["p"].is<JsonArray>()) return "packet_schema";
-        if (shadowV2 && (!doc["d"].is<unsigned>() || doc["d"].as<unsigned>() != 900 ||
+        if (originV2 && (!doc["d"].is<unsigned>() || doc["d"].as<unsigned>() != 900 ||
             !doc["o"].is<JsonArray>())) return "packet_origin";
         const uint32_t revision = doc["r"], start = doc["t"];
         const unsigned count = doc["n"], part = doc["k"];
@@ -64,7 +65,7 @@ public:
             start % 900 || start > revision || revision - start >= 900 || start > utc ||
             count > kSlots || part >= 12 || coverageEnd > UINT32_MAX ||
             (count && uint64_t(utc) >= coverageEnd)) return "packet_range";
-        if (shadowV2 && uint64_t(utc)>=uint64_t(revision)+180) return "test_price_stale";
+        if (originV2 && uint64_t(utc)>=uint64_t(revision)+180) return "test_price_stale";
         if (revision < activeRevision_ || revision < pendingRevision_) return "old_revision";
         if (!count) {
             if (part || prices.size()) return "packet_empty";
@@ -72,8 +73,8 @@ public:
                 pendingPoisoned_ = true; return "packet_conflict";
             }
             if (revision == activeRevision_) return activeCount_ ? "packet_conflict" : "duplicate";
-            if (shadowV2 && origins.size()) return "packet_origin";
-            clear(); activeRevision_ = revision; activeAcceptedUtc_ = utc; activeVersion_ = shadowV2 ? 2 : 1;
+            if (originV2 && origins.size()) return "packet_origin";
+            clear(); activeRevision_ = revision; activeAcceptedUtc_ = utc; activeVersion_ = originV2 ? 2 : 1;
             return "withdrawn";
         }
         const unsigned offset = part * kChunk;
@@ -82,7 +83,7 @@ public:
         for (JsonVariantConst value : prices)
             if (!value.is<int32_t>() || value.as<int32_t>() < -2000000 || value.as<int32_t>() > 10000000)
                 return "packet_price";
-        if (shadowV2) {
+        if (originV2) {
             if (origins.size() != prices.size()) return "packet_origin";
             for (JsonVariantConst value : origins)
                 if (!value.is<unsigned>() || value.as<unsigned>() > 2) return "packet_origin";
@@ -91,7 +92,7 @@ public:
             if (start != activeStart_ || count != activeCount_) return "packet_conflict";
             for (unsigned i = 0; i < prices.size(); ++i)
                 if (active_[offset + i] != prices[i].as<int32_t>() ||
-                    origins_[offset + i] != (shadowV2 ? origins[i].as<uint8_t>() : 0)) return "packet_conflict";
+                    origins_[offset + i] != (originV2 ? origins[i].as<uint8_t>() : 0)) return "packet_conflict";
             return "duplicate";
         }
         if (revision == pendingRevision_ && pendingPoisoned_) return "packet_conflict";
@@ -105,13 +106,13 @@ public:
         if (parts_ & (1u << part)) {
             for (unsigned i = 0; i < prices.size(); ++i)
                 if (pending_[offset + i] != prices[i].as<int32_t>() ||
-                    pendingOrigins_[offset + i] != (shadowV2 ? origins[i].as<uint8_t>() : 0)) {
+                    pendingOrigins_[offset + i] != (originV2 ? origins[i].as<uint8_t>() : 0)) {
                     pendingPoisoned_ = true; return "packet_conflict";
                 }
         }
         for (unsigned i = 0; i < prices.size(); ++i) {
             pending_[offset + i] = prices[i];
-            pendingOrigins_[offset + i] = shadowV2 ? origins[i].as<uint8_t>() : 0;
+            pendingOrigins_[offset + i] = originV2 ? origins[i].as<uint8_t>() : 0;
         }
         parts_ |= uint16_t(1u << part);
         const unsigned chunks = (count + kChunk - 1) / kChunk;
@@ -120,7 +121,7 @@ public:
             std::memcmp(active_, pending_, count * sizeof(active_[0])) ||
             std::memcmp(origins_, pendingOrigins_, count)) ++contentRevision_;
         std::memcpy(active_, pending_, count * sizeof(active_[0]));
-        std::memcpy(origins_, pendingOrigins_, count); activeVersion_ = shadowV2 ? 2 : 1;
+        std::memcpy(origins_, pendingOrigins_, count); activeVersion_ = originV2 ? 2 : 1;
         activeStart_ = start; activeCount_ = count; activeRevision_ = revision; activeAcceptedUtc_ = utc; cacheValid_ = false;
         return "accepted";
     }
@@ -136,7 +137,7 @@ public:
         const bool energyValid = bmsValid && std::isfinite(fullAh) && fullAh > 0 && fullAh <= 389 &&
             std::isfinite(soc) && soc >= 0 && soc <= 100 && std::isfinite(batteryW);
         if (!energyValid) {
-#if defined(SIL_PLANNER_SHADOW) && SIL_PLANNER_SHADOW
+#if SIL_RELATIVE_TIME_POLICY
             relativeCheapFull_=relativeWasCheap_=false;
 #endif
             energyTickReady_ = false; // Preserve known debits; never integrate an unknown outage.
@@ -160,7 +161,7 @@ public:
         energySequence_ = sequence; energyAt_ = ms; lastBatteryW_ = batteryW; energyTickReady_ = true;
         energyWh_ = std::max(0.0f, std::min(energyWh_, socWh));
         out.availableWh = energyWh_ * kDischargeEfficiency;
-#if defined(SIL_PLANNER_SHADOW) && SIL_PLANNER_SHADOW
+#if SIL_RELATIVE_TIME_POLICY
         lastSoc_=soc;
 #endif
         if (!cfg.valid || (cfg.relativeTimePolicy ? !validRelativeTiers(cfg) : (!validPriceAssessment(cfg) || !std::isfinite(factor) || factor <= 0 || factor > 5))) {
@@ -179,7 +180,7 @@ public:
         if (!currentPriceValid || !std::isfinite(currentPrice)) {
             out.reason = "current_price_missing"; return finish(out, trace);
         }
-#if defined(SIL_PLANNER_SHADOW) && SIL_PLANNER_SHADOW
+#if SIL_RELATIVE_TIME_POLICY
         if(cfg.relativeTimePolicy) {
             if(end-first!=kPlanSlots){out.reason="relative_coverage";return finish(out,trace);}
             return relativeProject(first,utc,cfg,currentPrice,maximumW,pv,qualifiedMaxChargeW,currentChargerW,
@@ -250,21 +251,21 @@ public:
         return std::isfinite(price);
     }
     const char* currentPriceTier()const {
-#if defined(SIL_PLANNER_SHADOW) && SIL_PLANNER_SHADOW
+#if SIL_RELATIVE_TIME_POLICY
         return priceTierName(relative_.tier(0));
 #else
         return "unknown";
 #endif
     }
     unsigned tierCount(PriceTier tier)const {
-#if defined(SIL_PLANNER_SHADOW) && SIL_PLANNER_SHADOW
+#if SIL_RELATIVE_TIME_POLICY
         return relative_.count(tier);
 #else
         (void)tier;return 0;
 #endif
     }
     double tierBoundary(PriceTier tier)const {
-#if defined(SIL_PLANNER_SHADOW) && SIL_PLANNER_SHADOW
+#if SIL_RELATIVE_TIME_POLICY
         return relative_.boundary(tier);
 #else
         (void)tier;return NAN;
@@ -285,7 +286,7 @@ private:
         if (trace) trace->finish(out.valid, out.reason);
         return out;
     }
-#if defined(SIL_PLANNER_SHADOW) && SIL_PLANNER_SHADOW
+#if SIL_RELATIVE_TIME_POLICY
     FuturePlan relativeProject(unsigned first,uint32_t utc,const PreparedSettings& cfg,float currentPrice,int maximumW,
         const PvForecast* pv,float qualifiedChargeW,float currentSolarW,float fullWh,FuturePlan out,DischargeBudget* trace) {
         const float maximum=std::max(0.0f,float(maximumW));

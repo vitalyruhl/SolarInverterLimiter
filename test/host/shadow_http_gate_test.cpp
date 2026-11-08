@@ -1,4 +1,5 @@
 #include "control/ShadowProfile.h"
+#include "control/ApplicationProfile.h"
 #include "control/FuturePrices.h"
 #include "control/CurrentControl.h"
 #include "control/OperatingModes.h"
@@ -23,6 +24,7 @@ static control::CurrentDecision currentDecision;
 static control::FuturePrices futurePrices;
 static control::ModeDecision modeDecision;
 static bool modePublishDirty=false;
+static struct {control::ModeSettings settings;const control::ModeSettings& confirmed(){return settings;}} operatingModes;
 #include "shadow_http_gate.h"
 int main() {
  for(bool save:{false,true}) {

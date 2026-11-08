@@ -1,7 +1,8 @@
-"""Persistent isolated test-price producer and read-only comparison entities.
+"""Separate production/test price lifecycles and read-only comparison entities.
 
 Install as /config/pyscript/sil_planner_shadow.py with the core module beside
-/config/pyscript/modules/sil_planner_shadow_core.py. No production writes.
+/config/pyscript/modules/sil_planner_shadow_core.py. Production publishes only
+its explicit dedicated v2 input topic; existing shared v1 publishers are untouched.
 """
 import datetime
 import json
@@ -9,6 +10,7 @@ import json
 SOURCE_ENTRY='d1df01d001352968344ba5b5c6a9ad23'
 REFERENCE_ENTITY='sensor.epex_spot_data_total_price_2'
 TEST_TOPIC='SolarLimiterTest/Input/PriceSchedule'
+PRODUCTION_TOPIC='SolarLimiter/Input/PriceSchedule'
 OBSERVERS={
     'SolarLimiterTest/Planning/DischargeBudget':'sensor.sil_shadow_discharge_budget',
     'SolarLimiterTest/Planning/ChargePlan':'sensor.sil_shadow_charge_plan',
@@ -18,7 +20,65 @@ OBSERVERS={
     'SolarLimiterTest/System-Info/ESP':'sensor.sil_shadow_runtime',
     'SolarLimiter/Planning/State':'sensor.sil_comparison_production_state',
     'SolarLimiter/Planning/Config':'sensor.sil_comparison_production_config',
+    'SolarLimiter/Planning/Assessment':'sensor.sil_comparison_production_assessment',
 }
+
+@pyscript_executor
+def _production_prepare(reference,options,now):
+    import importlib.util
+    spec=importlib.util.spec_from_file_location('sil_production_price_core','/config/pyscript/modules/sil_planner_shadow_core.py')
+    core=importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(core)
+    return core.production_from_cache(reference,options,now,'/config/data/sil_planner_shadow/provider-cache.json')
+
+def _production_withdraw(now):
+    frame={'v':2,'r':now,'t':now//900*900,'d':900,'n':0,'k':0,'p':[],'o':[]}
+    sent=False
+    try:
+        service.call('mqtt','publish',topic=PRODUCTION_TOPIC,payload=json.dumps(frame,separators=(',',':')),
+                     qos=1,retain=False,blocking=True)
+        sent=True
+    except Exception:
+        pass
+    return {'withdrawMessages':1 if sent else 0,'withdrawSent':sent,'withdrawRevision':now}
+
+@service(supports_response='optional')
+def sil_production_publish_prices():
+    """Publish production v2 from the shared cache; never depend on test telemetry."""
+    task.unique('sil_production_publish_prices',kill_me=True)
+    now=int(datetime.datetime.now(datetime.timezone.utc).timestamp())
+    try:
+        entry=hass.config_entries.async_get_entry(SOURCE_ENTRY)
+        if entry is None or entry.domain!='epex_spot' or entry.data.get('source')!='Energyforecast.de' or entry.data.get('market_area')!='de':
+            raise ValueError('source_identity')
+        reference=hass.states.get(REFERENCE_ENTITY)
+        if reference is None or reference.state in ('unknown','unavailable'):
+            raise ValueError('reference_unavailable')
+        source=hass.data.get('epex_spot',{}).get(SOURCE_ENTRY)
+        if source is None or not source.last_update_success:raise ValueError('reference_coordinator')
+        prepared=_production_prepare(list(reference.attributes.get('data',[])),dict(entry.options),now)
+        for payload in prepared['frames']:
+            service.call('mqtt','publish',topic=PRODUCTION_TOPIC,payload=payload,qos=1,retain=False,blocking=True)
+        attributes={key:value for key,value in prepared.items() if key!='frames'}
+        attributes.update(friendly_name='SIL production raw price input',source='Energyforecast.de / DE-LU',
+                          raw_tariff_unchanged=True,lastPublishedAt=now,production_only=True,
+                          origin_codes='0 unknown / 1 market / 2 forecast')
+        state.set('sensor.sil_production_price_input',value='ready',new_attributes=attributes)
+        return {'published_chunks':len(prepared['frames']),'slots':prepared['n'],'revision':prepared['r'],
+                'tariff_aligned':True,'providerAgeS':prepared['providerAgeS'],'providerCacheReadOnly':True}
+    except Exception as error:
+        reason=str(error) if isinstance(error,ValueError) and str(error).startswith(('provider_','tariff_','reference_','source_')) else 'production_adapter_failed'
+        # Detailed prices are private evidence; only a fixed reason is exposed here.
+        reason=reason.split(':')[0]
+        attributes={'friendly_name':'SIL production raw price input','production_only':True,'reason':reason,'checkedAt':now}
+        attributes.update(_production_withdraw(now))
+        state.set('sensor.sil_production_price_input',value='blocked',new_attributes=attributes)
+        return {'published_chunks':0,'reason':reason,'withdrawMessages':attributes['withdrawMessages'],
+                'withdrawSent':attributes['withdrawSent']}
+
+@time_trigger('startup','period(now + 45 sec, 1 min)')
+def sil_production_price_tick(**kwargs):
+    sil_production_publish_prices()
 
 @pyscript_executor
 def _shadow_prepare(token,reference,options,now):
@@ -164,6 +224,7 @@ def sil_shadow_tick(**kwargs):
 @mqtt_trigger('SolarLimiterTest/System-Info/ESP')
 @mqtt_trigger('SolarLimiter/Planning/State')
 @mqtt_trigger('SolarLimiter/Planning/Config')
+@mqtt_trigger('SolarLimiter/Planning/Assessment')
 def sil_shadow_observe(topic=None,payload_obj=None,retain=False,**kwargs):
     """Observe only the explicit diagnostic allowlist; never publish from a trigger."""
     entity_id=OBSERVERS.get(topic)

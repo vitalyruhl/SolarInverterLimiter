@@ -9,7 +9,7 @@ if ($LASTEXITCODE -ne 0) { throw 'Planner assessment host tests failed' }
 # Compile the actual pre-mutation HTTP gate and missing/stale input hold.
 $source = [IO.File]::ReadAllText((Join-Path $repo 'src/main.cpp'))
 $http = [regex]::Match($source, '(?s)static bool shadowWriteConfig\([^\r\n]+\) \{.*?\r?\n\}')
-$hold = [regex]::Match($source, '(?s)    if\(control::kPlannerShadowProfile && !futurePrices.priceFresh\(utc\)\) \{.*?\r?\n    \}')
+$hold = [regex]::Match($source, '(?s)    if\(control::priceInputRequiredForMode\([^\r\n]+\) && !futurePrices.priceFresh\(utc\)\) \{.*?\r?\n    \}')
 if (!$http.Success -or !$hold.Success) { throw 'Actual shadow HTTP/source gate extraction missing' }
 if ($hold.Index -lt $source.IndexOf('modeDecision = nextModeDecision;')) { throw 'Shadow feed hold must follow mode policy selection' }
 [IO.File]::WriteAllText((Join-Path $repo '.pio/shadow_http_gate.h'), $http.Value + [Environment]::NewLine + 'static void applyShadowSourceGate(uint32_t utc) {' + $hold.Value + '}')
@@ -23,7 +23,7 @@ if ($LASTEXITCODE -ne 0) { throw 'Shadow production gate compilation failed' }
 & (Join-Path $repo '.pio/shadow_http_gate_test.exe')
 if ($LASTEXITCODE -ne 0) { throw 'Shadow production gate tests failed' }
 # Compile actual application wrappers in both profiles; deferred plan attempts stay pending.
-$start=$source.IndexOf('// Shadow-only pacing;')
+$start=$source.IndexOf('// Application publication pacing;')
 $end=$source.IndexOf('static String buildPlanningStatePayload()', $start)
 if($start-lt 0-or $end-lt $start){throw 'Shadow publication wrapper extraction missing'}
 [IO.File]::WriteAllText((Join-Path $repo '.pio/shadow_publish_wrappers.h'),$source.Substring($start,$end-$start))

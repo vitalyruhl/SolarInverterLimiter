@@ -17,12 +17,12 @@ static struct {
  struct Stats {uint32_t txFailures=0,txTimeouts=0,txOverflows=0,txBackpressure=0,txPartialWrites=0;} stats;
  const Stats& getBoundedIoStats(){return stats;}
  uint32_t reconnects=1;uint32_t getReconnectCount(){return reconnects;}
- unsigned calls=0,builders=0;bool result=true;
+ unsigned calls=0,builders=0;bool result=true;uint32_t lazyInterval=3000;
  std::map<std::string,uint32_t> lazyAt;
  std::vector<std::pair<uint32_t,std::string>> accepted;
  bool publishRaw(const char* topic,const char*,bool){++calls;if(result)accepted.emplace_back(nowMs,topic);else ++stats.txFailures;return result;}
  template<class F>bool publishExtraTopicLazy(const char* id,const char* topic,F factory,bool){
-  ++calls;if(!result||(lazyAt.count(id)&&uint32_t(nowMs-lazyAt[id])<3000))return false;
+  ++calls;if(!result||(lazyAt.count(id)&&uint32_t(nowMs-lazyAt[id])<lazyInterval))return false;
   factory();++builders;lazyAt[id]=nowMs;accepted.emplace_back(nowMs,topic);return true;
  }
 } mqtt;
@@ -30,7 +30,6 @@ static struct {
 int main(){
  // [MOCKED!] CM enqueue outcomes, per-topic 3s stamps and time; actual app wrappers/progress are compiled.
  constexpr auto root="SolarLimiterTest/SetValue";
-#if defined(SIL_PLANNER_SHADOW) && SIL_PLANNER_SHADOW
 #if defined(SIL_SHADOW_STAGE_TRACE) && SIL_SHADOW_STAGE_TRACE
  (void)shadowTraceStage;
 #endif
@@ -42,7 +41,11 @@ int main(){
  assert(publishCheckedRaw(root,"1",false));
  nowMs+=250;mqtt.result=false;deferred=true;calls=mqtt.calls;
  assert(!publishCheckedRaw(root,"1",false,&deferred)&&!deferred&&mqtt.calls==calls+1);
+ #if defined(SIL_PLANNER_SHADOW) && SIL_PLANNER_SHADOW
  assert(Serial.calls==1);
+#else
+ assert(Serial.calls==0);
+#endif
  mqtt.result=true;assert(publishCheckedRaw(root,"1",false)); // genuine failure consumes no slot
  ShadowModeProgress mode;
  unsigned completed=0;
@@ -67,11 +70,17 @@ int main(){
    if(publishCheckedExtra(id.c_str(),topic.c_str(),[]{return "1";},false))++counts[id];}
  }
  for(unsigned i=0;i<10;++i)assert(counts["topic"+std::to_string(i)]>=5);
+ // The actual rotating helper must also serve every topic when intervals are 0 or 1 second.
+ for(uint32_t interval:{0u,1000u}){
+  mqtt.lazyInterval=interval;mqtt.lazyAt.clear();counts.clear();unsigned next=0;
+  for(unsigned tick=0;tick<80;++tick){nowMs+=250;publishAppExtrasFair(next,10,[&](unsigned item){
+   auto id="fair"+std::to_string(item);auto topic="SolarLimiterTest/"+id;
+   if(!publishCheckedExtra(id.c_str(),topic.c_str(),[]{return "1";},false))return false;
+   ++counts[id];return true;
+  });}
+  for(unsigned i=0;i<10;++i)assert(counts["fair"+std::to_string(i)]>=7);
+ }
  for(size_t i=1;i<mqtt.accepted.size();++i)assert(uint32_t(mqtt.accepted[i].first-mqtt.accepted[i-1].first)>=250);
-#else
- assert(publishCheckedRaw(root,"1",false));assert(publishCheckedRaw(root,"1",false));
- for(unsigned i=0;i<10;++i){auto id="n"+std::to_string(i);assert(publishCheckedExtra(id.c_str(),root,[]{return "1";},false));}
- assert(mqtt.accepted.size()==12); // normal profile remains unpaced in the same time step
-#endif
+
  std::cout<<"[MOCKED!] App publication rate, defer/no-op, mode dirty fairness and normal compatibility passed\n";
 }

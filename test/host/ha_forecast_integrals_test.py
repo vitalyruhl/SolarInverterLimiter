@@ -4,6 +4,9 @@ from pathlib import Path
 import unittest
 import ast
 import sys
+import json
+import tempfile
+from unittest.mock import patch
 from types import SimpleNamespace
 from datetime import datetime
 from zoneinfo import ZoneInfo
@@ -114,5 +117,102 @@ class EnergyLifecycleTests(unittest.TestCase):
     def test_withdrawal_or_invalid_own_budget_withholds_energy(self):
         self.assertIsNone(self.run_tick(withdraw=True)['test'])
         self.assertIsNone(self.run_tick(invalid_budget=True)['test'])
+
+class ProductionCacheTests(unittest.TestCase):
+    def test_production_reader_never_fetches_or_changes_request_gate(self):
+        with tempfile.TemporaryDirectory() as directory:
+            path=Path(directory)/'cache.json'
+            cache={'response':{},'fetched_at':1000,'next_request_at':4600,'refresh_failed':False}
+            path.write_text(json.dumps(cache));before=path.read_bytes()
+            with patch.object(core,'prepare',return_value={'frames':['unchanged']}),patch.object(core,'fetch_provider',side_effect=AssertionError('No extra provider request')):
+                result=core.production_from_cache([],{},1100,path)
+            self.assertEqual(result['frames'],['unchanged'])
+            self.assertEqual(result['providerAgeS'],100)
+            self.assertEqual(path.read_bytes(),before)
+
+    def test_production_reader_rejects_expired_and_failed_cache(self):
+        with tempfile.TemporaryDirectory() as directory:
+            path=Path(directory)/'cache.json'
+            with self.assertRaises(ValueError):core.production_from_cache([],{},5501,path)
+            for cache in ({'response':{},'fetched_at':1000},{'response':{},'fetched_at':5500,'refresh_failed':True},
+                          {'response':{},'fetched_at':6000},[]):
+                path.write_text(json.dumps(cache))
+                with self.assertRaises(ValueError):core.production_from_cache([],{},5501,path)
+
+    def test_production_reader_keeps_exact_tariff_alignment_requirement(self):
+        with tempfile.TemporaryDirectory() as directory:
+            path=Path(directory)/'cache.json'
+            path.write_text(json.dumps({'response':{},'fetched_at':1000,'next_request_at':4600}))
+            with patch.object(core,'prepare',side_effect=ValueError('tariff_alignment_mismatch')):
+                with self.assertRaisesRegex(ValueError,'tariff_alignment_mismatch'):
+                    core.production_from_cache([],{},1100,path)
+
+class ProductionLifecycleTests(unittest.TestCase):
+    def namespace(self,blocked=False,overlap=False):
+        root=Path(__file__).resolve().parents[2]
+        tree=ast.parse((root/'docs/home-assistant/sil-planner-shadow-pyscript.py').read_text(encoding='utf-8'))
+        functions=[node for node in tree.body if isinstance(node,ast.FunctionDef) and node.name in ('_production_withdraw','sil_production_publish_prices','_shadow_withdraw','sil_shadow_publish_prices')]
+        for node in functions:node.decorator_list=[]
+        now=1793997000;calls=[]
+        entity=lambda value,attributes:SimpleNamespace(state=value,attributes=attributes)
+        store={'sensor.sil_shadow_price_input':entity('blocked',{}),'sensor.sil_shadow_config':entity('invalid',{}),
+               'sensor.sil_shadow_assessment':entity('unavailable',{})}
+        def prepared(*args):
+            if blocked:raise ValueError('provider_cache_expired')
+            return {'frames':['origin-aware raw v2'],'n':288,'r':now,'providerAgeS':20,'originMarket':1,'originForecast':287,'originUnknown':0}
+        entry=SimpleNamespace(domain='epex_spot',data={'source':'Energyforecast.de','market_area':'de','token':'synthetic_token'},options={})
+        def unique(name,**kwargs):
+            self.assertTrue(kwargs.get('kill_me'))
+            if overlap:raise RuntimeError('Overlapping invocation cancelled')
+        ns={'datetime':SimpleNamespace(datetime=SimpleNamespace(now=lambda zone:SimpleNamespace(timestamp=lambda:now)),timezone=SimpleNamespace(utc=None)),
+            'json':json,'task':SimpleNamespace(unique=unique),
+            'SOURCE_ENTRY':'synthetic_entry','REFERENCE_ENTITY':'synthetic_reference',
+            'PRODUCTION_TOPIC':'SolarLimiter/Input/PriceSchedule','TEST_TOPIC':'SolarLimiterTest/Input/PriceSchedule',
+            'hass':SimpleNamespace(config_entries=SimpleNamespace(async_get_entry=lambda _:entry),
+                states=SimpleNamespace(get=lambda entity_id:entity('ready',{'data':[]}) if entity_id=='synthetic_reference' else store.get(entity_id)),
+                data={'epex_spot':{'synthetic_entry':SimpleNamespace(last_update_success=True)}}),
+            'state':SimpleNamespace(set=lambda entity_id,value,new_attributes:store.update({entity_id:entity(value,new_attributes)})),
+            'service':SimpleNamespace(call=lambda *args,**kwargs:calls.append(kwargs)),
+            '_production_prepare':prepared,'_shadow_prepare':prepared,'_shadow_cache_evidence':lambda now:{}}
+        exec(compile(ast.fix_missing_locations(ast.Module(body=functions,type_ignores=[])),'production_lifecycle','exec'),ns)
+        return ns,store,calls
+
+    def test_test_offline_or_invalid_does_not_block_production(self):
+        ns,store,calls=self.namespace()
+        result=ns['sil_production_publish_prices']()
+        self.assertEqual(result['published_chunks'],1)
+        self.assertEqual(store['sensor.sil_production_price_input'].state,'ready')
+        self.assertEqual(calls[0]['topic'],'SolarLimiter/Input/PriceSchedule')
+        self.assertEqual(calls[0]['qos'],1)
+        self.assertFalse(calls[0]['retain'])
+        self.assertEqual(calls[0]['payload'],'origin-aware raw v2')
+
+    def test_production_expiry_withdraws_only_production(self):
+        ns,store,calls=self.namespace(blocked=True)
+        original=store['sensor.sil_shadow_price_input']
+        result=ns['sil_production_publish_prices']()
+        self.assertEqual(result['withdrawMessages'],1)
+        self.assertIs(store['sensor.sil_shadow_price_input'],original)
+        self.assertEqual(calls[0]['topic'],'SolarLimiter/Input/PriceSchedule')
+        self.assertEqual(json.loads(calls[0]['payload'])['n'],0)
+
+    def test_test_withdraw_cannot_withdraw_production(self):
+        ns,store,calls=self.namespace()
+        ns['sil_production_publish_prices']();original=store['sensor.sil_production_price_input'];calls.clear()
+        ns['_shadow_withdraw'](1793997001)
+        self.assertIs(store['sensor.sil_production_price_input'],original)
+        self.assertEqual([call['topic'] for call in calls],['SolarLimiterTest/Input/PriceSchedule'])
+
+    def test_production_overlap_guard_precedes_any_publish(self):
+        ns,_,calls=self.namespace(overlap=True)
+        with self.assertRaises(RuntimeError):ns['sil_production_publish_prices']()
+        self.assertEqual(calls,[])
+
+    def test_existing_cache_maintenance_path_ignores_test_device_health(self):
+        ns,store,calls=self.namespace()
+        result=ns['sil_shadow_publish_prices']()
+        self.assertEqual(result['published_chunks'],1)
+        self.assertEqual(store['sensor.sil_shadow_price_input'].state,'ready')
+        self.assertEqual(calls[0]['topic'],'SolarLimiterTest/Input/PriceSchedule')
 
 if __name__=='__main__':unittest.main()
