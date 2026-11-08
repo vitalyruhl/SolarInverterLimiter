@@ -1,9 +1,18 @@
-# Relative planner and isolated shadow profile (5.8.1)
+# Relative planner and isolated shadow profile (5.8.2)
 
 The owner-authorized 5.8.1 promotion enables the reviewed relative algorithm in
 normal firmware as well as the isolated shadow image. Deployment is gated on
 source/build review, a fresh 15-minute test-ESP observation, then the owner's
 production upload/runtime checks. Source/build success is not runtime acceptance.
+
+Version 5.8.2 preserves the existing full-battery PV restart in both policies.
+At 100% SOC, fresh qualified BMS/charger samples, healthy discharge permission,
+valid meters and a valid positive-price relative plan allow household demand
+within MAX to release curtailed PV even when the MPPT reports zero. Charging
+intent remains zero and the configured MIN cannot force output. Source faults,
+missing plans, nonpositive prices and source requalification still restrict output;
+below 100% SOC the relative allocation is authoritative again. This correction
+has host regression coverage; no new device acceptance is implied.
 
 ## Defaults and persisted values
 

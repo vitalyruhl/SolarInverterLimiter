@@ -163,8 +163,20 @@ public:
             out.strategy = "bypass"; out.reason = "limiter_off";
             return out;
         }
+        if(cfg.relativeTimePolicy && !in.futureValid)return stop(out,"relative_plan_missing");
+        if (charger && dischargeAvailable && out.reserveAllowed && in.soc >= 100) {
+            // A full battery curtails MPPT output without an AC load. Measured
+            // charger power cannot bound the PV that a new load will release.
+            pauseDynamics();
+            if (!std::isfinite(in.householdW)) return stop(out, "meters_missing");
+            out.pvOnly = true; out.minimumOverrideAllowed = false;
+            out.fullBatteryPv = true;
+            out.ceilingW = int(clamp(in.householdW, 0, maximum));
+            out.chargeTargetValid = true; out.chargeTargetW = 0;
+            out.strategy = "pv_only"; out.reason = "full_battery_pv";
+            return approve(out);
+        }
         if(cfg.relativeTimePolicy) {
-            if(!in.futureValid)return stop(out,"relative_plan_missing");
             if(!in.relativePricePositive)return stop(out,"relative_nonpositive_price");
             pauseDynamics();out.minimumOverrideAllowed=false;
             const int battery=dischargeAvailable&&out.reserveAllowed?forecastLimit:0;
@@ -179,18 +191,6 @@ public:
         // Missing MPPT measurements cannot add direct PV or charging power.
         const float chargerW = charger ? in.chargerW : 0.0f;
         out.minimumOverrideAllowed = dischargeAvailable && out.reserveAllowed;
-        if (charger && dischargeAvailable && out.reserveAllowed && in.soc >= 100) {
-            // A full battery curtails MPPT output without an AC load. Measured
-            // charger power cannot bound the PV that a new load will release.
-            pauseDynamics();
-            if (!std::isfinite(in.householdW)) return stop(out, "meters_missing");
-            out.pvOnly = true; out.minimumOverrideAllowed = false;
-            out.fullBatteryPv = true;
-            out.ceilingW = int(clamp(in.householdW, 0, maximum));
-            out.chargeTargetValid = true; out.chargeTargetW = 0;
-            out.strategy = "pv_only"; out.reason = "full_battery_pv";
-            return approve(out);
-        }
         const bool reserveOffCharging = chargeAvailable && price &&
             in.soc <= cfg.reserveOffSocPercent && band_ != Expensive;
         const bool reserveOnCharging = chargeAvailable && price &&

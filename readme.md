@@ -1,5 +1,13 @@
 # ESP32 RS485 Solar Inverter Limiter
 
+## Full battery PV with relative planning (5.8.2)
+
+The relative planner preserves the guarded full-battery PV restart: at 100% SOC,
+qualified healthy inputs and a valid positive-price plan allow household demand
+to release curtailed PV even when measured MPPT output is zero. Missing plans,
+source faults and nonpositive prices still stop output. Host regression coverage
+does not establish new hardware acceptance.
+
 ## Relative planner promotion (5.8.1)
 
 Normal and isolated shadow builds now use the reviewed relative planner,
