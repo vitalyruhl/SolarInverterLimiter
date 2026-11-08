@@ -25,12 +25,19 @@ struct PlanCaptureContext {
     bool sameHard(const PlanCaptureContext &o) const {
         const auto eq = [](float a, float b) { return a == b || (std::isnan(a) && std::isnan(b)); };
         return settings.valid == o.settings.valid && settings.idleOutputW == o.settings.idleOutputW &&
+            settings.relativeTimePolicy == o.settings.relativeTimePolicy &&
+            eq(settings.cheapTimePct,o.settings.cheapTimePct) && eq(settings.veryExpensiveTimePct,o.settings.veryExpensiveTimePct) &&
+            eq(settings.additionalExpensiveTimePct,o.settings.additionalExpensiveTimePct) &&
+            eq(settings.storageMinimumNetAdvantageEurKwh,o.settings.storageMinimumNetAdvantageEurKwh) &&
+            eq(settings.chargePriorityThreshold,o.settings.chargePriorityThreshold) && settings.chargeInverterSharePct == o.settings.chargeInverterSharePct &&
             eq(settings.reserveOffSocPercent, o.settings.reserveOffSocPercent) &&
             eq(settings.reserveOnSocPercent, o.settings.reserveOnSocPercent) &&
             settings.mosManualMode == o.settings.mosManualMode && settings.inverterEnabled == o.settings.inverterEnabled &&
             eq(settings.priceComfortEurPerKwh, o.settings.priceComfortEurPerKwh) &&
             eq(settings.priceDeadbandEurPerKwh, o.settings.priceDeadbandEurPerKwh) &&
             eq(settings.priceHysteresisEurPerKwh, o.settings.priceHysteresisEurPerKwh) &&
+            eq(settings.deferralToleranceEurKwh, o.settings.deferralToleranceEurKwh) &&
+            eq(settings.predictionPremiumPct, o.settings.predictionPremiumPct) &&
             maximumW == o.maximumW && minimumW == o.minimumW && offsetW == o.offsetW && sourceTimeoutS == o.sourceTimeoutS &&
             eq(priceFactor, o.priceFactor) &&
             limiter == o.limiter && transport == o.transport && negativeMin == o.negativeMin &&

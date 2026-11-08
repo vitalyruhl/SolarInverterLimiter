@@ -32,6 +32,9 @@ struct CurrentInputs {
     uint32_t bmsSequence = 0;
     uint32_t chargerSequence = 0;
     bool futureValid = false;
+    bool relativePricePositive = false;
+    int futurePvCeilingW = 0;
+    const char* futurePriceTier = "unknown";
     int futureBatteryCeilingW = 0;
     float futureChargeTargetW = 0;
     const char *futureReason = "forecast_missing";
@@ -75,6 +78,7 @@ public:
         const bool charger = in.chargerValid && std::isfinite(in.chargerW) && in.chargerW >= 0;
         const bool price = in.priceValid && std::isfinite(in.price);
         if (!cfg.valid) return stop(out, "settings");
+        if(cfg.relativeTimePolicy&&(!price||!in.relativePricePositive))return stop(out,"relative_nonpositive_price");
         if (bms) {
             if (in.soc <= cfg.reserveOffSocPercent) { reserveKnown_ = true; reserveAllowed_ = false; }
             else if (in.soc >= cfg.reserveOnSocPercent) { reserveKnown_ = true; reserveAllowed_ = true; }
@@ -90,7 +94,7 @@ public:
         if (in.alarmRestricted && !in.softwareMosLockOnly) return stop(out, "source_alarm");
         if (!cfg.inverterEnabled) return stop(out, "inverter_off");
         if (!transportEnabled) return stop(out, "transport_off");
-        if (price && in.price < 0) return stop(out, "negative_price");
+        if (price && (in.price < 0 || (cfg.relativeTimePolicy && in.price == 0))) return stop(out, "negative_price");
         if (!in.metersValid || !std::isfinite(in.householdW)) return stop(out, "meters_missing");
         if (in.chargerFault) return stop(out, "charger_fault");
         if (batteryGraceActive_ && !in.bmsWithinGrace) return stop(out, "source_timeout");
@@ -128,7 +132,7 @@ public:
         }
         // Keep the household PID active for charge-only operation, including Limiter OFF.
         out.pvOnly = !dischargeAvailable;
-        if (!limiterEnabled && dischargeAvailable && !batteryGraceActive_) {
+        if (!cfg.relativeTimePolicy && !limiterEnabled && dischargeAvailable && !batteryGraceActive_) {
             resetDynamics();
             out.direct = true; out.ceilingW = int(maximum);
             out.strategy = "bypass"; out.reason = "limiter_off";
@@ -153,15 +157,13 @@ public:
             return out;
         }
         // Grace must complete source qualification before Limiter OFF may bypass it.
-        if (!limiterEnabled && dischargeAvailable) {
+        if (!cfg.relativeTimePolicy && !limiterEnabled && dischargeAvailable) {
             resetDynamics();
             out.direct = true; out.ceilingW = int(maximum);
             out.strategy = "bypass"; out.reason = "limiter_off";
             return out;
         }
-        // Missing MPPT measurements cannot add direct PV or charging power.
-        const float chargerW = charger ? in.chargerW : 0.0f;
-        out.minimumOverrideAllowed = dischargeAvailable && out.reserveAllowed;
+        if(cfg.relativeTimePolicy && !in.futureValid)return stop(out,"relative_plan_missing");
         if (charger && dischargeAvailable && out.reserveAllowed && in.soc >= 100) {
             // A full battery curtails MPPT output without an AC load. Measured
             // charger power cannot bound the PV that a new load will release.
@@ -174,6 +176,21 @@ public:
             out.strategy = "pv_only"; out.reason = "full_battery_pv";
             return approve(out);
         }
+        if(cfg.relativeTimePolicy) {
+            if(!in.relativePricePositive)return stop(out,"relative_nonpositive_price");
+            pauseDynamics();out.minimumOverrideAllowed=false;
+            const int battery=dischargeAvailable&&out.reserveAllowed?forecastLimit:0;
+            const int direct=charger?std::max(0,std::min(in.futurePvCeilingW,int(maximum))):0;
+            out.ceilingW=std::min(int(maximum),battery+direct);
+            out.pvOnly=battery==0;out.strategy=battery>0?"discharge":"preserve";
+            out.priceBand=in.futurePriceTier;out.reason=in.futureReason;
+            out.chargeTargetValid=true;out.chargeTargetW=chargeAvailable?std::max(0.0f,in.futureChargeTargetW):0;
+            batteryGraceBudgetW_=battery;
+            return approve(out,battery>0);
+        }
+        // Missing MPPT measurements cannot add direct PV or charging power.
+        const float chargerW = charger ? in.chargerW : 0.0f;
+        out.minimumOverrideAllowed = dischargeAvailable && out.reserveAllowed;
         const bool reserveOffCharging = chargeAvailable && price &&
             in.soc <= cfg.reserveOffSocPercent && band_ != Expensive;
         const bool reserveOnCharging = chargeAvailable && price &&

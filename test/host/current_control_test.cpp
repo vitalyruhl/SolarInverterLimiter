@@ -498,7 +498,43 @@ static void fullBatteryRestartsCurtailedPv() {
   assert(grace.update(cfg, in, true, true, 900, 500, 6400).ceilingW == 0);
 }
 
+static void relativeFullBatteryRestartsCurtailedPv() {
+  PreparedSettings cfg; cfg.valid = true; cfg.relativeTimePolicy = true;
+  auto in = qualifiedStorageInputs();
+  in.soc = 100; in.chargerW = in.batteryW = 0;
+  in.relativePricePositive = true;
+  in.futureReason = "relative_hold"; in.futurePriceTier = "cheap";
+  CurrentControl control;
+  const auto out = qualifyStorage(control, cfg, in);
+  assert(out.ceilingW == 900 && out.fullBatteryPv && out.pvOnly);
+  assert(!out.direct && !out.minimumOverrideAllowed);
+  assert(out.chargeTargetValid && out.chargeTargetW == 0);
+  assert(!std::strcmp(out.reason, "full_battery_pv"));
+  in.soc = 99;
+  assert(qualifyStorage(control, cfg, in, 4, 10100).ceilingW == 0);
+  in.soc = 100;
+  for (unsigned gate = 0; gate < 10; ++gate) {
+    auto blocked = in; auto settings = cfg; CurrentControl guarded;
+    if (gate == 0) blocked.alarmRestricted = true;
+    if (gate == 1) blocked.chargerFault = true;
+    if (gate == 2) settings.inverterEnabled = false;
+    if (gate == 3) blocked.metersValid = false;
+    if (gate == 4) blocked.price = -.01f;
+    if (gate == 5) blocked.batteryDischargeIntentAvailable = false;
+    if (gate == 6) settings.valid = false;
+    if (gate == 7) blocked.futureValid = false;
+    if (gate == 8) blocked.relativePricePositive = false;
+    if (gate == 9) blocked.householdW = NAN;
+    const auto stopped = qualifyStorage(guarded, settings, blocked);
+    assert(stopped.ceilingW == 0 && !stopped.fullBatteryPv);
+  }
+  CurrentControl recovering;
+  assert(recovering.update(cfg, in, true, true, 900, 0, 100).ceilingW == 0);
+  assert(recovering.update(cfg, in, true, false, 900, 0, 6200).ceilingW == 0);
+}
+
 int main() {
+  relativeFullBatteryRestartsCurtailedPv();
   fullBatteryRestartsCurtailedPv();
   batteryPlanningSurvivesMissingMppt();
   forecastCeilingSurvivesSourceLoss();

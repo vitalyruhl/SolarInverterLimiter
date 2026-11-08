@@ -1,0 +1,1195 @@
+title: SIL Prod/Test
+path: sil-planner-comparison
+icon: mdi:flask-outline
+type: panel
+cards:
+- type: vertical-stack
+  cards:
+  - type: markdown
+    content: '## SIL Prod/Test · 36 Stunden
+
+      **Der Test steuert keine Geräte.** {% if state_attr(''sensor.sil_comparison_production_config'',''allocationPolicy'')==''relative_time_tiers_v1''
+      %}Die Produktion meldet die relative Planung; ihre tatsächlich gemeldeten Einstellungen stehen unten.{% else %}Die Produktion
+      verwendet weiter die bisherige Planung.{% endif %}'
+  - type: markdown
+    content: '### Original aus Overview · Produktion
+
+      Unveränderte Kopie der Produktionsanzeige.
+
+      {% set a=''sensor.sil_shadow_assessment'' %}{% set stamp=state_attr(a,''g'') %}
+
+      {% if states(a)==''ready'' and stamp is number and 0 <= as_timestamp(now())-stamp < 180 %}
+
+      Die neue Berechnung steht separat unten im Testvergleich.
+
+      {% else %}
+
+      **Die neue Berechnung wartet auf den Test-ESP.** Die Originalkurve zeigt weiterhin die Produktion.
+
+      {% endif %}'
+  - type: vertical-stack
+    cards:
+    - type: conditional
+      conditions:
+      - condition: screen
+        media_query: '(min-width: 768px)'
+      card:
+        type: custom:apexcharts-card
+        header:
+          show: true
+          title: Strompreis und Entladeplan (36 h)
+          show_states: false
+        graph_span: 39h
+        span:
+          start: minute
+          offset: -3h
+        now:
+          show: true
+          label: Now
+        series:
+        - entity: sensor.sil_current_discharge_plan
+          name: Entladeplan
+          yaxis_id: discharge_w
+          unit: W
+          float_precision: 0
+          type: line
+          curve: stepline
+          color: '#ef5350'
+          stroke_width: 1
+          extend_to: now
+          fill_raw: 'null'
+          group_by:
+            func: raw
+          show:
+            extremas: false
+        - entity: sensor.solarlimiter_discharge_budget
+          name: Entladebudget (Batterie)
+          yaxis_id: discharge_w
+          unit: W
+          float_precision: 0
+          type: area
+          curve: stepline
+          color: '#ef5350'
+          opacity: 0.22
+          stroke_width: 1
+          extend_to: false
+          show:
+            extremas: false
+          data_generator: "const windowStart = start.getTime();\nconst windowEnd = end.getTime();\nconst nowMs = Date.now();\n\
+            const a = entity.attributes;\nif (entity.state !== 'ready' || a.valid !== true || a.v !== 1 ||\n    !Number.isInteger(a.g)\
+            \ || !Number.isInteger(a.t) || a.d !== 900 ||\n    !Number.isInteger(a.n) || a.n < 2 || a.n > 144 ||\n    !Array.isArray(a.w)\
+            \ || a.w.length !== a.n ||\n    a.t % 900 !== 0 || a.g < a.t || a.g >= a.t + a.d ||\n    a.w.some(w => !Number.isInteger(w)\
+            \ || w < 0)) return [];\nconst generatedMs = a.g * 1000;\nconst coverageEnd = (a.t + a.n * a.d) * 1000;\nif (nowMs\
+            \ - generatedMs > 180000 || generatedMs - nowMs > 120000 ||\n    nowMs >= coverageEnd) return [];\nconst points\
+            \ = [];\nfor (let i = 0; i < a.n; ++i) {\n  const intervalStart = (a.t + i * a.d) * 1000;\n  const intervalEnd\
+            \ = intervalStart + a.d * 1000;\n  const at = Math.max(intervalStart, generatedMs, windowStart, nowMs);\n  if\
+            \ (intervalEnd <= at || at >= windowEnd) continue;\n  points.push([at, a.w[i]]);\n}\nif (points.length) {\n  const\
+            \ end = Math.min(coverageEnd, windowEnd);\n  const last = points[points.length - 1];\n  if (end > last[0]) points.push([end,\
+            \ last[1]]);\n}\nreturn points;\n"
+        - entity: sensor.solarlimiter_charge_plan
+          name: PV Vorhalten
+          yaxis_id: solar_dc
+          unit: W
+          float_precision: 0
+          type: area
+          curve: stepline
+          color: '#42a5f5'
+          opacity: 0.2
+          stroke_width: 1
+          extend_to: false
+          show:
+            extremas: false
+          data_generator: "const nowMs = Date.now();\nconst windowStart = start.getTime();\nconst windowEnd = end.getTime();\n\
+            const a = entity?.attributes;\nif (entity?.state !== 'ready' || !a || a.valid !== true || a.v !== 1 ||\n    !Number.isInteger(a.g)\
+            \ || !Number.isInteger(a.t) || a.d !== 900 ||\n    !Number.isInteger(a.n) || a.n < 2 || a.n > 144 ||\n    a.t\
+            \ % 900 !== 0 || a.g < a.t || a.g >= a.t + a.d) return [];\nif (a.kind !== 'intent_projection' ||\n    !Array.isArray(a.w)\
+            \ || a.w.length !== a.n ||\n    !Array.isArray(a.s) || a.s.length !== a.n ||\n    [...a.w, ...a.s].some(value\
+            \ => value !== null &&\n      (!Number.isInteger(value) || value < 0 || value > 12000))) return [];\nconst generatedMs\
+            \ = a.g * 1000;\nconst coverageEnd = (a.t + a.n * a.d) * 1000;\nif (nowMs - generatedMs > 180000 || generatedMs\
+            \ - nowMs > 120000 ||\n    nowMs >= coverageEnd) return [];\nconst values = a.w;\nconst points = [];\nfor (let\
+            \ i = 0; i < a.n; ++i) {\n  const intervalStart = (a.t + i * a.d) * 1000;\n  const intervalEnd = intervalStart\
+            \ + a.d * 1000;\n  const at = Math.max(intervalStart, generatedMs, windowStart, nowMs);\n  const end = Math.min(intervalEnd,\
+            \ windowEnd);\n  if (end <= at) continue;\n  // Keep explicit null gaps and the full duration of adjacent known\
+            \ intervals.\n  points.push([at, values[i]], [end, values[i]]);\n}\nreturn points;\n"
+        - entity: sensor.solarlimiter_charge_plan
+          name: PV-Prognose
+          yaxis_id: solar_dc
+          unit: W
+          float_precision: 0
+          type: line
+          curve: stepline
+          color: '#ffca28'
+          opacity: 1
+          stroke_width: 1
+          extend_to: false
+          show:
+            extremas: false
+          data_generator: "const nowMs = Date.now();\nconst windowStart = start.getTime();\nconst windowEnd = end.getTime();\n\
+            const a = entity?.attributes;\nif (entity?.state !== 'ready' || !a || a.valid !== true || a.v !== 1 ||\n    !Number.isInteger(a.g)\
+            \ || !Number.isInteger(a.t) || a.d !== 900 ||\n    !Number.isInteger(a.n) || a.n < 2 || a.n > 144 ||\n    a.t\
+            \ % 900 !== 0 || a.g < a.t || a.g >= a.t + a.d) return [];\nif (a.kind !== 'intent_projection' ||\n    !Array.isArray(a.w)\
+            \ || a.w.length !== a.n ||\n    !Array.isArray(a.s) || a.s.length !== a.n ||\n    [...a.w, ...a.s].some(value\
+            \ => value !== null &&\n      (!Number.isInteger(value) || value < 0 || value > 12000))) return [];\nconst generatedMs\
+            \ = a.g * 1000;\nconst coverageEnd = (a.t + a.n * a.d) * 1000;\nif (nowMs - generatedMs > 180000 || generatedMs\
+            \ - nowMs > 120000 ||\n    nowMs >= coverageEnd) return [];\nconst values = a.s;\nconst points = [];\nfor (let\
+            \ i = 0; i < a.n; ++i) {\n  const intervalStart = (a.t + i * a.d) * 1000;\n  const intervalEnd = intervalStart\
+            \ + a.d * 1000;\n  const at = Math.max(intervalStart, generatedMs, windowStart, nowMs);\n  const end = Math.min(intervalEnd,\
+            \ windowEnd);\n  if (end <= at) continue;\n  // Keep explicit null gaps and the full duration of adjacent known\
+            \ intervals.\n  points.push([at, values[i]], [end, values[i]]);\n}\nreturn points;\n"
+          stroke_dash: 6
+        - entity: sensor.epex_spot_data_total_price_2
+          yaxis_id: uurprijs
+          float_precision: 3
+          type: line
+          curve: stepline
+          extend_to: false
+          show:
+            extremas: true
+          data_generator: "const windowStart = start.getTime();\nconst windowEnd = end.getTime();\nreturn (entity.attributes.data\
+            \ ?? [])\n  .filter(entry => {\n    const at = new Date(entry.start_time).getTime();\n    return at >= windowStart\
+            \ && at < windowEnd;\n  })\n  .map(entry => [new Date(entry.start_time).getTime(), entry.price_per_kwh]);\n"
+          color_threshold:
+          - value: 0
+            color: '#186ddc'
+          - value: 0.155
+            color: '#04822e'
+          - value: 0.2
+            color: '#12A141'
+          - value: 0.25
+            color: '#79B92C'
+          - value: 0.3
+            color: '#C4D81D'
+          - value: 0.35
+            color: '#F3DC0C'
+          - value: 0.4
+            color: red
+          - value: 0.5
+            color: magenta
+          stroke_width: 1
+        - entity: sensor.sil_configured_maximum_output
+          name: SIL configured maximum output
+          yaxis_id: discharge_w
+          type: line
+          color: '#00000000'
+          opacity: 0
+          stroke_width: 0
+          extend_to: false
+          show:
+            in_chart: true
+            in_legend: false
+            in_header: false
+            extremas: false
+            datalabels: false
+          data_generator: "if (!entity || ['unknown', 'unavailable', ''].includes(entity.state)) return [];\nconst limit =\
+            \ Number(entity.state);\nconst a = entity.attributes;\nif (!a || a.v !== 1 || a.valid !== true ||\n    typeof\
+            \ a.maxOutputW !== 'number' || !Number.isInteger(a.maxOutputW) ||\n    !Number.isInteger(limit) || limit <= 0\
+            \ || limit > 2147483647 ||\n    limit !== a.maxOutputW) return [];\nconst windowStart = start.getTime();\nconst\
+            \ windowEnd = end.getTime();\nif (!Number.isFinite(windowStart) || !Number.isFinite(windowEnd) ||\n    windowEnd\
+            \ <= windowStart) return [];\nreturn [[windowStart, limit + 100], [windowEnd, limit + 100]];\n"
+        experimental:
+          color_threshold: true
+        yaxis:
+        - id: uurprijs
+          decimals: 3
+          min: 0
+          apex_config:
+            title:
+              text: €/kWh
+            tickAmount: 4
+        - id: discharge_w
+          max: auto
+          opposite: true
+          decimals: 0
+          min: 0
+          apex_config:
+            forceNiceScale: false
+            title:
+              text: W
+            tickAmount: 4
+        - id: solar_dc
+          opposite: true
+          min: 0
+          max: 2000
+          decimals: 0
+          apex_config:
+            title:
+              text: PV / Ladeabsicht
+            tickAmount: 4
+        apex_config:
+          chart:
+            height: 420
+            animations:
+              enabled: false
+          stroke:
+            width:
+            - 1
+            - 1
+            - 1
+            - 1
+            - 1
+            - 0
+            curve: stepline
+          markers:
+            size: 0
+          legend:
+            show: true
+            formatter: "EVAL:function(name, opts) {\n  const values = opts.w.globals.series[opts.seriesIndex] || [];\n  if\
+              \ (opts.seriesIndex === 4) {\n    const prices = values.filter(Number.isFinite);\n    const maximum = prices.length\
+              \ ? Math.max(...prices) : null;\n    return ['Price maximum (shown period):', '<strong>' +\n      (maximum ===\
+              \ null ? 'Unavailable' : maximum.toLocaleString(undefined,\n        {minimumFractionDigits: 3, maximumFractionDigits:\
+              \ 3}) + ' EUR/kWh') + '</strong>'];\n  }\n  if (opts.seriesIndex === 5) return [];\n  const value = values.length\
+              \ ? values[values.length - 1] : null;\n  return [name + ':', '<strong>' +\n    (Number.isFinite(value) ? value.toLocaleString(undefined,\n\
+              \      {maximumFractionDigits: 0}) : 'N/A') + ' W</strong>'];\n}"
+          tooltip:
+            enabledOnSeries:
+            - 0
+            - 1
+            - 2
+            - 3
+            - 4
+            x:
+              show: true
+              format: dd.MM. HH:mm
+          xaxis:
+            type: datetime
+            labels:
+              datetimeUTC: false
+    - type: conditional
+      conditions:
+      - condition: screen
+        media_query: (width < 768px)
+      card:
+        type: custom:apexcharts-card
+        header:
+          show: true
+          title: Strompreis und Entladeplan (36 h)
+          show_states: false
+        graph_span: 39h
+        span:
+          start: minute
+          offset: -3h
+        now:
+          show: true
+          label: Now
+        series:
+        - entity: sensor.sil_current_discharge_plan
+          name: Entladeplan
+          yaxis_id: discharge_w
+          unit: W
+          float_precision: 0
+          type: line
+          curve: stepline
+          color: '#ef5350'
+          stroke_width: 1
+          extend_to: now
+          fill_raw: 'null'
+          group_by:
+            func: raw
+          show:
+            extremas: false
+        - entity: sensor.solarlimiter_discharge_budget
+          name: Entladeplan (Batterie)
+          yaxis_id: discharge_w
+          unit: W
+          float_precision: 0
+          type: area
+          curve: stepline
+          color: '#ef5350'
+          opacity: 0.22
+          stroke_width: 1
+          extend_to: false
+          show:
+            extremas: false
+          data_generator: "const windowStart = start.getTime();\nconst windowEnd = end.getTime();\nconst nowMs = Date.now();\n\
+            const a = entity.attributes;\nif (entity.state !== 'ready' || a.valid !== true || a.v !== 1 ||\n    !Number.isInteger(a.g)\
+            \ || !Number.isInteger(a.t) || a.d !== 900 ||\n    !Number.isInteger(a.n) || a.n < 2 || a.n > 144 ||\n    !Array.isArray(a.w)\
+            \ || a.w.length !== a.n ||\n    a.t % 900 !== 0 || a.g < a.t || a.g >= a.t + a.d ||\n    a.w.some(w => !Number.isInteger(w)\
+            \ || w < 0)) return [];\nconst generatedMs = a.g * 1000;\nconst coverageEnd = (a.t + a.n * a.d) * 1000;\nif (nowMs\
+            \ - generatedMs > 180000 || generatedMs - nowMs > 120000 ||\n    nowMs >= coverageEnd) return [];\nconst points\
+            \ = [];\nfor (let i = 0; i < a.n; ++i) {\n  const intervalStart = (a.t + i * a.d) * 1000;\n  const intervalEnd\
+            \ = intervalStart + a.d * 1000;\n  const at = Math.max(intervalStart, generatedMs, windowStart, nowMs);\n  if\
+            \ (intervalEnd <= at || at >= windowEnd) continue;\n  points.push([at, a.w[i]]);\n}\nif (points.length) {\n  const\
+            \ end = Math.min(coverageEnd, windowEnd);\n  const last = points[points.length - 1];\n  if (end > last[0]) points.push([end,\
+            \ last[1]]);\n}\nreturn points;\n"
+        - entity: sensor.solarlimiter_charge_plan
+          name: PV Vorhalten
+          yaxis_id: solar_dc
+          unit: W
+          float_precision: 0
+          type: area
+          curve: stepline
+          color: '#42a5f5'
+          opacity: 0.2
+          stroke_width: 1
+          extend_to: false
+          show:
+            extremas: false
+          data_generator: "const nowMs = Date.now();\nconst windowStart = start.getTime();\nconst windowEnd = end.getTime();\n\
+            const a = entity?.attributes;\nif (entity?.state !== 'ready' || !a || a.valid !== true || a.v !== 1 ||\n    !Number.isInteger(a.g)\
+            \ || !Number.isInteger(a.t) || a.d !== 900 ||\n    !Number.isInteger(a.n) || a.n < 2 || a.n > 144 ||\n    a.t\
+            \ % 900 !== 0 || a.g < a.t || a.g >= a.t + a.d) return [];\nif (a.kind !== 'intent_projection' ||\n    !Array.isArray(a.w)\
+            \ || a.w.length !== a.n ||\n    !Array.isArray(a.s) || a.s.length !== a.n ||\n    [...a.w, ...a.s].some(value\
+            \ => value !== null &&\n      (!Number.isInteger(value) || value < 0 || value > 12000))) return [];\nconst generatedMs\
+            \ = a.g * 1000;\nconst coverageEnd = (a.t + a.n * a.d) * 1000;\nif (nowMs - generatedMs > 180000 || generatedMs\
+            \ - nowMs > 120000 ||\n    nowMs >= coverageEnd) return [];\nconst values = a.w;\nconst points = [];\nfor (let\
+            \ i = 0; i < a.n; ++i) {\n  const intervalStart = (a.t + i * a.d) * 1000;\n  const intervalEnd = intervalStart\
+            \ + a.d * 1000;\n  const at = Math.max(intervalStart, generatedMs, windowStart, nowMs);\n  const end = Math.min(intervalEnd,\
+            \ windowEnd);\n  if (end <= at) continue;\n  // Keep explicit null gaps and the full duration of adjacent known\
+            \ intervals.\n  points.push([at, values[i]], [end, values[i]]);\n}\nreturn points;\n"
+        - entity: sensor.solarlimiter_charge_plan
+          name: PV-Prognose
+          yaxis_id: solar_dc
+          unit: W
+          float_precision: 0
+          type: line
+          curve: stepline
+          color: '#ffca28'
+          opacity: 1
+          stroke_width: 1
+          extend_to: false
+          show:
+            extremas: false
+          data_generator: "const nowMs = Date.now();\nconst windowStart = start.getTime();\nconst windowEnd = end.getTime();\n\
+            const a = entity?.attributes;\nif (entity?.state !== 'ready' || !a || a.valid !== true || a.v !== 1 ||\n    !Number.isInteger(a.g)\
+            \ || !Number.isInteger(a.t) || a.d !== 900 ||\n    !Number.isInteger(a.n) || a.n < 2 || a.n > 144 ||\n    a.t\
+            \ % 900 !== 0 || a.g < a.t || a.g >= a.t + a.d) return [];\nif (a.kind !== 'intent_projection' ||\n    !Array.isArray(a.w)\
+            \ || a.w.length !== a.n ||\n    !Array.isArray(a.s) || a.s.length !== a.n ||\n    [...a.w, ...a.s].some(value\
+            \ => value !== null &&\n      (!Number.isInteger(value) || value < 0 || value > 12000))) return [];\nconst generatedMs\
+            \ = a.g * 1000;\nconst coverageEnd = (a.t + a.n * a.d) * 1000;\nif (nowMs - generatedMs > 180000 || generatedMs\
+            \ - nowMs > 120000 ||\n    nowMs >= coverageEnd) return [];\nconst values = a.s;\nconst points = [];\nfor (let\
+            \ i = 0; i < a.n; ++i) {\n  const intervalStart = (a.t + i * a.d) * 1000;\n  const intervalEnd = intervalStart\
+            \ + a.d * 1000;\n  const at = Math.max(intervalStart, generatedMs, windowStart, nowMs);\n  const end = Math.min(intervalEnd,\
+            \ windowEnd);\n  if (end <= at) continue;\n  // Keep explicit null gaps and the full duration of adjacent known\
+            \ intervals.\n  points.push([at, values[i]], [end, values[i]]);\n}\nreturn points;\n"
+          stroke_dash: 6
+        - entity: sensor.epex_spot_data_total_price_2
+          yaxis_id: uurprijs
+          float_precision: 3
+          type: line
+          curve: stepline
+          extend_to: false
+          show:
+            extremas: true
+          data_generator: "const windowStart = start.getTime();\nconst windowEnd = end.getTime();\nreturn (entity.attributes.data\
+            \ ?? [])\n  .filter(entry => {\n    const at = new Date(entry.start_time).getTime();\n    return at >= windowStart\
+            \ && at < windowEnd;\n  })\n  .map(entry => [new Date(entry.start_time).getTime(), entry.price_per_kwh]);\n"
+          color_threshold:
+          - value: 0
+            color: '#186ddc'
+          - value: 0.155
+            color: '#04822e'
+          - value: 0.2
+            color: '#12A141'
+          - value: 0.25
+            color: '#79B92C'
+          - value: 0.3
+            color: '#C4D81D'
+          - value: 0.35
+            color: '#F3DC0C'
+          - value: 0.4
+            color: red
+          - value: 0.5
+            color: magenta
+          stroke_width: 1
+        - entity: sensor.sil_configured_maximum_output
+          name: SIL configured maximum output
+          yaxis_id: discharge_w
+          type: line
+          color: '#00000000'
+          opacity: 0
+          stroke_width: 0
+          extend_to: false
+          show:
+            in_chart: true
+            in_legend: false
+            in_header: false
+            extremas: false
+            datalabels: false
+          data_generator: "if (!entity || ['unknown', 'unavailable', ''].includes(entity.state)) return [];\nconst limit =\
+            \ Number(entity.state);\nconst a = entity.attributes;\nif (!a || a.v !== 1 || a.valid !== true ||\n    typeof\
+            \ a.maxOutputW !== 'number' || !Number.isInteger(a.maxOutputW) ||\n    !Number.isInteger(limit) || limit <= 0\
+            \ || limit > 2147483647 ||\n    limit !== a.maxOutputW) return [];\nconst windowStart = start.getTime();\nconst\
+            \ windowEnd = end.getTime();\nif (!Number.isFinite(windowStart) || !Number.isFinite(windowEnd) ||\n    windowEnd\
+            \ <= windowStart) return [];\nreturn [[windowStart, limit + 100], [windowEnd, limit + 100]];\n"
+        experimental:
+          color_threshold: true
+        yaxis:
+        - id: uurprijs
+          decimals: 3
+          min: 0
+          apex_config:
+            title:
+              text: €/kWh
+            tickAmount: 4
+        - id: discharge_w
+          show: false
+          max: auto
+          opposite: true
+          decimals: 0
+          min: 0
+          apex_config:
+            forceNiceScale: false
+            title:
+              text: W
+            tickAmount: 4
+        - id: solar_dc
+          show: false
+          opposite: true
+          min: 0
+          max: 2000
+          decimals: 0
+          apex_config:
+            title:
+              text: PV / Ladeabsicht
+            tickAmount: 4
+        apex_config:
+          chart:
+            height: 420
+            animations:
+              enabled: false
+          stroke:
+            width:
+            - 1
+            - 1
+            - 1
+            - 1
+            - 1
+            - 0
+            curve: stepline
+          markers:
+            size: 0
+          legend:
+            show: true
+            formatter: "EVAL:function(name, opts) {\n  const values = opts.w.globals.series[opts.seriesIndex] || [];\n  if\
+              \ (opts.seriesIndex === 4) {\n    const prices = values.filter(Number.isFinite);\n    const maximum = prices.length\
+              \ ? Math.max(...prices) : null;\n    return ['Price maximum (shown period):', '<strong>' +\n      (maximum ===\
+              \ null ? 'Unavailable' : maximum.toLocaleString(undefined,\n        {minimumFractionDigits: 3, maximumFractionDigits:\
+              \ 3}) + ' EUR/kWh') + '</strong>'];\n  }\n  if (opts.seriesIndex === 5) return [];\n  const value = values.length\
+              \ ? values[values.length - 1] : null;\n  return [name + ':', '<strong>' +\n    (Number.isFinite(value) ? value.toLocaleString(undefined,\n\
+              \      {maximumFractionDigits: 0}) : 'N/A') + ' W</strong>'];\n}"
+          tooltip:
+            enabledOnSeries:
+            - 0
+            - 1
+            - 2
+            - 3
+            - 4
+            x:
+              show: true
+              format: dd.MM. HH:mm
+          xaxis:
+            type: datetime
+            labels:
+              datetimeUTC: false
+    - type: markdown
+      content: '{% set e = ''sensor.solarlimiter_discharge_budget'' %}
+
+        {% set w = state_attr(e, ''w'') or [] %}
+
+        {% set stamp = state_attr(e, ''g'') | int(0) %}
+
+        {% if states(e) == ''ready'' and stamp > 0 and as_timestamp(now()) - stamp < 180 %}
+
+        **Plan aktuell** · Stand {{ stamp | timestamp_custom(''%d.%m. %H:%M:%S'') }}
+
+        {% if (w | max if w else 0) == 0 %}      **keine Batterieentladung eingeplant**.{% else %}SIL Batterieenergie einlagert
+        – bis zu **{{ w | max }} W**.
+
+        {% endif %}
+
+        {% else %}
+
+        **Noch kein aktueller, gültiger Entladeplan.**
+
+        {% endif %}
+
+
+        {% set pc=''sensor.sil_comparison_production_config'' %}
+
+        {% if state_attr(pc,''allocationPolicy'')==''relative_time_tiers_v1'' %}
+
+        **Relative Planung:** günstig {{ state_attr(pc,''cheapTimePct'') if is_number(state_attr(pc,''cheapTimePct'')) else
+        ''offen'' }} % · sehr teuer {{ state_attr(pc,''veryExpensiveTimePct'') if is_number(state_attr(pc,''veryExpensiveTimePct''))
+        else ''offen'' }} % · zusätzlich teuer {{ state_attr(pc,''additionalExpensiveTimePct'') if is_number(state_attr(pc,''additionalExpensiveTimePct''))
+        else ''offen'' }} %.
+
+        **Prognoseaufschlag:** {{ state_attr(pc,''predictionPremiumPct'') if is_number(state_attr(pc,''predictionPremiumPct''))
+        else ''offen'' }} % · **Mindestvorteil neuer Speicherung:** {% if is_number(state_attr(pc,''storageMinimumNetAdvantageEurKwh''))
+        %}{{ (state_attr(pc,''storageMinimumNetAdvantageEurKwh'')*100)|round(2) }} ct/kWh{% else %}offen{% endif %} · **Wirkungsgrade
+        Laden/Entladen:** {{ state_attr(pc,''chargeEfficiencyPct'') if is_number(state_attr(pc,''chargeEfficiencyPct'')) else
+        ''offen'' }} / {{ state_attr(pc,''dischargeEfficiencyPct'') if is_number(state_attr(pc,''dischargeEfficiencyPct''))
+        else ''offen'' }} %.
+
+        {% endif %}
+
+        '
+    grid_options:
+      columns: full
+  - type: grid
+    columns: 3
+    square: false
+    cards:
+    - type: markdown
+      content: '### Datenstand und Preise
+
+        {% set a=''sensor.sil_shadow_assessment'' %}{% set p=''sensor.sil_comparison_production_state'' %}{% set c=''sensor.sil_shadow_config''
+        %}{% set pc=''sensor.sil_comparison_production_config'' %}{% set i=''sensor.sil_shadow_price_input'' %}
+
+        {% set test_current = states(a)==''ready'' and state_attr(a,''g'') is number and 0 <= as_timestamp(now())-state_attr(a,''g'')
+        < 180 %}
+
+        {% set input_current = states(i)==''ready'' and state_attr(i,''lastPublishedAt'') is number and 0 <= as_timestamp(now())-state_attr(i,''lastPublishedAt'')
+        < 180 %}
+
+        **Stand Produktion:** {% if state_attr(p,''received_at'') is number %}{{ state_attr(p,''received_at'') | timestamp_custom(''%d.%m.
+        %H:%M:%S'') }}{% else %}noch keine Daten{% endif %}.
+
+        **Stand Test:** {% if test_current and input_current %}{{ state_attr(a,''g'') | timestamp_custom(''%d.%m. %H:%M:%S'')
+        }}{% else %}wartet auf aktuelle Testdaten{% endif %}.
+
+        **Preisvergleich:** {% if input_current %}gleiche Tarifwerte{% elif state_attr(i,''reason'')==''tariff_alignment_mismatch''
+        %}pausiert: Anbieter und HA haben noch unterschiedliche Preisstände{% else %}wartet auf gültige Preise{% endif %}.
+
+        **Preisquelle in den nächsten 36 Stunden:** Börse {{ state_attr(i,''originMarket36h'') or 0 }} · Prognose {{ state_attr(i,''originForecast36h'')
+        or 0 }} · unklar {{ state_attr(i,''originUnknown36h'') or 0 }} Viertelstunden.
+
+
+        '
+    - type: markdown
+      content: '### Verfügbare Energie
+
+        {% set a=''sensor.sil_shadow_assessment'' %}{% set p=''sensor.sil_comparison_production_state'' %}
+
+        | | Produktion | Test |
+
+        |---|---:|---:|
+
+        | Batterieenergie | {% if is_number(state_attr(p,''availableWh'')) %}{{ (state_attr(p,''availableWh'')|float/1000)|round(2)
+        }} kWh{% else %}unklar{% endif %} | {% if states(a)==''ready'' and state_attr(a,''g'') is number and 0 <= as_timestamp(now())-state_attr(a,''g'')
+        < 180 and is_number(state_attr(a,''availableWh'')) %}{{ (state_attr(a,''availableWh'')|float/1000)|round(2) }} kWh{%
+        else %}noch offen{% endif %} |
+
+
+        Beide Geräte führen eigene Energieverläufe. Eine abweichende Batterieenergie kann den Vergleich beeinflussen.
+
+        '
+    - type: markdown
+      content: '### Einstellungen
+
+        {% set c=''sensor.sil_shadow_config'' %}{% set pc=''sensor.sil_comparison_production_config'' %}
+
+        {% if state_attr(c,''allocationPolicy'')==''relative_time_tiers_v1'' or state_attr(pc,''allocationPolicy'')==''relative_time_tiers_v1''
+        %}
+
+        **Relative Zeitbereiche · tatsächlich gemeldete Einstellungen**
+
+
+        | Einstellung | Produktion | Test |
+
+        |---|---:|---:|
+
+        | Maximale Leistung | {{ state_attr(pc,''maxOutputW'') or ''unklar'' }} W | {{ state_attr(c,''maxOutputW'') or ''noch
+        offen'' }} W |
+
+        | Planung | {{ ''relativ'' if state_attr(pc,''allocationPolicy'')==''relative_time_tiers_v1'' else ''bisherige Planung''
+        }} | {{ ''relativ'' if state_attr(c,''allocationPolicy'')==''relative_time_tiers_v1'' else ''bisherige Planung'' }}
+        |
+
+        | Günstige Zeit | {{ state_attr(pc,''cheapTimePct'') if is_number(state_attr(pc,''cheapTimePct'')) else ''noch offen''
+        }} % | {{ state_attr(c,''cheapTimePct'') if is_number(state_attr(c,''cheapTimePct'')) else ''noch offen'' }} % |
+
+        | Sehr teure Zeit | {{ state_attr(pc,''veryExpensiveTimePct'') if is_number(state_attr(pc,''veryExpensiveTimePct''))
+        else ''noch offen'' }} % | {{ state_attr(c,''veryExpensiveTimePct'') if is_number(state_attr(c,''veryExpensiveTimePct''))
+        else ''noch offen'' }} % |
+
+        | Zusätzlich teure Zeit | {{ state_attr(pc,''additionalExpensiveTimePct'') if is_number(state_attr(pc,''additionalExpensiveTimePct''))
+        else ''noch offen'' }} % | {{ state_attr(c,''additionalExpensiveTimePct'') if is_number(state_attr(c,''additionalExpensiveTimePct''))
+        else ''noch offen'' }} % |
+
+        | Prognoseaufschlag | {{ state_attr(pc,''predictionPremiumPct'') or 0 }} % | {{ state_attr(c,''predictionPremiumPct'')
+        if is_number(state_attr(c,''predictionPremiumPct'')) else ''noch offen'' }} % |
+
+        | Mindestvorteil neuer Speicherung | {% if is_number(state_attr(pc,''storageMinimumNetAdvantageEurKwh'')) %}{{ (state_attr(pc,''storageMinimumNetAdvantageEurKwh'')|float*100)|round(2)
+        }} ct/kWh{% else %}bisheriges Modell{% endif %} | {% if is_number(state_attr(c,''storageMinimumNetAdvantageEurKwh''))
+        %}{{ (state_attr(c,''storageMinimumNetAdvantageEurKwh'')|float*100)|round(2) }} ct/kWh{% else %}noch offen{% endif
+        %} |
+
+        | Ladewirkungsgrad | {{ state_attr(pc,''chargeEfficiencyPct'') if is_number(state_attr(pc,''chargeEfficiencyPct''))
+        else ''noch offen'' }} % | {{ state_attr(c,''chargeEfficiencyPct'') if is_number(state_attr(c,''chargeEfficiencyPct''))
+        else ''noch offen'' }} % |
+
+        | Entladewirkungsgrad | {{ state_attr(pc,''dischargeEfficiencyPct'') if is_number(state_attr(pc,''dischargeEfficiencyPct''))
+        else ''noch offen'' }} % | {{ state_attr(c,''dischargeEfficiencyPct'') if is_number(state_attr(c,''dischargeEfficiencyPct''))
+        else ''noch offen'' }} % |
+
+
+        Der Mindestvorteil betrifft nur neue Speicherung. Bereits vorhandene Energie bleibt zuerst für die sehr teuren Zeiten
+        reserviert. Komfortpreis, alte Preistoleranz und alter Preisfaktor sind bei relativer Planung **nicht aktiv**; Altwerte
+        stehen nur in den Prüfdetails.
+
+        {% if is_number(state_attr(c,''chargeEfficiencyPct'')) and is_number(state_attr(c,''dischargeEfficiencyPct'')) %}
+
+        Testmodell: 100 Wh Solar-DC → {{ state_attr(c,''chargeEfficiencyPct'')|round(1) }} Wh Batterie-DC → {{ (state_attr(c,''chargeEfficiencyPct'')*state_attr(c,''dischargeEfficiencyPct'')/100)|round(1)
+        }} Wh AC. Die Solarprognose bleibt unverändert; jede Ladeabsicht folgt den tatsächlich gemeldeten Einstellungen ihres
+        Geräts.
+
+        {% endif %}
+
+        {% else %}
+
+        | | Produktion | Test |
+
+        |---|---:|---:|
+
+        | Maximale Leistung | {{ state_attr(pc,''maxOutputW'') or ''unklar'' }} W | {{ state_attr(c,''maxOutputW'') or ''noch
+        offen'' }} W |
+
+        | Preistoleranz | {% if is_number(state_attr(pc,''deferralToleranceEurKwh'')) %}{{ (state_attr(pc,''deferralToleranceEurKwh'')|float*100)|round(2)
+        }}{% else %}3{% endif %} ct/kWh | {% if is_number(state_attr(c,''deferralToleranceEurKwh'')) %}{{ (state_attr(c,''deferralToleranceEurKwh'')|float*100)|round(2)
+        }} ct/kWh{% else %}noch offen{% endif %} |
+
+        | Prognoseaufschlag | {{ state_attr(pc,''predictionPremiumPct'') or 0 }} % | {% if is_number(state_attr(c,''predictionPremiumPct''))
+        %}{{ state_attr(c,''predictionPremiumPct'') }} %{% else %}noch offen{% endif %} |
+
+
+        **Relative Zeitbereiche (5.8): noch nicht gemeldet.** Aktuell gemeldete Einstellungen stehen oben.
+
+        {% endif %}
+
+        '
+  - type: custom:apexcharts-card
+    header:
+      show: true
+      title: SIL Prod/Test - Entladeplan (36 h)
+      show_states: false
+    graph_span: 39h
+    span:
+      start: minute
+      offset: -3h
+    now:
+      show: true
+      label: Now
+    series:
+    - entity: sensor.solarlimiter_discharge_budget
+      name: Production budget
+      yaxis_id: discharge_w
+      unit: W
+      float_precision: 0
+      type: line
+      curve: stepline
+      color: '#ef5350'
+      opacity: 1
+      stroke_width: 2
+      extend_to: false
+      show:
+        extremas: false
+      data_generator: "const windowStart = start.getTime();\nconst windowEnd = end.getTime();\nconst nowMs = Date.now();\n\
+        const a = entity.attributes;\nif (entity.state !== 'ready' || a.valid !== true || a.v !== 1 ||\n    !Number.isInteger(a.g)\
+        \ || !Number.isInteger(a.t) || a.d !== 900 ||\n    !Number.isInteger(a.n) || a.n < 2 || a.n > 144 ||\n    !Array.isArray(a.w)\
+        \ || a.w.length !== a.n ||\n    a.t % 900 !== 0 || a.g < a.t || a.g >= a.t + a.d ||\n    a.w.some(w => !Number.isInteger(w)\
+        \ || w < 0)) return [];\nconst generatedMs = a.g * 1000;\nconst coverageEnd = (a.t + a.n * a.d) * 1000;\nif (nowMs\
+        \ - generatedMs > 180000 || generatedMs - nowMs > 120000 ||\n    nowMs >= coverageEnd) return [];\nconst points =\
+        \ [];\nfor (let i = 0; i < a.n; ++i) {\n  const intervalStart = (a.t + i * a.d) * 1000;\n  const intervalEnd = intervalStart\
+        \ + a.d * 1000;\n  const at = Math.max(intervalStart, generatedMs, windowStart, nowMs);\n  if (intervalEnd <= at ||\
+        \ at >= windowEnd) continue;\n  points.push([at, a.w[i]]);\n}\nif (points.length) {\n  const end = Math.min(coverageEnd,\
+        \ windowEnd);\n  const last = points[points.length - 1];\n  if (end > last[0]) points.push([end, last[1]]);\n}\nreturn\
+        \ points;\n"
+    - entity: sensor.sil_shadow_discharge_budget
+      name: Shadow budget - TEST
+      yaxis_id: discharge_w
+      unit: W
+      float_precision: 0
+      type: line
+      curve: stepline
+      color: '#ab47bc'
+      opacity: 1
+      stroke_width: 2
+      extend_to: false
+      show:
+        extremas: false
+      data_generator: "const windowStart = start.getTime();\nconst windowEnd = end.getTime();\nconst nowMs = Date.now();\n\
+        const a = entity.attributes;\nif (entity.state !== 'ready' || a.valid !== true || a.v !== 1 ||\n    !Number.isInteger(a.g)\
+        \ || !Number.isInteger(a.t) || a.d !== 900 ||\n    !Number.isInteger(a.n) || a.n < 2 || a.n > 144 ||\n    !Array.isArray(a.w)\
+        \ || a.w.length !== a.n ||\n    a.t % 900 !== 0 || a.g < a.t || a.g >= a.t + a.d ||\n    a.w.some(w => !Number.isInteger(w)\
+        \ || w < 0)) return [];\nconst generatedMs = a.g * 1000;\nconst coverageEnd = (a.t + a.n * a.d) * 1000;\nif (nowMs\
+        \ - generatedMs > 180000 || generatedMs - nowMs > 120000 ||\n    nowMs >= coverageEnd) return [];\nconst points =\
+        \ [];\nfor (let i = 0; i < a.n; ++i) {\n  const intervalStart = (a.t + i * a.d) * 1000;\n  const intervalEnd = intervalStart\
+        \ + a.d * 1000;\n  const at = Math.max(intervalStart, generatedMs, windowStart, nowMs);\n  if (intervalEnd <= at ||\
+        \ at >= windowEnd) continue;\n  points.push([at, a.w[i]]);\n}\nif (points.length) {\n  const end = Math.min(coverageEnd,\
+        \ windowEnd);\n  const last = points[points.length - 1];\n  if (end > last[0]) points.push([end, last[1]]);\n}\nreturn\
+        \ points;\n"
+    - entity: sensor.epex_spot_data_total_price_2
+      yaxis_id: uurprijs
+      float_precision: 3
+      type: line
+      curve: stepline
+      extend_to: false
+      show:
+        extremas: true
+      data_generator: "const windowStart = start.getTime();\nconst windowEnd = end.getTime();\nreturn (entity.attributes.data\
+        \ ?? [])\n  .filter(entry => {\n    const at = new Date(entry.start_time).getTime();\n    return at >= windowStart\
+        \ && at < windowEnd;\n  })\n  .map(entry => [new Date(entry.start_time).getTime(), entry.price_per_kwh]);\n"
+      color_threshold:
+      - value: 0
+        color: '#186ddc'
+      - value: 0.155
+        color: '#04822e'
+      - value: 0.2
+        color: '#12A141'
+      - value: 0.25
+        color: '#79B92C'
+      - value: 0.3
+        color: '#C4D81D'
+      - value: 0.35
+        color: '#F3DC0C'
+      - value: 0.4
+        color: red
+      - value: 0.5
+        color: magenta
+      stroke_width: 1
+      name: Raw aligned tariff
+      color: '#26a69a'
+    - entity: sensor.sil_shadow_price_input
+      yaxis_id: uurprijs
+      float_precision: 3
+      type: line
+      curve: stepline
+      extend_to: false
+      show:
+        extremas: true
+      data_generator: 'const a = entity?.attributes;
+
+        if (entity?.state !== ''ready'' || !a?.tariff_aligned || !Array.isArray(a.p) || a.p.length !== a.n || Date.now()/1000-a.r
+        > 180) return [];
+
+        return a.p.map((v,i)=>[(a.t+i*900)*1000,v/1e6]).filter(([t])=>t>=start.getTime()&&t<end.getTime());'
+      stroke_width: 1
+      name: Test input - raw tariff
+      color: '#26a69a'
+    - entity: sensor.sil_shadow_price_input
+      yaxis_id: uurprijs
+      float_precision: 3
+      type: line
+      curve: stepline
+      extend_to: false
+      show:
+        extremas: true
+      data_generator: 'const a=entity?.attributes, s=hass.states[''sensor.sil_shadow_assessment''], c=hass.states[''sensor.sil_shadow_config''];
+
+        if(entity?.state!==''ready''||!a?.tariff_aligned||s?.state!==''ready''||!c?.attributes?.shadowProfile||Date.now()/1000-a.r>180)
+        return [];
+
+        const x=s.attributes, q=c.attributes;
+
+        if(x.priceRevision!==a.r||x.priceStart!==a.t||x.priceSlots!==a.n||!Array.isArray(a.o)||a.o.length!==a.n) return [];
+
+        const pct=Number(q.predictionPremiumPct), factor=q.allocationPolicy===''relative_time_tiers_v1''?1:Number(q.fcPriceF);
+
+        if(!Number.isFinite(pct)||pct<0||pct>100||!Number.isFinite(factor)||factor<=0) return [];
+
+        return a.p.map((v,i)=>{const p=v/1e6;return [(a.t+i*900)*1000,(a.o[i]===2?p+Math.abs(p)*pct/100:p)*factor];}).filter(([t])=>t>=start.getTime()&&t<end.getTime());'
+      stroke_width: 1
+      name: Shadow assessment - NOT tariff
+      color: '#ffa726'
+      stroke_dash: 5
+    - entity: sensor.sil_production_price_input
+      yaxis_id: uurprijs
+      float_precision: 3
+      type: line
+      curve: stepline
+      extend_to: false
+      show:
+        extremas: true
+      data_generator: 'const a=entity?.attributes, s=hass.states[''sensor.sil_comparison_production_assessment''], c=hass.states[''sensor.sil_comparison_production_config''];
+
+        if(entity?.state!==''ready''||!a?.tariff_aligned||s?.state!==''ready''||c?.attributes?.valid!==true||Date.now()/1000-a.r>180)
+        return [];
+
+        const x=s.attributes,q=c.attributes;
+
+        if(x.valid!==true||Date.now()/1000-x.g>180||x.priceRevision!==a.r||x.priceStart!==a.t||x.priceSlots!==a.n||!Array.isArray(a.o)||a.o.length!==a.n||!Array.isArray(a.p)||a.p.length!==a.n)
+        return [];
+
+        if(q.allocationPolicy!==''relative_time_tiers_v1''||q.priceBasis!==''schedule_origin_assessed'') return [];
+
+        const pct=Number(q.predictionPremiumPct);
+
+        if(!Number.isFinite(pct)||pct<0||pct>100) return [];
+
+        return a.p.map((v,i)=>{const p=v/1e6;return [(a.t+i*900)*1000,a.o[i]===2?p+Math.abs(p)*pct/100:p];}).filter(([t])=>t>=start.getTime()&&t<end.getTime());'
+      stroke_width: 1
+      name: 'Produktion: Preisbewertung'
+      color: '#42a5f5'
+      stroke_dash: 5
+    - entity: sensor.sil_configured_maximum_output
+      name: SIL configured maximum output
+      yaxis_id: discharge_w
+      type: line
+      color: '#00000000'
+      opacity: 0
+      stroke_width: 0
+      extend_to: false
+      show:
+        in_chart: true
+        in_legend: false
+        in_header: false
+        extremas: false
+        datalabels: false
+      data_generator: "if (!entity || ['unknown', 'unavailable', ''].includes(entity.state)) return [];\nconst limit = Number(entity.state);\n\
+        const a = entity.attributes;\nif (!a || a.v !== 1 || a.valid !== true ||\n    typeof a.maxOutputW !== 'number' ||\
+        \ !Number.isInteger(a.maxOutputW) ||\n    !Number.isInteger(limit) || limit <= 0 || limit > 2147483647 ||\n    limit\
+        \ !== a.maxOutputW) return [];\nconst windowStart = start.getTime();\nconst windowEnd = end.getTime();\nif (!Number.isFinite(windowStart)\
+        \ || !Number.isFinite(windowEnd) ||\n    windowEnd <= windowStart) return [];\nreturn [[windowStart, limit + 100],\
+        \ [windowEnd, limit + 100]];\n"
+    - entity: sensor.sil_shadow_config
+      name: Shadow maximum anchor
+      yaxis_id: discharge_w
+      type: line
+      color: '#00000000'
+      opacity: 0
+      stroke_width: 0
+      extend_to: false
+      show:
+        in_chart: true
+        in_legend: false
+        in_header: false
+        extremas: false
+        datalabels: false
+      data_generator: 'const a=entity?.attributes, v=Number(a?.maxOutputW);
+
+        if(!a?.valid||!a?.shadowProfile||!Number.isInteger(v)||v<=0) return [];
+
+        return [[start.getTime(),v+100],[end.getTime(),v+100]];'
+    experimental: {}
+    yaxis:
+    - id: uurprijs
+      decimals: 3
+      min: auto
+      apex_config:
+        title:
+          text: €/kWh
+        tickAmount: 4
+    - id: discharge_w
+      max: auto
+      opposite: true
+      decimals: 0
+      min: 0
+      apex_config:
+        forceNiceScale: false
+        title:
+          text: W
+        tickAmount: 4
+    apex_config:
+      chart:
+        height: 420
+        animations:
+          enabled: false
+      stroke:
+        width:
+        - 2
+        - 2
+        - 1
+        - 1
+        - 1
+        - 1
+        - 0
+        - 0
+        curve: stepline
+      markers:
+        size: 0
+      legend:
+        show: true
+      tooltip:
+        enabledOnSeries:
+        - 0
+        - 1
+        - 2
+        - 3
+        - 4
+        - 5
+        x:
+          show: true
+          format: dd.MM. HH:mm
+      xaxis:
+        type: datetime
+        labels:
+          datetimeUTC: false
+  - type: custom:apexcharts-card
+    header:
+      show: true
+      title: SIL Prod/Test - Solarprognose und Laden
+      show_states: false
+    graph_span: 39h
+    span:
+      start: minute
+      offset: -3h
+    now:
+      show: true
+      label: Now
+    series:
+    - entity: sensor.solarlimiter_charge_plan
+      name: Production charge intent
+      yaxis_id: solar_dc
+      unit: W
+      float_precision: 0
+      type: area
+      curve: stepline
+      color: '#42a5f5'
+      opacity: 0.2
+      stroke_width: 1
+      extend_to: false
+      show:
+        extremas: false
+      data_generator: "const nowMs = Date.now();\nconst windowStart = start.getTime();\nconst windowEnd = end.getTime();\n\
+        const a = entity?.attributes;\nif (entity?.state !== 'ready' || !a || a.valid !== true || a.v !== 1 ||\n    !Number.isInteger(a.g)\
+        \ || !Number.isInteger(a.t) || a.d !== 900 ||\n    !Number.isInteger(a.n) || a.n < 2 || a.n > 144 ||\n    a.t % 900\
+        \ !== 0 || a.g < a.t || a.g >= a.t + a.d) return [];\nif (a.kind !== 'intent_projection' ||\n    !Array.isArray(a.w)\
+        \ || a.w.length !== a.n ||\n    !Array.isArray(a.s) || a.s.length !== a.n ||\n    [...a.w, ...a.s].some(value => value\
+        \ !== null &&\n      (!Number.isInteger(value) || value < 0 || value > 12000))) return [];\nconst generatedMs = a.g\
+        \ * 1000;\nconst coverageEnd = (a.t + a.n * a.d) * 1000;\nif (nowMs - generatedMs > 180000 || generatedMs - nowMs\
+        \ > 120000 ||\n    nowMs >= coverageEnd) return [];\nconst values = a.w;\nconst points = [];\nfor (let i = 0; i <\
+        \ a.n; ++i) {\n  const intervalStart = (a.t + i * a.d) * 1000;\n  const intervalEnd = intervalStart + a.d * 1000;\n\
+        \  const at = Math.max(intervalStart, generatedMs, windowStart, nowMs);\n  const end = Math.min(intervalEnd, windowEnd);\n\
+        \  if (end <= at) continue;\n  // Keep explicit null gaps and the full duration of adjacent known intervals.\n  points.push([at,\
+        \ values[i]], [end, values[i]]);\n}\nreturn points;\n"
+    - entity: sensor.solarlimiter_charge_plan
+      name: Shared PV forecast
+      yaxis_id: solar_dc
+      unit: W
+      float_precision: 0
+      type: line
+      curve: stepline
+      color: '#ffca28'
+      opacity: 1
+      stroke_width: 1
+      extend_to: false
+      show:
+        extremas: false
+      data_generator: "const nowMs = Date.now();\nconst windowStart = start.getTime();\nconst windowEnd = end.getTime();\n\
+        const a = entity?.attributes;\nif (entity?.state !== 'ready' || !a || a.valid !== true || a.v !== 1 ||\n    !Number.isInteger(a.g)\
+        \ || !Number.isInteger(a.t) || a.d !== 900 ||\n    !Number.isInteger(a.n) || a.n < 2 || a.n > 144 ||\n    a.t % 900\
+        \ !== 0 || a.g < a.t || a.g >= a.t + a.d) return [];\nif (a.kind !== 'intent_projection' ||\n    !Array.isArray(a.w)\
+        \ || a.w.length !== a.n ||\n    !Array.isArray(a.s) || a.s.length !== a.n ||\n    [...a.w, ...a.s].some(value => value\
+        \ !== null &&\n      (!Number.isInteger(value) || value < 0 || value > 12000))) return [];\nconst generatedMs = a.g\
+        \ * 1000;\nconst coverageEnd = (a.t + a.n * a.d) * 1000;\nif (nowMs - generatedMs > 180000 || generatedMs - nowMs\
+        \ > 120000 ||\n    nowMs >= coverageEnd) return [];\nconst values = a.s;\nconst points = [];\nfor (let i = 0; i <\
+        \ a.n; ++i) {\n  const intervalStart = (a.t + i * a.d) * 1000;\n  const intervalEnd = intervalStart + a.d * 1000;\n\
+        \  const at = Math.max(intervalStart, generatedMs, windowStart, nowMs);\n  const end = Math.min(intervalEnd, windowEnd);\n\
+        \  if (end <= at) continue;\n  // Keep explicit null gaps and the full duration of adjacent known intervals.\n  points.push([at,\
+        \ values[i]], [end, values[i]]);\n}\nreturn points;\n"
+      stroke_dash: 6
+    - entity: sensor.sil_shadow_charge_plan
+      name: Shadow charge intent - TEST
+      yaxis_id: solar_dc
+      unit: W
+      float_precision: 0
+      type: area
+      curve: stepline
+      color: '#ab47bc'
+      opacity: 0.3
+      stroke_width: 1
+      extend_to: false
+      show:
+        extremas: false
+      data_generator: "const nowMs = Date.now();\nconst windowStart = start.getTime();\nconst windowEnd = end.getTime();\n\
+        const a = entity?.attributes;\nif (entity?.state !== 'ready' || !a || a.valid !== true || a.v !== 1 ||\n    !Number.isInteger(a.g)\
+        \ || !Number.isInteger(a.t) || a.d !== 900 ||\n    !Number.isInteger(a.n) || a.n < 2 || a.n > 144 ||\n    a.t % 900\
+        \ !== 0 || a.g < a.t || a.g >= a.t + a.d) return [];\nif (a.kind !== 'intent_projection' ||\n    !Array.isArray(a.w)\
+        \ || a.w.length !== a.n ||\n    !Array.isArray(a.s) || a.s.length !== a.n ||\n    [...a.w, ...a.s].some(value => value\
+        \ !== null &&\n      (!Number.isInteger(value) || value < 0 || value > 12000))) return [];\nconst generatedMs = a.g\
+        \ * 1000;\nconst coverageEnd = (a.t + a.n * a.d) * 1000;\nif (nowMs - generatedMs > 180000 || generatedMs - nowMs\
+        \ > 120000 ||\n    nowMs >= coverageEnd) return [];\nconst values = a.w;\nconst points = [];\nfor (let i = 0; i <\
+        \ a.n; ++i) {\n  const intervalStart = (a.t + i * a.d) * 1000;\n  const intervalEnd = intervalStart + a.d * 1000;\n\
+        \  const at = Math.max(intervalStart, generatedMs, windowStart, nowMs);\n  const end = Math.min(intervalEnd, windowEnd);\n\
+        \  if (end <= at) continue;\n  // Keep explicit null gaps and the full duration of adjacent known intervals.\n  points.push([at,\
+        \ values[i]], [end, values[i]]);\n}\nreturn points;\n"
+    experimental: {}
+    yaxis:
+    - id: solar_dc
+      min: 0
+      max: auto
+      decimals: 0
+      apex_config:
+        title:
+          text: W
+    apex_config:
+      chart:
+        height: 420
+        animations:
+          enabled: false
+      stroke:
+        width:
+        - 1
+        - 1
+        - 1
+        curve: stepline
+      markers:
+        size: 0
+      legend:
+        show: true
+      tooltip:
+        enabledOnSeries:
+        - 0
+        - 1
+        - 2
+        x:
+          show: true
+          format: dd.MM. HH:mm
+      xaxis:
+        type: datetime
+        labels:
+          datetimeUTC: false
+  - type: markdown
+    content: '### Solarenergie und geplante Einlagerung · nächste 36 Stunden
+
+      {% set e=''sensor.sil_comparison_future_energy'' %}{% set stamp=state_attr(e,''start'') %}
+
+      {% set current=states(e)==''ready'' and stamp is number and 0 <= as_timestamp(now())-stamp < 180 and as_timestamp(now())
+      < state_attr(e,''pvExpiresAt'')|float(0) %}
+
+      {% if current %}
+
+      Gleicher Zeitraum: **{{ stamp|timestamp_custom(''%d.%m. %H:%M'') }} bis {{ state_attr(e,''end'')|timestamp_custom(''%d.%m.
+      %H:%M'') }}**. Alle Werte **kWh DC**, Prognose bzw. Ladeabsicht, keine gemessene Einlagerung und keine Zusage für einen
+      vollen Akku.
+
+
+      {% set pv=state_attr(e,''pv'') %}{% set prod=state_attr(e,''production'') %}{% set test=state_attr(e,''test'') %}
+
+      {% if prod and as_timestamp(now())-prod.generatedAt >= 180 %}{% set prod=none %}{% endif %}
+
+      {% if test and as_timestamp(now())-test.generatedAt >= 180 %}{% set test=none %}{% endif %}
+
+
+      | Zeitraum | Solarprognose | Laden Produktion | Laden Test |
+
+      |---|---:|---:|---:|
+
+      | 36 h, bekannter Anteil | {{ pv.kwh|round(3) if pv.kwh is number else ''offen'' }} | {{ prod.kwh|round(3) if prod and
+      prod.kwh is number else ''offen'' }} | {{ test.kwh|round(3) if test and test.kwh is number else ''offen'' }} |
+
+      {% for day in pv.days -%}
+
+      {% set pd=prod.days[loop.index0] if prod else none %}{% set td=test.days[loop.index0] if test else none -%}
+
+      | {{ day.date }}{% if not day.fullDay %} (Teil des Tages){% endif %} | {{ day.kwh|round(3) if day.kwh is number else
+      ''offen'' }}{% if day.missingSeconds %} · Lücke{% endif %} | {{ pd.kwh|round(3) if pd and pd.kwh is number else ''offen''
+      }}{% if pd and pd.missingSeconds %} · Lücke{% endif %} | {{ td.kwh|round(3) if td and td.kwh is number else ''offen''
+      }}{% if td and td.missingSeconds %} · Lücke{% endif %} |
+
+      {% endfor %}
+
+
+      **Abdeckung Solar:** {{ (pv.coveredSeconds/3600)|round(2) }} / 36 h{% if pv.missingSeconds %}; {{ (pv.missingSeconds/60)|round(1)
+      }} min fehlen (nicht als null gerechnet){% endif %}.
+
+      **Abdeckung Ladeabsicht:** Produktion {{ (prod.coveredSeconds/3600)|round(2) if prod else ''offen'' }} h · Test {{ (test.coveredSeconds/3600)|round(2)
+      if test else ''offen'' }} h.
+
+      {% set efficiency=state_attr(''sensor.sil_shadow_config'',''chargeEfficiencyPct'') %}
+
+      **Test · reservierte Solarenergie → Einlagerung:** {% if test and test.kwh is number and is_number(efficiency) and 0
+      < efficiency <= 100 %}{{ (test.kwh*100/efficiency)|round(3) }} kWh Solar-DC → {{ test.kwh|round(3) }} kWh Batterie-DC
+      (gemeldeter Ladewirkungsgrad {{ efficiency }} %, gleicher bekannter Plananteil).{% else %}noch offen: aktueller Ladeplan
+      oder gemeldeter Ladewirkungsgrad fehlt.{% endif %} Für die Produktion wird ohne ausdrücklich gemeldeten Ladewirkungsgrad
+      keine Solar-Eingangsenergie abgeleitet.
+
+
+      **Stand der eigenen Ladepläne:** Produktion {% if prod %}{{ prod.generatedAt|timestamp_custom(''%d.%m. %H:%M:%S'') }}
+      ({{ (as_timestamp(now())-prod.generatedAt)|round(0) }} s){% else %}offen{% endif %} · Test {% if test %}{{ test.generatedAt|timestamp_custom(''%d.%m.
+      %H:%M:%S'') }} ({{ (as_timestamp(now())-test.generatedAt)|round(0) }} s){% else %}offen{% endif %}. Jeder Ladeplan bleibt
+      an seine eigene gültige Preis-/Solarkohorte gebunden; ein neuer Preisheartbeat allein ersetzt ihn nicht.
+
+      Ein vollständiger, lückenloser Kalendertag enthält die gesamte prognostizierte Sonnenperiode. Teil-Tage enthalten ausschließlich
+      den oben genannten Zeitraum. Solarwerte enthalten die bestehende DC-Kalibrierung (Faktor {{ state_attr(e,''calibrationFactor'')
+      }}). Ladeabsichten werden bei veraltetem Plan oder anderer Solarrevision zurückgehalten; bekannte Energie bleibt bei
+      Randlücken sichtbar.
+
+      {% else %}
+
+      **Energievergleich offen:** keine aktuelle gemeinsame, gültige Solargrundlage. Fehlende oder veraltete Daten werden
+      nicht als 0 kWh angezeigt.
+
+      {% endif %}
+
+      '
+  - type: markdown
+    title: Prüfdetails
+    content: '## TEST - diagnostic comparison only
+
+      No hardware commands. Production keeps its existing planner.
+
+      Separate controllers have separate measured battery ledgers and cache histories. Differences are not automatically an
+      algorithm improvement.
+
+
+      {% set a=''sensor.sil_shadow_assessment'' %}{% set p=''sensor.sil_comparison_production_state'' %}{% set c=''sensor.sil_shadow_config''
+      %}{% set pc=''sensor.sil_comparison_production_config'' %}{% set i=''sensor.sil_shadow_price_input'' %}
+
+      **Test feed:** {{ states(i) }} / {{ state_attr(i,''reason'') or ''aligned raw tariff'' }}
+
+      **Provider fetch age:** {{ state_attr(i,''providerAgeS'') }} s; source request interval 3600 s. This is transport age,
+      not price finality.
+
+      **Alignment evidence:** {{ state_attr(i,''firstMismatch'') or ''no mismatch reported'' }}; next allowed source request
+      {{ state_attr(i,''nextProviderRequestAt'') }}.
+
+      **Origin slots:** market {{ state_attr(i,''originMarket'') }}, forecast {{ state_attr(i,''originForecast'') }}, **unknown
+      {{ state_attr(i,''originUnknown'') }}**.
+
+      **Test output:** {{ states(a) }}; generated {{ state_attr(a,''g'') }}; age {% if state_attr(a,''g'') is number %}{{
+      (as_timestamp(now()) - state_attr(a,''g''))|round(0) }} s{% else %}unknown{% endif %}.
+
+      **Input binding:** {% if states(i)==''ready'' and states(a)==''ready'' and state_attr(i,''r'')==state_attr(a,''priceRevision'')
+      and state_attr(i,''t'')==state_attr(a,''priceStart'') and state_attr(i,''n'')==state_attr(a,''priceSlots'') %}MATCHED{%
+      else %}**MISSING / DIFFERENT REVISION - assessment curve withheld**{% endif %}.
+
+      **Test hardware:** mocked {{ state_attr(a,''mockTransport'') }}, shadow profile {{ state_attr(a,''shadowProfile'') }}.
+
+
+      | Quantity | Production | Shadow TEST |
+
+      |---|---:|---:|
+
+      | Available battery Wh | {{ state_attr(p,''availableWh'') }} | {{ state_attr(a,''availableWh'') }} |
+
+      | Maximum output W | {{ state_attr(pc,''maxOutputW'') }} | {{ state_attr(c,''maxOutputW'') }} |
+
+      | Legacy deferral tolerance EUR/kWh | {{ state_attr(pc,''deferralToleranceEurKwh'') if state_attr(pc,''deferralToleranceEurKwh'')
+      is not none else ''0.03 (5.6.3 baseline)'' }} | {{ state_attr(c,''deferralToleranceEurKwh'') }}{% if state_attr(c,''allocationPolicy'')==''relative_time_tiers_v1''
+      %} (inactive){% endif %} |
+
+      | Forecast premium % | {{ state_attr(pc,''predictionPremiumPct'') if state_attr(pc,''predictionPremiumPct'') is not
+      none else ''0 (5.6.3 baseline)'' }} | {{ state_attr(c,''predictionPremiumPct'') }} |
+
+      | Reserve off/on % | {{ state_attr(pc,''resOff'') }} / {{ state_attr(pc,''resOn'') }} | {{ state_attr(c,''resOff'')
+      }} / {{ state_attr(c,''resOn'') }} |
+
+      | Legacy price factor | {{ state_attr(pc,''fcPriceF'') }} | {{ state_attr(c,''fcPriceF'') }}{% if state_attr(c,''allocationPolicy'')==''relative_time_tiers_v1''
+      %} (inactive){% endif %} |
+
+      | Full capacity Ah | {{ states(''sensor.sbt_bms_full_capacity_ah'') }} | {{ state_attr(a,''fullCapacityAh'') }} |
+
+      | BMS SoC % | {{ states(''sensor.sbt_bms_state_of_charge_pct'') }} | {{ state_attr(a,''soc'') }} |
+
+      | Battery power W | {{ states(''sensor.sbt_bms_power_w'') }} | {{ state_attr(a,''batteryW'') }} |
+
+      | BMS sample sequence | {{ state_attr(''sensor.sbt_bms_health'',''sample_sequence'') }} | {{ state_attr(a,''bmsSequence'')
+      }} |
+
+      | Charger sample sequence | {{ state_attr(''sensor.sbt_victron_health'',''sample_sequence'') }} | {{ state_attr(a,''chargerSequence'')
+      }} |
+
+
+      {% set prod=state_attr(p,''availableWh'') %}{% set test=state_attr(a,''availableWh'') %}
+
+      **Available-energy difference (TEST minus production):** {% if is_number(prod) and is_number(test) %}{{ (test|float
+      - prod|float)|round(1) }} Wh{% else %}unknown{% endif %}.
+
+      **Production state age:** {{ (as_timestamp(now()) - (state_attr(p,''received_at'')|float(0)))|round(0) }} s; retained
+      {{ state_attr(p,''retained'') }}.
+
+      Raw prices remain the tariff. The orange curve is a planning assessment only; unknown origin is never promoted by a
+      clock heuristic.
+
+      '
