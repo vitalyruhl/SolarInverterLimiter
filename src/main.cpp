@@ -121,7 +121,7 @@ static constexpr uint32_t kI2cHz = 400000;
 #endif
 
 #ifndef VERSION
-#define VERSION "5.8.3"
+#define VERSION "5.9.0"
 #endif
 
 static sil::RuntimeDiagnostics runtimeDiagnostics;
@@ -219,7 +219,7 @@ void ProjectConfig();
 #pragma region configuration variables
 
 // Project settings (ConfigOptions API)
-enum class RelativeValue { Cheap, VeryExpensive, Expensive, StorageAdvantage, PredictionPremium };
+enum class RelativeValue { Cheap, VeryExpensive, Expensive, StorageAdvantage, PredictionPremium12h, PredictionPremium24h, PredictionPremium };
 static bool validateRelativeValue(RelativeValue field,float value);
 // Validate before Config::set; normal and shadow HTTP paths share this numeric contract.
 class RelativeFloatSetting : public Config<float> {
@@ -256,7 +256,9 @@ struct LimiterSettings
     Config<String> priceScheduleInputTopic{ConfigOptions<String>{.key = "fcTopic", .name = "Price Schedule Topic", .category = "MQTT-Topics", .defaultValue = String(control::kDefaultPriceScheduleTopic), .sortOrder = 54}};
     Config<String> pvScheduleInputTopic{ConfigOptions<String>{.key = "pvTopic", .name = "PV Forecast Topic", .category = "MQTT-Topics", .defaultValue = String("homeassistant/sensor/solar_forecast/shed/schedule"), .sortOrder = 55}};
     Config<float> deferralToleranceEurKwh{ConfigOptions<float>{.key = "defTol", .name = "Held Energy Deferral Tolerance (EUR/kWh)", .category = "Limiter", .defaultValue = 0.03f, .showInWeb = !control::kRelativeTimePolicy, .sortOrder = 28,.card="Limiter",.cardPretty="Limiter",.cardOrder=0}};
-    RelativeFloatSetting predictionPremiumPct{RelativeValue::PredictionPremium,ConfigOptions<float>{.key = "predPct", .name = "Forecast Price Uncertainty Premium (%)", .category = "Limiter", .defaultValue=control::ApplicationDefaults::predictionPremiumPct, .sortOrder=14,.card="Limiter",.cardPretty="Limiter",.cardOrder=0}};
+    RelativeFloatSetting predictionPremium12hPct{RelativeValue::PredictionPremium12h,ConfigOptions<float>{.key = "pred12Pct", .name = "Forecast Premium up to 12h (%)", .category = "Limiter", .defaultValue=control::ApplicationDefaults::predictionPremium12hPct, .sortOrder=14,.card="Limiter",.cardPretty="Limiter",.cardOrder=0}};
+    RelativeFloatSetting predictionPremium24hPct{RelativeValue::PredictionPremium24h,ConfigOptions<float>{.key = "pred24Pct", .name = "Forecast Premium 12h to 24h (%)", .category = "Limiter", .defaultValue=control::ApplicationDefaults::predictionPremium24hPct, .sortOrder=15,.card="Limiter",.cardPretty="Limiter",.cardOrder=0}};
+    RelativeFloatSetting predictionPremiumPct{RelativeValue::PredictionPremium,ConfigOptions<float>{.key = "predPct", .name = "Forecast Premium beyond 24h (%)", .category = "Limiter", .defaultValue=control::ApplicationDefaults::predictionPremiumPct, .sortOrder=16,.card="Limiter",.cardPretty="Limiter",.cardOrder=0}};
     Config<float> forecastPriceFactor{ConfigOptions<float>{.key = "fcPriceF", .name = "Forecast Price Factor", .category = "Limiter", .defaultValue = 0.93137255f, .showInWeb = !control::kRelativeTimePolicy, .sortOrder = 27,.card="Limiter",.cardPretty="Limiter",.cardOrder=0}};
 
 #if SIL_RELATIVE_TIME_POLICY
@@ -273,6 +275,8 @@ struct LimiterSettings
         cfg.addSetting(&storageMinimumNetAdvantageEurKwh);
 #endif
         cfg.addSetting(&deferralToleranceEurKwh);
+        cfg.addSetting(&predictionPremium12hPct);
+        cfg.addSetting(&predictionPremium24hPct);
         cfg.addSetting(&predictionPremiumPct);
         cfg.addSetting(&priceScheduleInputTopic);
         cfg.addSetting(&pvScheduleInputTopic);
@@ -1326,6 +1330,8 @@ static bool validateRelativeValue(RelativeValue field,float value) {
     case RelativeValue::VeryExpensive:candidate.veryExpensiveTimePct=value;break;
     case RelativeValue::Expensive:candidate.additionalExpensiveTimePct=value;break;
     case RelativeValue::StorageAdvantage:candidate.storageMinimumNetAdvantageEurKwh=value;break;
+    case RelativeValue::PredictionPremium12h:candidate.predictionPremium12hPct=value;break;
+    case RelativeValue::PredictionPremium24h:candidate.predictionPremium24hPct=value;break;
     case RelativeValue::PredictionPremium:candidate.predictionPremiumPct=value;break;
     }
     return control::validRelativeTiers(candidate);
@@ -1334,6 +1340,8 @@ static void refreshPreparedSettings()
 {
     forecastPriceFactor = limiterSettings.forecastPriceFactor.get();
     preparedSettings.deferralToleranceEurKwh = limiterSettings.deferralToleranceEurKwh.get();
+    preparedSettings.predictionPremium12hPct = limiterSettings.predictionPremium12hPct.get();
+    preparedSettings.predictionPremium24hPct = limiterSettings.predictionPremium24hPct.get();
     preparedSettings.predictionPremiumPct = limiterSettings.predictionPremiumPct.get();
     preparedSettings.relativeTimePolicy=control::kRelativeTimePolicy;
 #if SIL_RELATIVE_TIME_POLICY
@@ -1379,6 +1387,8 @@ static void configureLimiterSettingsBehavior()
     limiterSettings.priceComfort.setCallback([](float) { refreshPreparedSettings(); });
     limiterSettings.priceDeadband.setCallback([](float) { refreshPreparedSettings(); });
     limiterSettings.deferralToleranceEurKwh.setCallback([](float) { refreshPreparedSettings(); });
+    limiterSettings.predictionPremium12hPct.setCallback([](float) { refreshPreparedSettings(); });
+    limiterSettings.predictionPremium24hPct.setCallback([](float) { refreshPreparedSettings(); });
     limiterSettings.predictionPremiumPct.setCallback([](float) { refreshPreparedSettings(); });
     limiterSettings.forecastPriceFactor.setCallback([](float) { refreshPreparedSettings(); });
 #if SIL_RELATIVE_TIME_POLICY
@@ -1522,10 +1532,11 @@ static bool shadowWebWriteAllowed(const String& category,const String& key,const
         if(setting==&limiterSettings.additionalExpensiveTimePct)candidate.additionalExpensiveTimePct=number;
         return control::validRelativeTiers(candidate);
     }
-    if(setting==&limiterSettings.deferralToleranceEurKwh||setting==&limiterSettings.predictionPremiumPct) {
+    if(setting==&limiterSettings.deferralToleranceEurKwh||setting==&limiterSettings.predictionPremium12hPct||
+       setting==&limiterSettings.predictionPremium24hPct||setting==&limiterSettings.predictionPremiumPct) {
         char* end=nullptr;const float number=std::strtof(value.c_str(),&end);
         return end!=value.c_str()&&end&&!*end&&std::isfinite(number)&&number>=0&&
-            (setting!=&limiterSettings.predictionPremiumPct||number<=100);
+            (setting==&limiterSettings.deferralToleranceEurKwh||number<=100);
     }
     return true;
 }
@@ -1878,10 +1889,10 @@ static String addRelativeDiagnostics(const char* base,bool tierState) {
     result+=fields;
     if(tierState){
         snprintf(fields,sizeof(fields),
-            ",\"tiersValid\":%s,\"currentPriceTier\":\"%s\",\"tierStart\":%lu,\"tierSlots\":%u,"
+            ",\"tiersValid\":%s,\"currentPriceTier\":\"%s\",\"tierStart\":%lu,\"tierAt\":%lu,\"tierSlots\":%u,"
             "\"tierCheapSlots\":%u,\"tierNeutralSlots\":%u,\"tierExpensiveSlots\":%u,\"tierVeryExpensiveSlots\":%u,"
             "\"cheapMaxAssessedEurKwh\":%s,\"expensiveMinAssessedEurKwh\":%s,\"veryExpensiveMinAssessedEurKwh\":%s",
-            ready?"true":"false",ready?futurePrices.currentPriceTier():"unknown",ulong(ready?futurePrices.tierStart():0),ready?144u:0u,
+            ready?"true":"false",ready?futurePrices.currentPriceTier():"unknown",ulong(ready?futurePrices.tierStart():0),ulong(ready?futurePrices.tierAt():0),ready?144u:0u,
             ready?futurePrices.tierCount(control::PriceTier::Cheap):0,ready?futurePrices.tierCount(control::PriceTier::Neutral):0,
             ready?futurePrices.tierCount(control::PriceTier::Expensive):0,ready?futurePrices.tierCount(control::PriceTier::VeryExpensive):0,
             JsonNumberText(ready?futurePrices.tierBoundary(control::PriceTier::Cheap):NAN,8).text,
@@ -1894,17 +1905,20 @@ static String addRelativeDiagnostics(const char* base,bool tierState) {
 #endif
 static String buildPlanningConfigPayload()
 {
-    char payload[512];
+    char payload[640];
     snprintf(payload,sizeof(payload),
         "{\"v\":1,\"valid\":%s,\"resOff\":%s,\"resOn\":%s,\"mosMan\":%s,\"invEn\":%s,"
         "\"priceC\":%s,\"priceDb\":%s,\"hystDb\":%s,\"fcPriceF\":%s,\"maxOutputW\":%d,"
-        "\"deferralToleranceEurKwh\":%s,\"predictionPremiumPct\":%s,\"shadowProfile\":%s,\"priceInputVersion\":%u}",
+        "\"deferralToleranceEurKwh\":%s,\"predictionPremium12hPct\":%s,\"predictionPremium24hPct\":%s,"
+        "\"predictionPremiumPct\":%s,\"predictionPremiumModel\":\"horizon_steps_v1\",\"shadowProfile\":%s,\"priceInputVersion\":%u}",
         preparedSettings.valid?"true":"false",JsonNumberText(preparedSettings.reserveOffSocPercent,4).text,
         JsonNumberText(preparedSettings.reserveOnSocPercent,4).text,preparedSettings.mosManualMode?"true":"false",
         preparedSettings.inverterEnabled?"true":"false",JsonNumberText(preparedSettings.priceComfortEurPerKwh,4).text,
         JsonNumberText(preparedSettings.priceDeadbandEurPerKwh,4).text,JsonNumberText(preparedSettings.priceHysteresisEurPerKwh,4).text,
         JsonNumberText(forecastPriceFactor,6).text,limiterSettings.maxOutput.get(),
-        JsonNumberText(preparedSettings.deferralToleranceEurKwh,8).text,JsonNumberText(preparedSettings.predictionPremiumPct,4).text,
+        JsonNumberText(preparedSettings.deferralToleranceEurKwh,8).text,
+        JsonNumberText(preparedSettings.predictionPremium12hPct,4).text,JsonNumberText(preparedSettings.predictionPremium24hPct,4).text,
+        JsonNumberText(preparedSettings.predictionPremiumPct,4).text,
         control::kPlannerShadowProfile?"true":"false",control::kPriceInputVersion);
 #if SIL_RELATIVE_TIME_POLICY
     return addRelativeDiagnostics(payload,false);
@@ -1924,12 +1938,15 @@ static String buildPlanningAssessmentPayload()
     snprintf(payload,sizeof(payload),
         "{\"v\":1,\"g\":%lu,\"valid\":%s,\"reason\":\"%s\",\"priceRevision\":%lu,\"priceStart\":%lu,\"priceSlots\":%u,\"priceAgeS\":%lu,"
         "\"inputVersion\":%u,\"originUnknown\":%u,\"originMarket\":%u,\"originForecast\":%u,"
-        "\"deferralToleranceEurKwh\":%s,\"predictionPremiumPct\":%s,\"currentRawEurKwh\":%s,\"currentAssessedEurKwh\":%s,"
+        "\"deferralToleranceEurKwh\":%s,\"predictionPremium12hPct\":%s,\"predictionPremium24hPct\":%s,"
+        "\"predictionPremiumPct\":%s,\"predictionPremiumModel\":\"horizon_steps_v1\",\"currentRawEurKwh\":%s,\"currentAssessedEurKwh\":%s,"
         "\"currentMeasuredEurKwh\":%s,\"availableWh\":%s,\"fullCapacityAh\":%s,\"soc\":%s,\"batteryW\":%s,\"chargerW\":%s,"
         "\"bmsSequence\":%lu,\"chargerSequence\":%lu,\"bmsValid\":%s,\"chargerValid\":%s,\"mockTransport\":%s,\"shadowProfile\":%s}",
         ulong(utc),futurePrices.priceFresh(utc)?"true":"false",futurePrices.testPriceStatus(utc),ulong(futurePrices.revision()),ulong(futurePrices.start()),futurePrices.slots(),
         ulong(utc>=futurePrices.revision()?utc-futurePrices.revision():0),futurePrices.inputVersion(),counts[0],counts[1],counts[2],
-        JsonNumberText(preparedSettings.deferralToleranceEurKwh,8).text,JsonNumberText(preparedSettings.predictionPremiumPct,4).text,
+        JsonNumberText(preparedSettings.deferralToleranceEurKwh,8).text,
+        JsonNumberText(preparedSettings.predictionPremium12hPct,4).text,JsonNumberText(preparedSettings.predictionPremium24hPct,4).text,
+        JsonNumberText(preparedSettings.predictionPremiumPct,4).text,
         JsonNumberText(raw,8).text,JsonNumberText(assessed,8).text,JsonNumberText(electricityPriceEurKwh,8).text,
         JsonNumberText(futurePlan.availableWh,2).text,JsonNumberText(source.bmsValid?source.fullCapacityAh:NAN,2).text,
         JsonNumberText(source.bmsValid?source.soc:NAN,2).text,JsonNumberText(source.bmsValid?source.batteryW:NAN,2).text,

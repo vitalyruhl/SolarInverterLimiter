@@ -67,7 +67,7 @@ static void physicalSplitsAndCheapExit(){
  std::vector<int> flat(144,400000);PvForecast pv;solar(pv,2,2000);FuturePrices full;load(full,flat);
  result=plan(full,c,red,(99-c.reserveOffSocPercent)*.01f*5138*.9f,&pv,2000);
  assert(result.usablePvWh<=51.38f*.9f+.1f);for(unsigned i=0;i<144;++i)assert(red.watts[i]==0);
- std::vector<int> origins(144,1);p[0]=-100000;origins[0]=2;c.predictionPremiumPct=100;FuturePrices negative;load(negative,p,at,origins);
+ std::vector<int> origins(144,1);p[0]=-100000;origins[0]=2;c.predictionPremium12hPct=100;FuturePrices negative;load(negative,p,at,origins);
  result=plan(negative,c,red,400,nullptr,2000,1000);assert(red.watts[0]==0&&result.chargeTargetW==0&&result.directPvCeilingW==0&&!result.relativePricePositive);
 }
 static CurrentDecision controlDecision(const PreparedSettings& c,const FuturePlan& plan){
@@ -105,7 +105,7 @@ static void premiumOriginsAndCurrentGates(){
  std::vector<int> prices(144,300000),origins(144,1);prices[0]=480000;prices[1]=500000;origins[0]=2;
  FuturePrices f;load(f,prices,at,origins);DischargeBudget red;
  auto first=plan(f,c,red);assert(first.batteryCeilingW==0);
- c.predictionPremiumPct=10;auto raised=plan(f,c,red);assert(raised.batteryCeilingW>0&&!std::strcmp(f.currentPriceTier(),"very_expensive"));
+ c.predictionPremium12hPct=10;auto raised=plan(f,c,red);assert(raised.batteryCeilingW>0&&!std::strcmp(f.currentPriceTier(),"very_expensive"));
  assert(std::abs(first.availableWh-raised.availableWh)<.01f);
  const auto identity=f.contentRevision();origins[0]=1;load(f,prices,at+1,origins);
  const auto changed=plan(f,c,red);assert(f.contentRevision()>identity&&changed.batteryCeilingW==0);
@@ -118,6 +118,18 @@ static void premiumOriginsAndCurrentGates(){
  in.price=.4f;in.relativePricePositive=false;assert(control.update(c,in,true,true,900,0,6300).ceilingW==0);
  in.relativePricePositive=true;in.futureValid=false;assert(control.update(c,in,true,true,900,0,6400).ceilingW==0);
  in.futureValid=true;in.chargerFault=true;assert(control.update(c,in,true,true,900,0,6500).ceilingW==0);
+}
+static void horizonStepsAffectAllocation(){
+ auto c=config();c.cheapTimePct=0;c.veryExpensiveTimePct=.1f;c.additionalExpensiveTimePct=0;
+ c.predictionPremium12hPct=3;c.predictionPremium24hPct=8;c.predictionPremiumPct=10;
+ std::vector<int> prices(144,300000),origins(144,1);
+ for(unsigned i:{48u,49u,96u,97u}){prices[i]=400000;origins[i]=2;}
+ FuturePrices f;load(f,prices,at,origins);DischargeBudget red;auto result=plan(f,c,red);
+ assert(result.valid&&red.watts[97]>0&&red.watts[48]==0&&red.watts[49]==0&&red.watts[96]==0);
+ c.predictionPremium24hPct=20;result=plan(f,c,red);
+ assert(result.valid&&red.watts[49]>0&&red.watts[96]>0&&red.watts[97]==0);
+ c.predictionPremium12hPct=30;result=plan(f,c,red);
+ assert(result.valid&&red.watts[48]>0&&red.watts[49]==0);
 }
 static void neutralSolarFundsHigherOnly(){
  auto c=config();c.veryExpensiveTimePct=1;c.additionalExpensiveTimePct=0;
@@ -162,7 +174,7 @@ static void storageEconomicsAndTwoLosses(){
  assert(plan(unprofitable,c,red,0,&pv,2000).usablePvWh==0);
  // Both forecast sides use the same assessed basis: .495 - .44/.9 < .05, not .495 - .40/.9.
  auto forecast=prices;forecast[8]=400000;forecast[10]=forecast[11]=450000;std::vector<int> origins(144,1);origins[8]=origins[10]=origins[11]=2;
- c.predictionPremiumPct=10;FuturePrices sameBasis;load(sameBasis,forecast,at,origins);assert(plan(sameBasis,c,red,0,&pv,2000).usablePvWh==0);
+ c.predictionPremium12hPct=10;FuturePrices sameBasis;load(sameBasis,forecast,at,origins);assert(plan(sameBasis,c,red,0,&pv,2000).usablePvWh==0);
  PlanCaptureContext before,after;before.settings=c;after=before;margin(after.settings,.1f,0);assert(!before.sameHard(after));
  // Net measured BMS input is earned once: 100 W for 30 s -> .8333 Wh DC -> .75 Wh AC, not .675.
  FuturePrices measured;load(measured,std::vector<int>(144,400000));
@@ -191,6 +203,6 @@ static void minimumHurdleSurvivesDirectPvCaps(){
 int main(){
  auto c=config();FuturePrices f;load(f,std::vector<int>(144,400000));DischargeBudget red;const auto result=plan(f,c,red);assert(result.valid);
  for(unsigned i=0;i<red.count;++i)assert(red.watts[i]==0);
- additionalStartsAfterActualHigh();minimumHurdleSurvivesDirectPvCaps();economicsValuesActualUniformTier();storageEconomicsAndTwoLosses();nonpositiveSlotsCreateNoDemand();neutralSolarFundsHigherOnly();fairHighAndPartial();protectMeasuredBeforeWeather();tiesAndConfiguration();physicalSplitsAndCheapExit();legacyDoesNotControlRelative();premiumOriginsAndCurrentGates();cheapFullLatchSurvivesReplan();
+ additionalStartsAfterActualHigh();minimumHurdleSurvivesDirectPvCaps();economicsValuesActualUniformTier();storageEconomicsAndTwoLosses();nonpositiveSlotsCreateNoDemand();neutralSolarFundsHigherOnly();fairHighAndPartial();protectMeasuredBeforeWeather();tiesAndConfiguration();physicalSplitsAndCheapExit();legacyDoesNotControlRelative();premiumOriginsAndCurrentGates();horizonStepsAffectAllocation();cheapFullLatchSurvivesReplan();
  std::cout<<"[MOCKED!] Relative tiers: measured priority, fair duration, PV prefix/storage, raw stops, whole ties, legacy independence and coverage passed\n";
 }

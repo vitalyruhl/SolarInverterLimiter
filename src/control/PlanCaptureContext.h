@@ -37,6 +37,8 @@ struct PlanCaptureContext {
             eq(settings.priceDeadbandEurPerKwh, o.settings.priceDeadbandEurPerKwh) &&
             eq(settings.priceHysteresisEurPerKwh, o.settings.priceHysteresisEurPerKwh) &&
             eq(settings.deferralToleranceEurKwh, o.settings.deferralToleranceEurKwh) &&
+            eq(settings.predictionPremium12hPct, o.settings.predictionPremium12hPct) &&
+            eq(settings.predictionPremium24hPct, o.settings.predictionPremium24hPct) &&
             eq(settings.predictionPremiumPct, o.settings.predictionPremiumPct) &&
             maximumW == o.maximumW && minimumW == o.minimumW && offsetW == o.offsetW && sourceTimeoutS == o.sourceTimeoutS &&
             eq(priceFactor, o.priceFactor) &&

@@ -201,6 +201,7 @@ public:
             cacheChargeCapW_ != chargeCapW || cacheCapacityAc_ != capacityAc ||
             cacheReserveDebtAc_ != initialReserveDeficitDc * kDischargeEfficiency ||
             cacheReserve_ != cfg.reserveOffSocPercent || cacheTolerance_ != cfg.deferralToleranceEurKwh ||
+            cachePremium12h_ != cfg.predictionPremium12hPct || cachePremium24h_ != cfg.predictionPremium24hPct ||
             cachePremium_ != cfg.predictionPremiumPct || uint32_t(ms - cacheAt_) >= kReplanMs)
             rebuild(first, end, utc, ms, cfg, currentPrice, factor, maximumW, pv, chargeCapW, capacityAc,
                 initialReserveDeficitDc * kDischargeEfficiency);
@@ -235,7 +236,7 @@ public:
     }
     bool assessedPriceAt(uint32_t utc,float factor,const PreparedSettings& cfg,float& value) const {
         if ((cfg.relativeTimePolicy?!validRelativeTiers(cfg):!validPriceAssessment(cfg)) || !priceAt(utc,factor,value)) return false;
-        value=assessedPrice(value,PriceOrigin(originAt(utc)),cfg.predictionPremiumPct);
+        value=assessedPrice(value,PriceOrigin(originAt(utc)),cfg.predictionPremium12hPct);
         return std::isfinite(value);
     }
     uint32_t planningBuilds() const { return planningBuilds_; }
@@ -272,6 +273,7 @@ public:
 #endif
     }
     uint32_t tierStart()const{return projectionStart_;}
+    uint32_t tierAt()const{return projectionUtc_;}
     bool projectionMatches(uint32_t utc, uint32_t start, unsigned count) const {
         return projectionCount_ && projectionUtc_ == utc && projectionStart_ == start && projectionCount_ == count;
     }
@@ -295,7 +297,7 @@ private:
         for(unsigned k=0;k<kPlanSlots;++k){
             const double micro=double(active_[first+k]);
             const double assessed=PriceOrigin(origins_[first+k])==PriceOrigin::Forecast?
-                micro+std::fabs(micro)*double(cfg.predictionPremiumPct)/100:micro;
+                micro+std::fabs(micro)*double(forecastPremium(cfg,utc,projectionStart_+k*900UL))/100:micro;
             relative_.set(k,assessed*.000001);
         }
         if(!relative_.classify(cfg)){out.reason="relative_settings";return finish(out,trace);}
@@ -504,11 +506,13 @@ private:
         cachePrice_ = currentPrice; cacheFactor_ = factor; cacheMaximumW_ = maximumW;
         cacheChargeCapW_ = chargeCapW; cacheReserve_ = cfg.reserveOffSocPercent; cacheCapacityAc_ = capacityAc;
         cacheReserveDebtAc_ = reserveDebtAc;
-        cacheTolerance_ = cfg.deferralToleranceEurKwh; cachePremium_ = cfg.predictionPremiumPct;
+        cacheTolerance_ = cfg.deferralToleranceEurKwh; cachePremium12h_ = cfg.predictionPremium12hPct;
+        cachePremium24h_ = cfg.predictionPremium24hPct; cachePremium_ = cfg.predictionPremiumPct;
         cacheAt_ = ms; cacheValid_ = true; ++planningBuilds_;
         const unsigned count = end - first;
         const auto rawPrice = [&](unsigned i) { return i == first ? currentPrice : float(active_[i]) * .000001f * factor; };
-        const auto price = [&](unsigned i) { return assessedPrice(rawPrice(i), PriceOrigin(origins_[i]), cfg.predictionPremiumPct); };
+        const auto price = [&](unsigned i) { return assessedPrice(rawPrice(i), PriceOrigin(origins_[i]),
+            forecastPremium(cfg,utc,activeStart_+i*900UL)); };
         for (unsigned i = 0; i < count; ++i) order_[i] = uint16_t(first + i);
         std::sort(order_, order_ + count, [&](unsigned a, unsigned b) { return price(a) == price(b) ? a < b : price(a) > price(b); });
         cacheOfferWh_ = cacheFirstOfferW_ = 0;
@@ -580,7 +584,7 @@ private:
         }
     }
     uint8_t origins_[kSlots] = {}, pendingOrigins_[kSlots] = {}, activeVersion_ = 1;
-    float cacheTolerance_ = .03f, cachePremium_ = 0;
+    float cacheTolerance_ = .03f, cachePremium12h_ = 0, cachePremium24h_ = 0, cachePremium_ = 0;
     int32_t active_[kSlots] = {}, pending_[kSlots] = {};
     uint32_t activeAcceptedUtc_ = 0;
     uint32_t activeStart_ = 0, activeRevision_ = 0, pendingStart_ = 0, pendingRevision_ = 0;

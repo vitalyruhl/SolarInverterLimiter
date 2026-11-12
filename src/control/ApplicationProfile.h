@@ -15,7 +15,7 @@ inline constexpr bool priceInputRequiredForMode(bool automatic) {
 }
 struct ApplicationDefaults {
     static constexpr float cheapTimePct=10,veryExpensiveTimePct=10,additionalExpensiveTimePct=20;
-    static constexpr float storageMinimumNetAdvantageEurKwh=.05f,predictionPremiumPct=10;
+    static constexpr float storageMinimumNetAdvantageEurKwh=.05f,predictionPremium12hPct=3,predictionPremium24hPct=8,predictionPremiumPct=10;
     static constexpr int maxOutputW=900,idleOutputW=500,minOutputW=0,outputCorrectionW=-100,sourceTimeoutS=180;
     static constexpr float pidKp=.45f,pidKi=.05f,pidKd=.02f,rs485PeriodS=1;
     static constexpr float reserveOffSoc=5,reserveOnSoc=10,chargeThreshold=80;
@@ -28,6 +28,8 @@ inline PreparedSettings applicationDefaultSettings() {
     c.cheapTimePct=ApplicationDefaults::cheapTimePct;c.veryExpensiveTimePct=ApplicationDefaults::veryExpensiveTimePct;
     c.additionalExpensiveTimePct=ApplicationDefaults::additionalExpensiveTimePct;
     c.storageMinimumNetAdvantageEurKwh=ApplicationDefaults::storageMinimumNetAdvantageEurKwh;
+    c.predictionPremium12hPct=ApplicationDefaults::predictionPremium12hPct;
+    c.predictionPremium24hPct=ApplicationDefaults::predictionPremium24hPct;
     c.predictionPremiumPct=ApplicationDefaults::predictionPremiumPct;c.idleOutputW=ApplicationDefaults::idleOutputW;
     c.reserveOffSocPercent=ApplicationDefaults::reserveOffSoc;c.reserveOnSocPercent=ApplicationDefaults::reserveOnSoc;
     c.chargePriorityThreshold=ApplicationDefaults::chargeThreshold;c.chargeInverterSharePct=ApplicationDefaults::chargeInverterSharePct;

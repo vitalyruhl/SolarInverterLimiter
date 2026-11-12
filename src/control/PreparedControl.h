@@ -50,7 +50,7 @@ struct PreparedSettings {
     float chargePriorityThreshold = 95;
     int chargeInverterSharePct = 0;
     float deferralToleranceEurKwh = kMinimumBenefitEurPerKwh;
-    float predictionPremiumPct = 0;
+    float predictionPremium12hPct = 0, predictionPremium24hPct = 0, predictionPremiumPct = 0;
     int idleOutputW = 500;
     float reserveOffSocPercent = 2.0f;
     float reserveOnSocPercent = 10.0f;

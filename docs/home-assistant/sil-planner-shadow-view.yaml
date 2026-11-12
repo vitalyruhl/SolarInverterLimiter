@@ -606,8 +606,7 @@ cards:
         else ''noch offen'' }} % | {{ state_attr(c,''additionalExpensiveTimePct'') if is_number(state_attr(c,''additionalExpensiveTimePct''))
         else ''noch offen'' }} % |
 
-        | Prognoseaufschlag | {{ state_attr(pc,''predictionPremiumPct'') or 0 }} % | {{ state_attr(c,''predictionPremiumPct'')
-        if is_number(state_attr(c,''predictionPremiumPct'')) else ''noch offen'' }} % |
+        | Prognoseaufschlag (bis 12 / 24 / >24 h) | {% if state_attr(pc,''predictionPremiumModel'')==''horizon_steps_v1'' %}{{ state_attr(pc,''predictionPremium12hPct'') }} / {{ state_attr(pc,''predictionPremium24hPct'') }} / {{ state_attr(pc,''predictionPremiumPct'') }} %{% else %}{{ state_attr(pc,''predictionPremiumPct'') if is_number(state_attr(pc,''predictionPremiumPct'')) else ''offen'' }} % (einheitlich){% endif %} | {% if state_attr(c,''predictionPremiumModel'')==''horizon_steps_v1'' %}{{ state_attr(c,''predictionPremium12hPct'') }} / {{ state_attr(c,''predictionPremium24hPct'') }} / {{ state_attr(c,''predictionPremiumPct'') }} %{% else %}{{ state_attr(c,''predictionPremiumPct'') if is_number(state_attr(c,''predictionPremiumPct'')) else ''noch offen'' }} % (einheitlich){% endif %} |
 
         | Mindestvorteil neuer Speicherung | {% if is_number(state_attr(pc,''storageMinimumNetAdvantageEurKwh'')) %}{{ (state_attr(pc,''storageMinimumNetAdvantageEurKwh'')|float*100)|round(2)
         }} ct/kWh{% else %}bisheriges Modell{% endif %} | {% if is_number(state_attr(c,''storageMinimumNetAdvantageEurKwh''))
@@ -787,7 +786,12 @@ cards:
 
         if(!Number.isFinite(pct)||pct<0||pct>100||!Number.isFinite(factor)||factor<=0) return [];
 
-        return a.p.map((v,i)=>{const p=v/1e6;return [(a.t+i*900)*1000,(a.o[i]===2?p+Math.abs(p)*pct/100:p)*factor];}).filter(([t])=>t>=start.getTime()&&t<end.getTime());'
+        const steps=q.predictionPremiumModel===''horizon_steps_v1'';
+        const p12=Number(q.predictionPremium12hPct),p24=Number(q.predictionPremium24hPct),at=Number(x.tierAt);
+        if(steps&&(!x.tiersValid||!Number.isFinite(at)||at<=0||x.predictionPremiumModel!==q.predictionPremiumModel||
+          x.predictionPremium12hPct!==q.predictionPremium12hPct||x.predictionPremium24hPct!==q.predictionPremium24hPct||
+          x.predictionPremiumPct!==q.predictionPremiumPct||![p12,p24].every(v=>Number.isFinite(v)&&v>=0&&v<=100))) return [];
+        return a.p.map((v,i)=>{const p=v/1e6,t=a.t+i*900,h=t-at,rate=steps?(h<=43200?p12:h<=86400?p24:pct):pct;return [t*1000,(a.o[i]===2?p+Math.abs(p)*rate/100:p)*factor];}).filter(([t])=>t>=start.getTime()&&t<end.getTime());'
       stroke_width: 1
       name: Shadow assessment - NOT tariff
       color: '#ffa726'
@@ -816,7 +820,12 @@ cards:
 
         if(!Number.isFinite(pct)||pct<0||pct>100) return [];
 
-        return a.p.map((v,i)=>{const p=v/1e6;return [(a.t+i*900)*1000,a.o[i]===2?p+Math.abs(p)*pct/100:p];}).filter(([t])=>t>=start.getTime()&&t<end.getTime());'
+        const steps=q.predictionPremiumModel===''horizon_steps_v1'';
+        const p12=Number(q.predictionPremium12hPct),p24=Number(q.predictionPremium24hPct),at=Number(x.tierAt);
+        if(steps&&(!x.tiersValid||!Number.isFinite(at)||at<=0||x.predictionPremiumModel!==q.predictionPremiumModel||
+          x.predictionPremium12hPct!==q.predictionPremium12hPct||x.predictionPremium24hPct!==q.predictionPremium24hPct||
+          x.predictionPremiumPct!==q.predictionPremiumPct||![p12,p24].every(v=>Number.isFinite(v)&&v>=0&&v<=100))) return [];
+        return a.p.map((v,i)=>{const p=v/1e6,t=a.t+i*900,h=t-at,rate=steps?(h<=43200?p12:h<=86400?p24:pct):pct;return [t*1000,a.o[i]===2?p+Math.abs(p)*rate/100:p];}).filter(([t])=>t>=start.getTime()&&t<end.getTime());'
       stroke_width: 1
       name: 'Produktion: Preisbewertung'
       color: '#42a5f5'
@@ -1159,8 +1168,8 @@ cards:
       is not none else ''0.03 (5.6.3 baseline)'' }} | {{ state_attr(c,''deferralToleranceEurKwh'') }}{% if state_attr(c,''allocationPolicy'')==''relative_time_tiers_v1''
       %} (inactive){% endif %} |
 
-      | Forecast premium % | {{ state_attr(pc,''predictionPremiumPct'') if state_attr(pc,''predictionPremiumPct'') is not
-      none else ''0 (5.6.3 baseline)'' }} | {{ state_attr(c,''predictionPremiumPct'') }} |
+      | Forecast premium (12 / 24 / >24 h) % | {% if state_attr(pc,''predictionPremiumModel'')==''horizon_steps_v1'' %}{{ state_attr(pc,''predictionPremium12hPct'') }} / {{ state_attr(pc,''predictionPremium24hPct'') }} / {% endif %}{{ state_attr(pc,''predictionPremiumPct'') if state_attr(pc,''predictionPremiumPct'') is not
+      none else ''0 (5.6.3 baseline)'' }}{% if state_attr(pc,''predictionPremiumModel'')!=''horizon_steps_v1'' and is_number(state_attr(pc,''predictionPremiumPct'')) %} (uniform){% endif %} | {% if state_attr(c,''predictionPremiumModel'')==''horizon_steps_v1'' %}{{ state_attr(c,''predictionPremium12hPct'') if is_number(state_attr(c,''predictionPremium12hPct'')) else ''unknown'' }} / {{ state_attr(c,''predictionPremium24hPct'') if is_number(state_attr(c,''predictionPremium24hPct'')) else ''unknown'' }} / {% endif %}{{ state_attr(c,''predictionPremiumPct'') }}{% if state_attr(c,''predictionPremiumModel'')!=''horizon_steps_v1'' and is_number(state_attr(c,''predictionPremiumPct'')) %} (uniform){% endif %} |
 
       | Reserve off/on % | {{ state_attr(pc,''resOff'') }} / {{ state_attr(pc,''resOn'') }} | {{ state_attr(c,''resOff'')
       }} / {{ state_attr(c,''resOn'') }} |

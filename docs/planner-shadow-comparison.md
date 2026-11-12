@@ -1,4 +1,4 @@
-# Relative planner and isolated shadow profile (5.8.2)
+# Relative planner and isolated shadow profile (5.9.0)
 
 The owner-authorized 5.8.1 promotion enables the reviewed relative algorithm in
 normal firmware as well as the isolated shadow image. Deployment is gated on
@@ -21,7 +21,8 @@ Compiled control defaults match the selected owner test configuration:
 | Control | Default |
 | --- | --- |
 | Cheap / very expensive / additional expensive time | 10 / 10 / 20% |
-| Storage net advantage / forecast-origin premium | 0.05 EUR/kWh / 10% |
+| Storage net advantage | 0.05 EUR/kWh |
+| Forecast premium, up to 12 / 24 / beyond 24 hours | 3 / 8 / 10% |
 | Reserve OFF / ON | 5 / 10% |
 | Charge threshold / inverter PV share | 80 / 10% |
 | MAX / MIN / idle | 900 / 0 / 500 W |
@@ -37,7 +38,9 @@ profile-specific as described below.
 
 ## Native configuration layout
 
-All explicit key hints and storage hashes are unchanged. API category paths
+Existing explicit key hints and storage hashes are unchanged. Two new forecast
+premium settings use `pred12Pct` and `pred24Pct`; the existing `predPct` value
+is retained as the premium beyond 24 hours. API category paths
 change for the following six settings:
 
 | Setting | Category | Stable key |
@@ -66,7 +69,10 @@ bypass it.
 Algorithm selection is independent of transport. Both profiles select
 relative_time_tiers_v1. Classification uses 144 accepted quarter-hour prices:
 market/unknown prices unchanged; forecast valuation is
-raw + abs(raw) * premium / 100. The fresh live tariff is a separate physical gate,
+raw + abs(raw) * premium / 100. The horizon is the slot start relative to the
+projection time: up to and including 12 hours uses the 12-hour value, beyond 12
+and up to and including 24 hours uses the 24-hour value, and beyond 24 hours
+uses the retained 36-hour value, including any later slots. The fresh live tariff is a separate physical gate,
 not a replacement current-slot price for ranking. Legacy comfort/deadband,
 held tolerance and future price factor are inactive and hidden in this policy.
 
@@ -178,7 +184,10 @@ Planning/DischargeBudget, ChargePlan, State, Config, Assessment and
 Diagnostics/Runtime use the configured normal root or guarded shadow root.
 Config/Assessment report allocationPolicy, priceBasis, legacyPriceControlsActive,
 time shares, storageMinimumNetAdvantageEurKwh, chargeEfficiencyPct,
-dischargeEfficiencyPct, source freshness and profile flags. Config priceInputVersion
+dischargeEfficiencyPct, source freshness and profile flags. The three forecast
+settings are published as `predictionPremium12hPct`, `predictionPremium24hPct`
+and `predictionPremiumPct` with `predictionPremiumModel=horizon_steps_v1`;
+`tierAt` identifies the projection time. Config priceInputVersion
 and accepted Assessment inputVersion are 2. Assessment also reports tiersValid,
 currentPriceTier, tierStart/tierSlots, actual counts and assessed boundaries;
 empty groups have null boundaries. Bind revision and coverage before rendering.
