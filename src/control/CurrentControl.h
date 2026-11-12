@@ -27,6 +27,7 @@ struct CurrentInputs {
     float soc = 0;
     float batteryW = 0; // Positive means charging.
     float householdW = 0; // Measured inverter AC + signed grid power, before correction offset.
+    int correctionW = 0;
     float chargerW = 0; // Victron battery voltage * charger output current.
     float price = 0;
     uint32_t bmsSequence = 0;
@@ -58,6 +59,12 @@ struct CurrentDecision {
 
 class CurrentControl {
 public:
+    void resetTransient() {
+        const bool known = reserveKnown_, allowed = reserveAllowed_;
+        *this = CurrentControl{};
+        reserveKnown_ = known;
+        reserveAllowed_ = allowed;
+    }
     bool expensivePrice(const PreparedSettings &cfg, bool valid, float price) {
         if (!cfg.valid) return false;
         classify(cfg, valid, price);
@@ -78,13 +85,13 @@ public:
         const bool charger = in.chargerValid && std::isfinite(in.chargerW) && in.chargerW >= 0;
         const bool price = in.priceValid && std::isfinite(in.price);
         if (!cfg.valid) return stop(out, "settings");
-        if(cfg.relativeTimePolicy&&(!price||!in.relativePricePositive))return stop(out,"relative_nonpositive_price");
         if (bms) {
             if (in.soc <= cfg.reserveOffSocPercent) { reserveKnown_ = true; reserveAllowed_ = false; }
             else if (in.soc >= cfg.reserveOnSocPercent) { reserveKnown_ = true; reserveAllowed_ = true; }
         }
         out.reserveKnown = reserveKnown_;
         out.reserveAllowed = reserveKnown_ && reserveAllowed_;
+        if(cfg.relativeTimePolicy&&(!price||!in.relativePricePositive))return stop(out,"relative_nonpositive_price");
         classify(cfg, price, in.price);
         out.priceBand = band_ == Expensive ? "expensive" :
             (band_ == Cheap ? "cheap" : (band_ == Comfort ? "comfort" : "unknown"));
@@ -125,7 +132,7 @@ public:
             if (!qualify(in, now, true)) {
                 out.direct = true; out.reason = "pv_recovery"; return out;
             }
-            const float demand = clamp(in.householdW, 0, maximum);
+            const float demand = clamp(in.householdW + float(in.correctionW), 0, maximum);
             out.ceilingW = int(clamp(in.chargerW, 0, demand));
             out.reason = bms ? "pv_only_mos" : "pv_only_bms_missing";
             return out; // No battery-power PI, forecast discharge budget or old reserve permission.
@@ -171,7 +178,7 @@ public:
             if (!std::isfinite(in.householdW)) return stop(out, "meters_missing");
             out.pvOnly = true; out.minimumOverrideAllowed = false;
             out.fullBatteryPv = true;
-            out.ceilingW = int(clamp(in.householdW, 0, maximum));
+            out.ceilingW = int(clamp(in.householdW + float(in.correctionW), 0, maximum));
             out.chargeTargetValid = true; out.chargeTargetW = 0;
             out.strategy = "pv_only"; out.reason = "full_battery_pv";
             return approve(out);
@@ -228,7 +235,7 @@ public:
             if (!std::isfinite(in.householdW)) return stop(out, "meters_missing");
             piActive_ = false; integral_ = 0;
             out.pvOnly = true; out.reserveAllowed = false; out.strategy = "pv_only";
-            out.ceilingW = int(clamp(chargerW, 0, clamp(in.householdW, 0, maximum)));
+            out.ceilingW = int(clamp(chargerW, 0, clamp(in.householdW + float(in.correctionW), 0, maximum)));
             out.reason = "pv_only_charge_disabled";
             return approve(out);
         }

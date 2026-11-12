@@ -680,5 +680,63 @@ cards:
       **Noch kein aktueller, gültiger Entladeplan.**
 
       {% endif %}
+  - type: conditional
+    conditions:
+      - condition: state
+        entity: sensor.solarlimiter_discharge_budget
+        state_not: ready
+    card:
+      type: vertical-stack
+      cards:
+        - type: markdown
+          content: >-
+            {% set g = state_attr('sensor.sil_last_automatic_discharge_budget', 'g') | int(0) %}
+            {% set t = state_attr('sensor.sil_last_automatic_discharge_budget', 't') | int(0) %}
+            {% set n = state_attr('sensor.sil_last_automatic_discharge_budget', 'n') | int(0) %}
+            {% if g > 0 %}
+            **Historical automatic discharge plan — not an operating permission.**
+            Generated {{ g | timestamp_custom('%Y-%m-%d %H:%M:%S') }};
+            age {{ ((as_timestamp(now()) - g) / 60) | round(0) }} min.
+            {% if as_timestamp(now()) >= t + n * 900 %}
+            No future intervals remain in this snapshot.
+            {% endif %}
+            {% else %}
+            **No historical automatic discharge plan available.**
+            {% endif %}
+        - type: custom:apexcharts-card
+          header:
+            show: true
+            title: Historical automatic discharge plan
+          graph_span: 39h
+          span:
+            start: minute
+            offset: -3h
+          now:
+            show: true
+          series:
+            - entity: sensor.sil_last_automatic_discharge_budget
+              name: Historical battery allowance (not active)
+              unit: W
+              type: area
+              curve: stepline
+              extend_to: false
+              data_generator: |
+                const a = entity?.attributes;
+                const nowMs = Date.now();
+                if (!a || !Number.isInteger(a.g) || !Number.isInteger(a.t) ||
+                    a.d !== 900 || !Number.isInteger(a.n) || a.n < 2 || a.n > 144 ||
+                    a.t % 900 !== 0 || a.g < a.t || a.g >= a.t + 900 ||
+                    a.g * 1000 > nowMs + 120000 ||
+                    !Array.isArray(a.w) || a.w.length !== a.n ||
+                    a.w.some(w => !Number.isInteger(w) || w < 0 || w > 12000)) return [];
+                const points = [];
+                for (let i = 0; i < a.n; ++i) {
+                  const intervalStart = (a.t + i * a.d) * 1000;
+                  const intervalEnd = intervalStart + a.d * 1000;
+                  const at = Math.max(intervalStart, a.g * 1000, nowMs, start.getTime());
+                  const until = Math.min(intervalEnd, end.getTime());
+                  if (until > at) points.push([at, a.w[i]], [until, a.w[i]]);
+                }
+                return points;
 grid_options:
   columns: full

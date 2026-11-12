@@ -23,7 +23,7 @@ $heldSource = [regex]::Match($source, 'configuredMax, ([^\r\n]+), nowMs\);')
 if (!$heldSource.Success) { throw 'Production held-command extraction missing' }
 $heldFunction = 'static int heldControlCommand() { return ' + $heldSource.Groups[1].Value + '; }'
 $header = Join-Path $repo '.pio/current_control_application.h'
-$modeGate = [regex]::Match($source, '(?s)    modeInputs.automaticSourceGrace = currentDecision.sourceGrace;.*?        (?:if \(!modeDecision\.automaticPvFallback\) )?currentControl = control::CurrentControl\{\};\r?\n    \}')
+$modeGate = [regex]::Match($source, '(?s)    modeInputs.automaticSourceGrace = currentDecision.sourceGrace;.*?        if \(!modeDecision\.automaticPvFallback\) currentControl\.resetTransient\(\);\r?\n    \}')
 if (!$modeGate.Success) { throw 'Production automatic grace gate extraction missing' }
 $modeFunction = 'static void applyProductionModeGate(control::ModeInputs &modeInputs, control::CurrentControl &currentControl) {' + $modeGate.Value + '}'
 $modeOutput = [regex]::Match($source, '(?s)    if \(modeDecision.handled\) \{\r?\n        // Policy demand.*?\r?\n    \}')

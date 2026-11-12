@@ -28,7 +28,7 @@ flowchart TD
 
 | Setting / switch | Implemented meaning |
 | --- | --- |
-| `LimiterIdleW` / Idle Output (W) | Default 500; cached as nonnegative and clamped to effective MAX at decision time. UI order is Max, Idle, Min. MIN cannot raise this fallback. |
+| `LimiterIdleW` / Idle Output (W) | Default 500; retained in settings and the planning capture context, but not used to select an inverter output. Changing it can trigger a planning capture. |
 | `sbtAgeS` / SBT Data Timeout (s) | Integer 1..9999, default 180. Invalid loaded or edited values normalize to 180. Multiplication to uint32 milliseconds is bounded. This is a grace/display deadline, not an alarm or MOS command timeout. |
 | `pvTopic` / PV Forecast Topic | Default `homeassistant/sensor/solar_forecast/shed/schedule`; changing it clears the old PV snapshot and changes the subscription. |
 | `fcTopic` / Price Schedule Topic | Existing independent price input. Changing it clears that schedule while preserving measured-energy history. |

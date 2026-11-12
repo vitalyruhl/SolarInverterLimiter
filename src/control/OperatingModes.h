@@ -46,6 +46,7 @@ struct ModeDecision { bool handled=true, automaticPvFallback=false; int watts=0;
 class OperatingModePolicy {
     bool full_ = false, reserveAllowed_ = false;
 public:
+    void resetTransient() { full_=false; }
     ModeDecision update(const ModeSettings &cfg,const ModeInputs &in) {
         ModeDecision out;
         auto stop = [&](const char *reason) { out.reason=reason; return out; };

@@ -107,8 +107,10 @@ int main() {
     {
         OperatingModePolicy latches;ModeSettings follow;follow.mode=OperatingMode::HouseholdFollow;
         auto sample=healthy();assert(latches.update(follow,sample).watts==850);
+        latches.resetTransient();sample.soc=5;assert(latches.update(follow,sample).watts==850);
         sample.inverterEnabled=false;sample.soc=1;assert(latches.update(follow,sample).watts==0);
         sample.inverterEnabled=true;sample.soc=5;assert(latches.update(follow,sample).watts==0);
+        latches.resetTransient();assert(latches.update(follow,sample).watts==0);
         sample.soc=10;assert(latches.update(follow,sample).watts==850);
         follow.mode=OperatingMode::ChargePriority;sample.soc=100;assert(latches.update(follow,sample).watts==850);
         sample.metersValid=false;sample.soc=90;assert(latches.update(follow,sample).watts==0);

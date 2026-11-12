@@ -121,7 +121,7 @@ static constexpr uint32_t kI2cHz = 400000;
 #endif
 
 #ifndef VERSION
-#define VERSION "5.8.2"
+#define VERSION "5.8.3"
 #endif
 
 static sil::RuntimeDiagnostics runtimeDiagnostics;
@@ -762,8 +762,8 @@ void loop()
         refreshPreparedSettings();
 #endif
         resetPidController();
-        currentControl = control::CurrentControl{};
-        modePolicy = control::OperatingModePolicy{};
+        currentControl.resetTransient();
+        modePolicy.resetTransient();
         planCaptureContextKnown = false;
         ++planContextEpoch;
         dischargeBudget.requestCapture(); chargePlan.requestCapture();
@@ -2432,6 +2432,7 @@ static void processRS485Tick()
     inputs.softwareMosLockOnly = source.softwareMosLockOnly;
     inputs.chargerFault = source.chargerFault;
     inputs.householdW = measuredInverterW + measuredGridW;
+    inputs.correctionW = offset;
     inputs.chargerValid = source.chargerValid;
     inputs.chargerStandby = source.chargerStandby;
     inputs.metersValid = gridFresh && inverterFresh;
@@ -2543,11 +2544,11 @@ static void processRS485Tick()
         currentDecision.strategy = modeDecision.effective;
         currentDecision.reason = modeDecision.reason;
         // Retain qualified PV recovery state only while the automatic fallback owns output.
-        if (!modeDecision.automaticPvFallback) currentControl = control::CurrentControl{};
+        if (!modeDecision.automaticPvFallback) currentControl.resetTransient();
     }
     // Origin-price freshness has final priority; explicit production modes retain their existing independence.
     if(control::priceInputRequiredForMode(operatingModes.confirmed().mode==control::OperatingMode::Automatic) && !futurePrices.priceFresh(utc)) {
-        currentControl=control::CurrentControl{};currentDecision=control::CurrentDecision{};
+        currentControl.resetTransient();currentDecision=control::CurrentDecision{};
         currentDecision.direct=true;currentDecision.reason=futurePrices.testPriceStatus(utc);
         modeDecision=control::ModeDecision{};modeDecision.reason=currentDecision.reason;
         modePublishDirty=true;
@@ -2624,9 +2625,9 @@ static void processRS485Tick()
     }
     else
     {
-        pidBaseTarget = control::saturatingAdd(currentInverterOutputW, signedGridPowerW);
+        pidBaseTarget = control::saturatingAdd(control::saturatingAdd(currentInverterOutputW, signedGridPowerW), offset);
         const int effectiveCeiling = max(outputMinimumW, constrain(currentDecision.ceilingW, 0, configuredMax));
-        const int effectiveMin = currentDecision.sourceGrace ? 0 : min(configuredMin, effectiveCeiling);
+        const int effectiveMin = min(outputMinimumW, effectiveCeiling);
         pidClampedBaseTarget = constrain(pidBaseTarget, effectiveMin, effectiveCeiling);
         pidInput = pidClampedBaseTarget;
         if (pidController.initialized && !control::checkedFloatToInt(roundf(pidController.output), pidInput)) resetPidController();
@@ -2642,21 +2643,21 @@ static void processRS485Tick()
     if (negativePriceOverrideTarget >= 0)
     {
         inverterSetValue = min(negativePriceOverrideTarget, currentDecision.ceilingW);
-        issueInverterCommand(inverterSetValue, configuredMax, offset);
+        issueInverterCommand(inverterSetValue, configuredMax, 0);
     }
     else if (currentDecision.direct)
     {
         inverterSetValue = constrain(currentDecision.ceilingW, 0, configuredMax);
         resetPidController();
-        issueInverterCommand(inverterSetValue, configuredMax, offset);
+        issueInverterCommand(inverterSetValue, configuredMax, 0);
     }
     else if (limiterSettings.enableController.get() || currentDecision.pvOnly || currentDecision.sourceGrace)
     {
         const int correctedValue = inverterCalculatedValue;
         const int ceiling = max(outputMinimumW, constrain(currentDecision.ceilingW, 0, configuredMax));
-        const int effectiveMin = currentDecision.sourceGrace ? 0 : min(configuredMin, ceiling);
+        const int effectiveMin = min(outputMinimumW, ceiling);
         inverterSetValue = constrain(correctedValue, effectiveMin, ceiling);
-        issueInverterCommand(inverterSetValue, configuredMax, offset, outputMinimumW);
+        issueInverterCommand(inverterSetValue, configuredMax, 0, outputMinimumW);
         lmg.logTag(LL::Trace, "RS485", "Controller enabled -> set inverter to %d W (calc=%d, corr=%d)", inverterSetValue, inverterCalculatedValue, correctedValue);
         lmg.logTag(LL::Trace, "PID", "inv=%d gridSigned=%d gridIn=%d gridOut=%d off=%d base=%d clamp=%d in=%d out=%d min=%d max=%d set=%d",
                    currentInverterOutputW, signedGridPowerW, gridImportW, gridExportW, offset, pidBaseTarget, pidClampedBaseTarget,
@@ -2667,7 +2668,7 @@ static void processRS485Tick()
         inverterSetValue = configuredMax;
         resetPidController();
         lmg.logTag(LL::Info, "RS485", "Controller disabled -> using MAX output");
-        issueInverterCommand(inverterSetValue, configuredMax, offset);
+        issueInverterCommand(inverterSetValue, configuredMax, 0);
     }
 
 #if CM_ENABLE_LOGGING && CM_ENABLE_VERBOSE_LOGGING

@@ -9,7 +9,7 @@ if($LASTEXITCODE-ne 0){throw 'Relative tiers regression failed'}
 # Compile actual main order/bindings; schedule positivity must not depend on a BMS-backed new plan.
 $source=[IO.File]::ReadAllText((Join-Path $repo 'src/main.cpp'))
 $binding=[regex]::Match($source,'(?s)    float relativeRawPrice=0;\r?\n    inputs.relativePricePositive=[^\r\n]+;')
-$mode=[regex]::Match($source,'(?s)    modeInputs.automaticSourceGrace = currentDecision.sourceGrace;.*?        if \(!modeDecision\.automaticPvFallback\) currentControl = control::CurrentControl\{\};\r?\n    \}')
+$mode=[regex]::Match($source,'(?s)    modeInputs.automaticSourceGrace = currentDecision.sourceGrace;.*?        if \(!modeDecision\.automaticPvFallback\) currentControl\.resetTransient\(\);\r?\n    \}')
 $hold=[regex]::Match($source,'(?s)    if\(control::priceInputRequiredForMode\([^\r\n]+\) && !futurePrices.priceFresh\(utc\)\) \{.*?\r?\n    \}')
 if(!$binding.Success-or !$mode.Success-or !$hold.Success){throw 'Actual relative main binding/order extraction missing'}
 $header='static void bindActualRelativePrice(uint32_t utc,bool priceFresh,float measuredPrice){'+$binding.Value+'}'+[Environment]::NewLine+'static void applyActualRelativeMode(){'+$mode.Value+'}'+[Environment]::NewLine+'static void applyActualRelativeFeedHold(uint32_t utc){'+$hold.Value+'}'

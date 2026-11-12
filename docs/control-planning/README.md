@@ -2,7 +2,7 @@
 
 Updated 2026-10-20. The [SIL / SBT / HA implementation plan](../superpowers/plans/2026-10-20-sil-sbt-ha-integration.md) remains the only active work queue. The owner authorized its implementation after the earlier documentation closeout. The [consolidated specification](2026-10-20-integration-spec.md) records the accepted scope and production-upload prohibition.
 
-The implementation diagrams below describe the current source: PV-only calculation capped by fresh charger power and measured household demand before the final output correction when BMS data/MOS permissions cannot support battery operation (5.1.1), bounded charger-source grace with a default 180-second deadline and Idle fallback at 500 W by default only with valid BMS and both MOS ON, positioned NTC channels, atomic price/PV schedules, and cached energy planning. They are not production-deployment or physical closed-loop acceptance evidence.
+The implementation diagrams below describe PV-only calculation bounded by fresh charger power and corrected household demand, bounded source grace with a default 180-second deadline, positioned NTC channels, atomic price/PV schedules, and energy planning. Idle Output remains a setting but does not select an inverter output. These diagrams are not production-deployment or physical closed-loop acceptance evidence.
 
 ## Diagrams and contracts
 
