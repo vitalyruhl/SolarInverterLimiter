@@ -121,7 +121,7 @@ static constexpr uint32_t kI2cHz = 400000;
 #endif
 
 #ifndef VERSION
-#define VERSION "5.9.0"
+#define VERSION "5.9.1"
 #endif
 
 static sil::RuntimeDiagnostics runtimeDiagnostics;
@@ -1961,7 +1961,19 @@ static String buildPlanningAssessmentPayload()
 // Application publication pacing; CM core telemetry and physical control cadence are unchanged.
 static bool appPublishAccepted=false;
 static uint32_t appPublishAt=0;
-static bool appPublishReady(){return !appPublishAccepted||uint32_t(millis()-appPublishAt)>=250UL;}
+// A lost Wi-Fi segment stalls TCP until retransmission. Frames queued meanwhile can overflow
+// CM's bounded TX queue, which drops the whole MQTT session and forces control recovery.
+// Backpressure is only counted while queued bytes cannot be sent, so healthy links never wait.
+static constexpr uint32_t kTxSettleMs=1000;
+static bool appTransportSettled(){
+    static uint32_t seenBackpressure=0,backpressureAt=0;
+    const uint32_t backpressure=mqtt.getBoundedIoStats().txBackpressure;
+    if(backpressure!=seenBackpressure){seenBackpressure=backpressure;backpressureAt=millis();}
+    return !backpressureAt||uint32_t(millis()-backpressureAt)>=kTxSettleMs;
+}
+static bool appPublishReady(){
+    return appTransportSettled()&&(!appPublishAccepted||uint32_t(millis()-appPublishAt)>=250UL);
+}
 static void appPublished(bool accepted){if(accepted){appPublishAccepted=true;appPublishAt=millis();}}
 #if defined(SIL_PLANNER_SHADOW) && SIL_PLANNER_SHADOW
 static void shadowTraceTx(const char* tag,size_t bytes,uint32_t previousFailures) {

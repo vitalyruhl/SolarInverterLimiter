@@ -11,6 +11,7 @@ SOURCE_ENTRY='d1df01d001352968344ba5b5c6a9ad23'
 REFERENCE_ENTITY='sensor.epex_spot_data_total_price_2'
 TEST_TOPIC='SolarLimiterTest/Input/PriceSchedule'
 PRODUCTION_TOPIC='SolarLimiter/Input/PriceSchedule'
+REVISION_GRACE_S=60
 OBSERVERS={
     'SolarLimiterTest/Planning/DischargeBudget':'sensor.sil_shadow_discharge_budget',
     'SolarLimiterTest/Planning/ChargePlan':'sensor.sil_shadow_charge_plan',
@@ -156,7 +157,12 @@ def _shadow_input_matches(payload,now):
     if source is None or source.state!='ready': return False
     attributes=source.attributes
     revision=payload.get('priceRevision',payload.get('r',payload.get('revision')))
-    return revision==attributes.get('r') and 0<=now-attributes.get('lastPublishedAt',0)<=180
+    age=now-attributes.get('lastPublishedAt',0)
+    if not 0<=age<=180: return False
+    # Every tick re-issues prices with a new revision; a plan computed just before
+    # the new frames arrived still carries the immediately preceding revision.
+    return revision==attributes.get('r') or (revision is not None and revision==attributes.get('previousR')
+                                             and age<=REVISION_GRACE_S)
 
 def _shadow_withdraw(now):
     frame={'v':2,'r':now,'t':now//900*900,'d':900,'n':0,'k':0,'p':[],'o':[]}
@@ -200,6 +206,9 @@ def sil_shadow_publish_prices():
         attributes.update({'friendly_name':'SIL shadow raw price input','source':'Energyforecast.de / DE-LU',
             'origin_codes':'0 unknown / 1 market / 2 forecast','raw_tariff_unchanged':True,
             'test_only':True,'maxProviderRequestsPerDay':24,'lastPublishedAt':now})
+        previous=hass.states.get('sensor.sil_shadow_price_input')
+        if previous is not None and previous.state=='ready' and previous.attributes.get('r')!=prepared['r']:
+            attributes['previousR']=previous.attributes.get('r')
         state.set('sensor.sil_shadow_price_input',value='ready',new_attributes=attributes)
         return {'published_chunks':len(prepared['frames']),'slots':prepared['n'],
                 'originMarket':prepared['originMarket'],'originForecast':prepared['originForecast'],

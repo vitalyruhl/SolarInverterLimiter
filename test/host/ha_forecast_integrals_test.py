@@ -265,4 +265,30 @@ class LastGoodHoldTests(unittest.TestCase):
         self.assertNotIn('heldError',attributes)
         self.assertEqual(json.loads(calls[0]['payload'])['n'],2)
 
+class ShadowInputBindingTests(unittest.TestCase):
+    def matches(self,revision,attributes,now=1793997060,state='ready'):
+        root=Path(__file__).resolve().parents[2]
+        tree=ast.parse((root/'docs/home-assistant/sil-planner-shadow-pyscript.py').read_text(encoding='utf-8'))
+        function=next(node for node in tree.body if isinstance(node,ast.FunctionDef) and node.name=='_shadow_input_matches')
+        source=SimpleNamespace(state=state,attributes=attributes)
+        ns={'REVISION_GRACE_S':60,'hass':SimpleNamespace(states=SimpleNamespace(get=lambda _:source))}
+        exec(compile(ast.fix_missing_locations(ast.Module(body=[function],type_ignores=[])),'input_binding','exec'),ns)
+        return ns['_shadow_input_matches']({'priceRevision':revision},now)
+
+    def test_preceding_revision_is_accepted_only_briefly_after_republish(self):
+        attributes={'r':1793997050,'previousR':1793996990,'lastPublishedAt':1793997050}
+        self.assertTrue(self.matches(1793997050,attributes))
+        self.assertTrue(self.matches(1793996990,attributes))
+        self.assertFalse(self.matches(1793996990,attributes,now=1793997111))
+        self.assertFalse(self.matches(1793996930,attributes))
+        self.assertFalse(self.matches(None,dict(attributes,previousR=None)))
+        self.assertFalse(self.matches(1793996990,attributes,state='blocked'))
+
+    def test_shadow_publish_records_preceding_ready_revision(self):
+        ns,store,calls=ProductionLifecycleTests().namespace()
+        store['sensor.sil_shadow_price_input']=SimpleNamespace(state='ready',attributes={'r':1793996940})
+        ns['_shadow_prepare']=lambda *args:{'frames':['f'],'n':2,'r':1793997000,'originMarket':0,'originForecast':2,'originUnknown':0}
+        ns['sil_shadow_publish_prices']()
+        self.assertEqual(store['sensor.sil_shadow_price_input'].attributes['previousR'],1793996940)
+
 if __name__=='__main__':unittest.main()
