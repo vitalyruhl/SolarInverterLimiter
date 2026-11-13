@@ -19,7 +19,7 @@ int main(){
  // [MOCKED!] Real application defaults, receiver and allocator; no hardware/network.
  auto c=applicationDefaultSettings();assert(kRelativeTimePolicy&&c.relativeTimePolicy&&!c.valid);
  assert(c.cheapTimePct==10&&c.veryExpensiveTimePct==10&&c.additionalExpensiveTimePct==20);
- assert(c.predictionPremiumPct==10&&c.storageMinimumNetAdvantageEurKwh==.05f);
+ assert(c.predictionPremium12hPct==3&&c.predictionPremium24hPct==8&&c.predictionPremiumPct==10&&c.storageMinimumNetAdvantageEurKwh==.05f);
  assert(c.reserveOffSocPercent==5&&c.reserveOnSocPercent==10&&c.chargePriorityThreshold==80&&c.chargeInverterSharePct==10);
  assert(ApplicationDefaults::maxOutputW==900&&ApplicationDefaults::minOutputW==0&&ApplicationDefaults::outputCorrectionW==-100);
  assert(ApplicationDefaults::pidKp==.45f&&ApplicationDefaults::pidKi==.05f&&ApplicationDefaults::pidKd==.02f&&ApplicationDefaults::rs485PeriodS==1);

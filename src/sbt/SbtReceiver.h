@@ -53,6 +53,7 @@ class Receiver {
 public:
   static constexpr uint32_t timeoutMs = 180000;
   static constexpr uint32_t acquisitionMs = 30000;
+  static constexpr uint32_t transportCarryMs = 60000;
   void setTimeoutSeconds(unsigned seconds) {
     deadlineMs_ = (seconds >= 1 && seconds <= 9999 ? seconds : 180) * 1000u;
   }
@@ -77,6 +78,27 @@ public:
   void disconnect() {
     online_ = remoteReady_ = controlAvailable_ = permissionsKnown_ = false;
     for (unsigned source = 0; source < 2; ++source) fence(source);
+  }
+  // SIL's own broker session dropped. Change-only scalars (SOC, alarm bits) are not
+  // retained, so values that were valid at loss may be re-armed by the first newly
+  // advancing health sequence within transportCarryMs. Deadlines are never renewed.
+  void transportLost(uint32_t now) {
+    uint32_t mask[2] = {carryMask_[0], carryMask_[1]}, at[2] = {carryAt_[0], carryAt_[1]};
+    bool carry[2] = {carryActive_[0], carryActive_[1]};
+    for (unsigned source = 0; source < 2; ++source) {
+      // Repeated loss notifications (disconnect, then connect) keep the first snapshot.
+      if (!fresh(source, now)) continue;
+      carry[source] = true; at[source] = now; mask[source] = 0;
+      for (size_t i = 0; i < channelCount; ++i)
+        if (channels[i].source == source && values_[i].seen && values_[i].eligible)
+          mask[source] |= uint32_t(1) << i;
+    }
+    disconnect();
+    for (unsigned source = 0; source < 2; ++source) {
+      carryMask_[source] = mask[source];
+      carryActive_[source] = carry[source] && mask[source];
+      carryAt_[source] = at[source];
+    }
   }
   bool alarmRestricted() const { return alarmRestricted_; }
   bool softwareMosLockOnly() const { return dischargeRestrictionBits_ == (1u << 12); }
@@ -194,6 +216,7 @@ public:
           return false;
         if (!std::strcmp(text, "unavailable")) {
           health_[s].online = false;
+          carryActive_[s] = false;
         } else
           health_[s].online = true;
         return true;
@@ -255,6 +278,7 @@ public:
       return false;
     auto &v = values_[i];
     const auto kind = channels[i].kind;
+    carryMask_[channels[i].source] &= ~(uint32_t(1) << i); // A new packet supersedes the carried scalar.
     if (!std::strcmp(text, "null") || kind == Kind::Unsupported) {
       v.eligible = false;
       const bool missingNtc = !std::strcmp(topic, "bms/temperature_1_c") ||
@@ -390,6 +414,8 @@ private:
   bool alarmRestricted_ = false, chargeRestricted_ = false;
   uint32_t dischargeRestrictionBits_ = 0, chargeRestrictionBits_ = 0;
   bool permissionsKnown_ = false, requestedCharge_ = false, requestedDischarge_ = false;
+  uint32_t carryMask_[2] = {0, 0}, carryAt_[2] = {0, 0};
+  bool carryActive_[2] = {false, false};
   bool online_ = false, remoteReady_ = false, remoteEnabled_ = false,
        remotePending_ = false, controlAvailable_ = false;
   char protection_[512] = "", chargeState_[32] = "", session_[33] = "",
@@ -414,6 +440,8 @@ private:
       if (channels[i].source == source) values_[i].eligible = false;
     health_[source].advanced = false;
     health_[source].available = false;
+    carryActive_[source] = false;
+    carryMask_[source] = 0;
   }
   void recordQualified(unsigned source, uint32_t now) {
     auto &h = health_[source];
@@ -457,6 +485,10 @@ private:
     } else if (int32_t(seq - h.sequence) > 0) {
       h.sequence = seq; h.received = now; h.age = age;
       h.timestamped = h.advanced = true;
+      if (carryActive_[source] && uint32_t(now - carryAt_[source]) < transportCarryMs)
+        for (size_t i = 0; i < channelCount; ++i)
+          if (carryMask_[source] & (uint32_t(1) << i)) values_[i].eligible = true;
+      carryActive_[source] = false; carryMask_[source] = 0;
     }
     h.available = true;
     recordQualified(source, now);

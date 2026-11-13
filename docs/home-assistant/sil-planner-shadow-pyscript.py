@@ -11,6 +11,7 @@ SOURCE_ENTRY='d1df01d001352968344ba5b5c6a9ad23'
 REFERENCE_ENTITY='sensor.epex_spot_data_total_price_2'
 TEST_TOPIC='SolarLimiterTest/Input/PriceSchedule'
 PRODUCTION_TOPIC='SolarLimiter/Input/PriceSchedule'
+REVISION_GRACE_S=60
 OBSERVERS={
     'SolarLimiterTest/Planning/DischargeBudget':'sensor.sil_shadow_discharge_budget',
     'SolarLimiterTest/Planning/ChargePlan':'sensor.sil_shadow_charge_plan',
@@ -29,7 +30,16 @@ def _production_prepare(reference,options,now):
     spec=importlib.util.spec_from_file_location('sil_production_price_core','/config/pyscript/modules/sil_planner_shadow_core.py')
     core=importlib.util.module_from_spec(spec)
     spec.loader.exec_module(core)
-    return core.production_from_cache(reference,options,now,'/config/data/sil_planner_shadow/provider-cache.json')
+    return core.with_last_good(
+        lambda:core.production_from_cache(reference,options,now,'/config/data/sil_planner_shadow/provider-cache.json'),
+        now,'/config/data/sil_planner_shadow/last-good-production.json')
+
+def _held_attributes(prepared):
+    """Expose only the fixed reason code of a held snapshot."""
+    error=prepared.pop('heldError','')
+    if prepared.get('held'):
+        prepared['heldReason']=error.split(':')[0] if error.startswith(('provider_','tariff_','reference_','source_')) else 'adapter_failed'
+    return error
 
 def _production_withdraw(now):
     frame={'v':2,'r':now,'t':now//900*900,'d':900,'n':0,'k':0,'p':[],'o':[]}
@@ -57,6 +67,7 @@ def sil_production_publish_prices():
         source=hass.data.get('epex_spot',{}).get(SOURCE_ENTRY)
         if source is None or not source.last_update_success:raise ValueError('reference_coordinator')
         prepared=_production_prepare(list(reference.attributes.get('data',[])),dict(entry.options),now)
+        _held_attributes(prepared)
         for payload in prepared['frames']:
             service.call('mqtt','publish',topic=PRODUCTION_TOPIC,payload=payload,qos=1,retain=False,blocking=True)
         attributes={key:value for key,value in prepared.items() if key!='frames'}
@@ -65,7 +76,8 @@ def sil_production_publish_prices():
                           origin_codes='0 unknown / 1 market / 2 forecast')
         state.set('sensor.sil_production_price_input',value='ready',new_attributes=attributes)
         return {'published_chunks':len(prepared['frames']),'slots':prepared['n'],'revision':prepared['r'],
-                'tariff_aligned':True,'providerAgeS':prepared['providerAgeS'],'providerCacheReadOnly':True}
+                'tariff_aligned':True,'providerAgeS':prepared.get('providerAgeS'),'providerCacheReadOnly':True,
+                'held':prepared.get('held',False)}
     except Exception as error:
         reason=str(error) if isinstance(error,ValueError) and str(error).startswith(('provider_','tariff_','reference_','source_')) else 'production_adapter_failed'
         # Detailed prices are private evidence; only a fixed reason is exposed here.
@@ -86,7 +98,9 @@ def _shadow_prepare(token,reference,options,now):
     spec=importlib.util.spec_from_file_location('sil_planner_shadow_core','/config/pyscript/modules/sil_planner_shadow_core.py')
     core=importlib.util.module_from_spec(spec)
     spec.loader.exec_module(core)
-    return core.run(token,reference,options,now,'/config/data/sil_planner_shadow/provider-cache.json')
+    return core.with_last_good(
+        lambda:core.run(token,reference,options,now,'/config/data/sil_planner_shadow/provider-cache.json'),
+        now,'/config/data/sil_planner_shadow/last-good-test.json')
 
 @pyscript_executor
 def _shadow_cache_evidence(now):
@@ -143,7 +157,12 @@ def _shadow_input_matches(payload,now):
     if source is None or source.state!='ready': return False
     attributes=source.attributes
     revision=payload.get('priceRevision',payload.get('r',payload.get('revision')))
-    return revision==attributes.get('r') and 0<=now-attributes.get('lastPublishedAt',0)<=180
+    age=now-attributes.get('lastPublishedAt',0)
+    if not 0<=age<=180: return False
+    # Every tick re-issues prices with a new revision; a plan computed just before
+    # the new frames arrived still carries the immediately preceding revision.
+    return revision==attributes.get('r') or (revision is not None and revision==attributes.get('previousR')
+                                             and age<=REVISION_GRACE_S)
 
 def _shadow_withdraw(now):
     frame={'v':2,'r':now,'t':now//900*900,'d':900,'n':0,'k':0,'p':[],'o':[]}
@@ -177,17 +196,24 @@ def sil_shadow_publish_prices():
         if source is None or not source.last_update_success:
             raise ValueError('reference_coordinator')
         prepared=_shadow_prepare(entry.data['token'],list(reference.attributes.get('data',[])),dict(entry.options),now)
+        held_error=_held_attributes(prepared)
+        parts=held_error.split(':')
+        if prepared.get('held') and len(parts)==4 and parts[0]=='tariff_alignment_mismatch':
+            prepared['firstMismatch']={'startUTC':int(parts[1]),'haTariff':float(parts[2]),'providerTariff':float(parts[3])}
         for payload in prepared['frames']:
             service.call('mqtt','publish',topic=TEST_TOPIC,payload=payload,qos=1,retain=False,blocking=True)
         attributes={key:value for key,value in prepared.items() if key!='frames'}
         attributes.update({'friendly_name':'SIL shadow raw price input','source':'Energyforecast.de / DE-LU',
             'origin_codes':'0 unknown / 1 market / 2 forecast','raw_tariff_unchanged':True,
             'test_only':True,'maxProviderRequestsPerDay':24,'lastPublishedAt':now})
+        previous=hass.states.get('sensor.sil_shadow_price_input')
+        if previous is not None and previous.state=='ready' and previous.attributes.get('r')!=prepared['r']:
+            attributes['previousR']=previous.attributes.get('r')
         state.set('sensor.sil_shadow_price_input',value='ready',new_attributes=attributes)
         return {'published_chunks':len(prepared['frames']),'slots':prepared['n'],
                 'originMarket':prepared['originMarket'],'originForecast':prepared['originForecast'],
-                'originUnknown':prepared['originUnknown'],'providerAgeS':prepared['providerAgeS'],
-                'tariff_aligned':True,'revision':prepared['r']}
+                'originUnknown':prepared['originUnknown'],'providerAgeS':prepared.get('providerAgeS'),
+                'tariff_aligned':True,'revision':prepared['r'],'held':prepared.get('held',False)}
     except Exception as error:
         # Core reasons are fixed codes; never expose URLs, token values or provider bodies.
         reason=str(error) if isinstance(error,ValueError) and str(error).startswith(('provider_','tariff_','reference_','source_')) else 'adapter_failed'

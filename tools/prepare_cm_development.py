@@ -74,12 +74,12 @@ def source_files(source: Path) -> list[Path]:
     return sorted(selected, key=lambda item: item.as_posix())
 
 
-def read_manifest(package: Path) -> dict[str, str]:
+def read_manifest(package: Path, version: str = VERSION) -> dict[str, str]:
     try:
         lines = (package / MANIFEST).read_text(encoding="utf-8").splitlines()
     except OSError as error:
         raise RuntimeError("CM package manifest missing") from error
-    if f"# source_version={VERSION}" not in lines:
+    if f"# source_version={version}" not in lines:
         raise RuntimeError("CM package manifest version mismatch")
     result = {}
     for line in lines:
@@ -127,11 +127,11 @@ def mutable_ui_input(name: str) -> bool:
     return name == "src/html_content.h" or name.startswith("webui/dist/")
 
 
-def verify_development_package(package: Path, consumed: Path) -> None:
+def verify_development_package(package: Path, consumed: Path, version: str = VERSION) -> None:
     """Frozen package is exact; consumer may regenerate only derived UI/cache files."""
     if is_reparse(package) or is_reparse(package.parent):
         raise RuntimeError("CM source package must not be a symbolic link")
-    expected = read_manifest(package)
+    expected = read_manifest(package, version)
     actual = {path.as_posix() for path in files_under(package, package_check=True)}
     if actual != set(expected) | {MANIFEST}:
         raise RuntimeError("CM source package differs from its manifest")
@@ -148,13 +148,13 @@ def verify_development_package(package: Path, consumed: Path) -> None:
             raise RuntimeError(f"Consumed CM source is stale: {name}")
 
 
-def prepare(source: Path, destination: Path) -> tuple[int, int, str, str]:
+def prepare(source: Path, destination: Path, version: str = VERSION) -> tuple[int, int, str, str]:
     if is_reparse(source):
         raise RuntimeError("Refusing symbolic-link source checkout")
     selected = source_files(source)
     metadata = json.loads((source / "library.json").read_text(encoding="utf-8"))
-    if metadata.get("version") != VERSION:
-        raise RuntimeError(f"Expected CM development version {VERSION}")
+    if metadata.get("version") != version:
+        raise RuntimeError(f"Expected CM development version {version}")
     head = subprocess.check_output(
         ["git", "-c", f"safe.directory={source.as_posix()}", "-C", str(source), "rev-parse", "HEAD"],
         text=True,
@@ -163,7 +163,7 @@ def prepare(source: Path, destination: Path) -> tuple[int, int, str, str]:
     mqtt = [f"{value}  {name}\n" for name, value in hashes.items() if name.startswith("src/mqtt/") and name.endswith(".h")]
     if not mqtt:
         raise RuntimeError("CM MQTT headers missing")
-    manifest = f"# source_head={head}\n# source_version={VERSION}\n" + "".join(
+    manifest = f"# source_head={head}\n# source_version={version}\n" + "".join(
         f"{value}  {name}\n" for name, value in hashes.items()
     )
     mqtt_hash = hashlib.sha256("".join(mqtt).encode("utf-8")).hexdigest()

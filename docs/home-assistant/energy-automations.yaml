@@ -1,0 +1,193 @@
+# Automations feeding SIL with prices and PV forecast, plus battery and price helpers.
+# Source: live Home Assistant export (2026-11-13). Keep in sync with the live system.
+# Live location: /config/automations.yaml (UI-managed list).
+# Contents:
+#   solarlimiter_publish_electricity_price  current price -> SolarLimiter/Input/*
+#   sil_publish_price_schedule              EPEX quarter-hour prices -> price schedule topic
+#   1792156922303                           SBT full-energy estimate -> input_number
+#   rabot_energy_price_*_notification       price notifications (replace device placeholders)
+# The Shed PV forecast publisher lives in shed-forecast-package.yaml.
+
+- id: solarlimiter_publish_electricity_price
+  alias: SolarLimiter - Publish Electricity Price
+  description: Publish current corrected Rabot price and negative-price flag to MQTT for SolarLimiter
+  trigger:
+  - platform: state
+    entity_id: sensor.rabot_energy_current_price
+  - platform: homeassistant
+    event: start
+  - platform: time_pattern
+    minutes: /1
+  condition:
+  - condition: template
+    value_template: |
+      {{ states('sensor.rabot_energy_current_price') not in ['unknown', 'unavailable', 'none'] }}
+  action:
+  - variables:
+      corrected_price: '{{ states(''sensor.rabot_energy_current_price'') | float(999) }}'
+      negative_price: '{{ 1 if corrected_price < 0 else 0 }}'
+  - service: mqtt.publish
+    data:
+      retain: true
+      qos: 1
+      topic: SolarLimiter/Input/ElectricityPrice
+      payload: '{{ corrected_price | round(4) }}'
+  - service: mqtt.publish
+    data:
+      retain: true
+      qos: 1
+      topic: SolarLimiter/Input/NegativePrice
+      payload: '{{ negative_price }}'
+  mode: restart
+- id: sil_publish_price_schedule
+  alias: SIL - publish future electricity prices
+  description: Publish EPEX quarter-hour prices with provider-unknown provenance; SIL applies its own factor.
+  triggers:
+  - trigger: homeassistant
+    event: start
+  - trigger: state
+    entity_id: sensor.epex_spot_data_total_price_2
+    attribute: data
+  - trigger: time_pattern
+    minutes: /5
+  variables:
+    schedule_topic: homeassistant/sensor/electricity_price/schedule
+    revision: '{{ as_timestamp(now()) | int }}'
+    start_utc: '{{ ((as_timestamp(now()) | int) // 900) * 900 }}'
+    prices: |-
+      {% set rows = namespace(items=[]) %} {% for entry in state_attr('sensor.epex_spot_data_total_price_2', 'data') or [] %}
+        {% set s = as_timestamp(entry.get('start_time'), 0) | int %}
+        {% set e = as_timestamp(entry.get('end_time'), 0) | int %}
+        {% set p = entry.get('price_per_kwh') %}
+        {% if s >= start_utc | int and s < (start_utc | int) + 259200 %}
+          {% set rows.items = rows.items + [{'s': s, 'e': e, 'p': p}] %}
+        {% endif %}
+      {% endfor %} {% set ns = namespace(values=[], expected=start_utc | int, broken=false) %} {% for row in rows.items | sort(attribute='s') %}
+        {% if not ns.broken %}
+          {% if row.s == ns.expected and row.e == row.s + 900
+                and is_number(row.p) and -2 <= row.p | float <= 10 %}
+            {% set ns.values = ns.values + [(row.p | float * 1000000) | round(0) | int] %}
+            {% set ns.expected = ns.expected + 900 %}
+          {% else %}
+            {% set ns.broken = true %}
+          {% endif %}
+        {% endif %}
+      {% endfor %} {{ ns.values if ns.values | count >= 2 else [] }}
+  actions:
+  - repeat:
+      count: '{{ [1, ((prices | count + 23) // 24)] | max }}'
+      sequence:
+      - action: mqtt.publish
+        data:
+          topic: '{{ schedule_topic }}'
+          qos: 1
+          retain: false
+          payload: |-
+            {{ {'v': 1, 'r': revision | int, 't': start_utc | int,
+                'n': prices | count, 'k': repeat.index - 1,
+                'p': prices[(repeat.index - 1) * 24 : repeat.index * 24]} | to_json }}
+  mode: single
+- id: '1792156922303'
+  alias: SBT Battery - retain full energy estimate
+  description: Store the last valid BMS full capacity multiplied by 14 x 3.67 V (LG INR18650 M29 nominal voltage). Display estimate only; no device commands.
+  triggers:
+  - trigger: state
+    entity_id:
+    - sensor.sbt_bms_full_capacity_ah
+    - binary_sensor.sbt_bms_availability
+    - binary_sensor.sbt_collector_availability
+  - trigger: homeassistant
+    event: start
+  - trigger: time_pattern
+    minutes: /5
+  conditions: []
+  actions:
+  - condition: template
+    value_template: |-
+      {% set ah = states('sensor.sbt_bms_full_capacity_ah') %} {{ is_state('binary_sensor.sbt_collector_availability', 'on')
+         and is_state('binary_sensor.sbt_bms_availability', 'on')
+         and is_number(ah) and 0 < (ah | float(0)) * 51.38 <= 20000 }}
+  - action: input_number.set_value
+    target:
+      entity_id: input_number.sbt_battery_full_energy_wh
+    data:
+      value: '{{ (states(''sensor.sbt_bms_full_capacity_ah'') | float * 51.38) | round(2) }}'
+  mode: single
+- id: rabot_energy_price_expensive_notification
+  alias: Strompreis teuer
+  description: Benachrichtigung wenn Strompreis über 30 Cent/kWh steigt
+  trigger:
+  - platform: numeric_state
+    entity_id: sensor.rabot_energy_current_price
+    above: 0.3
+  condition: []
+  action:
+  - variables:
+      price_cent: '{{ (states(''sensor.rabot_energy_current_price'') | float(0) * 100) | round(1) }}'
+  - device_id: <mobile_app_device_id_1>
+    domain: mobile_app
+    type: notify
+    title: ⚡ Strom teuer
+    message: 'Strompreis ist teuer: {{ price_cent }} ct/kWh'
+    data:
+      ttl: 0
+      priority: high
+      tag: electricity_price_expensive
+  - device_id: <mobile_app_device_id_2>
+    domain: mobile_app
+    type: notify
+    title: ⚡ Strom teuer
+    message: 'Strompreis ist teuer: {{ price_cent }} ct/kWh'
+    data:
+      ttl: 0
+      priority: high
+      tag: electricity_price_expensive
+  - device_id: <mobile_app_device_id_3>
+    domain: mobile_app
+    type: notify
+    title: ⚡ Strom teuer
+    message: 'Strompreis ist teuer: {{ price_cent }} ct/kWh'
+    data:
+      ttl: 0
+      priority: high
+      tag: electricity_price_expensive
+  mode: single
+- id: rabot_energy_price_cheap_notification
+  alias: Strompreis günstig
+  description: Benachrichtigung wenn Strompreis unter 15 Cent/kWh fällt
+  trigger:
+  - platform: numeric_state
+    entity_id: sensor.rabot_energy_current_price
+    below: 0.15
+  condition: []
+  action:
+  - variables:
+      price_cent: '{{ (states(''sensor.rabot_energy_current_price'') | float(0) * 100) | round(1) }}'
+  - device_id: <mobile_app_device_id_1>
+    domain: mobile_app
+    type: notify
+    title: ✅ Strom günstig
+    message: 'Strompreis ist günstig: {{ price_cent }} ct/kWh'
+    data:
+      ttl: 0
+      priority: high
+      tag: electricity_price_cheap
+  - device_id: <mobile_app_device_id_2>
+    domain: mobile_app
+    type: notify
+    title: ✅ Strom günstig
+    message: 'Strompreis ist günstig: {{ price_cent }} ct/kWh'
+    data:
+      ttl: 0
+      priority: high
+      tag: electricity_price_cheap
+  - device_id: <mobile_app_device_id_3>
+    domain: mobile_app
+    type: notify
+    title: ✅ Strom günstig
+    message: 'Strompreis ist günstig: {{ price_cent }} ct/kWh'
+    data:
+      ttl: 0
+      priority: high
+      tag: electricity_price_cheap
+  mode: single

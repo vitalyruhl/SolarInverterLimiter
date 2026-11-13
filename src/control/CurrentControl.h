@@ -10,6 +10,9 @@ namespace control {
 // Commissioning candidates, to be qualified on the installed system.
 constexpr float kPvKp = 0.20f;
 constexpr float kPvKiPerSecond = 0.03f;
+// Without a battery budget, direct PV passthrough is trimmed until the BMS stops discharging.
+constexpr float kRelativeHoldTrimKiPerSecond = 0.1f;
+constexpr float kRelativeHoldBatteryMarginW = 5.0f;
 
 struct CurrentInputs {
     bool sourcesWithinGrace = false;
@@ -27,6 +30,7 @@ struct CurrentInputs {
     float soc = 0;
     float batteryW = 0; // Positive means charging.
     float householdW = 0; // Measured inverter AC + signed grid power, before correction offset.
+    int correctionW = 0;
     float chargerW = 0; // Victron battery voltage * charger output current.
     float price = 0;
     uint32_t bmsSequence = 0;
@@ -58,6 +62,12 @@ struct CurrentDecision {
 
 class CurrentControl {
 public:
+    void resetTransient() {
+        const bool known = reserveKnown_, allowed = reserveAllowed_;
+        *this = CurrentControl{};
+        reserveKnown_ = known;
+        reserveAllowed_ = allowed;
+    }
     bool expensivePrice(const PreparedSettings &cfg, bool valid, float price) {
         if (!cfg.valid) return false;
         classify(cfg, valid, price);
@@ -78,13 +88,13 @@ public:
         const bool charger = in.chargerValid && std::isfinite(in.chargerW) && in.chargerW >= 0;
         const bool price = in.priceValid && std::isfinite(in.price);
         if (!cfg.valid) return stop(out, "settings");
-        if(cfg.relativeTimePolicy&&(!price||!in.relativePricePositive))return stop(out,"relative_nonpositive_price");
         if (bms) {
             if (in.soc <= cfg.reserveOffSocPercent) { reserveKnown_ = true; reserveAllowed_ = false; }
             else if (in.soc >= cfg.reserveOnSocPercent) { reserveKnown_ = true; reserveAllowed_ = true; }
         }
         out.reserveKnown = reserveKnown_;
         out.reserveAllowed = reserveKnown_ && reserveAllowed_;
+        if(cfg.relativeTimePolicy&&(!price||!in.relativePricePositive))return stop(out,"relative_nonpositive_price");
         classify(cfg, price, in.price);
         out.priceBand = band_ == Expensive ? "expensive" :
             (band_ == Cheap ? "cheap" : (band_ == Comfort ? "comfort" : "unknown"));
@@ -125,7 +135,7 @@ public:
             if (!qualify(in, now, true)) {
                 out.direct = true; out.reason = "pv_recovery"; return out;
             }
-            const float demand = clamp(in.householdW, 0, maximum);
+            const float demand = clamp(in.householdW + float(in.correctionW), 0, maximum);
             out.ceilingW = int(clamp(in.chargerW, 0, demand));
             out.reason = bms ? "pv_only_mos" : "pv_only_bms_missing";
             return out; // No battery-power PI, forecast discharge budget or old reserve permission.
@@ -171,7 +181,7 @@ public:
             if (!std::isfinite(in.householdW)) return stop(out, "meters_missing");
             out.pvOnly = true; out.minimumOverrideAllowed = false;
             out.fullBatteryPv = true;
-            out.ceilingW = int(clamp(in.householdW, 0, maximum));
+            out.ceilingW = int(clamp(in.householdW + float(in.correctionW), 0, maximum));
             out.chargeTargetValid = true; out.chargeTargetW = 0;
             out.strategy = "pv_only"; out.reason = "full_battery_pv";
             return approve(out);
@@ -180,7 +190,9 @@ public:
             if(!in.relativePricePositive)return stop(out,"relative_nonpositive_price");
             pauseDynamics();out.minimumOverrideAllowed=false;
             const int battery=dischargeAvailable&&out.reserveAllowed?forecastLimit:0;
-            const int direct=charger?std::max(0,std::min(in.futurePvCeilingW,int(maximum))):0;
+            int direct=charger?std::max(0,std::min(in.futurePvCeilingW,int(maximum))):0;
+            if(battery>0||direct==0){relativeTrimActive_=false;relativeTrimW_=0;}
+            else direct=trimRelativeHold(in,direct,now);
             out.ceilingW=std::min(int(maximum),battery+direct);
             out.pvOnly=battery==0;out.strategy=battery>0?"discharge":"preserve";
             out.priceBand=in.futurePriceTier;out.reason=in.futureReason;
@@ -228,7 +240,7 @@ public:
             if (!std::isfinite(in.householdW)) return stop(out, "meters_missing");
             piActive_ = false; integral_ = 0;
             out.pvOnly = true; out.reserveAllowed = false; out.strategy = "pv_only";
-            out.ceilingW = int(clamp(chargerW, 0, clamp(in.householdW, 0, maximum)));
+            out.ceilingW = int(clamp(chargerW, 0, clamp(in.householdW + float(in.correctionW), 0, maximum)));
             out.reason = "pv_only_charge_disabled";
             return approve(out);
         }
@@ -310,6 +322,23 @@ private:
     float integral_ = 0, ceiling_ = 0, economicCeiling_ = 0;
     bool economicActive_ = false, pvOnly_ = false, batteryOnly_ = false, chargeAvailable_ = false, dischargeAvailable_ = false;
     uint32_t economicAt_ = 0;
+    bool relativeTrimActive_ = false;
+    float relativeTrimW_ = 0;
+    uint32_t relativeTrimAt_ = 0, relativeTrimSequence_ = 0;
+
+    // Fixed standby loads and low-load inverter losses are not part of the PV model.
+    int trimRelativeHold(const CurrentInputs &in, int direct, uint32_t now) {
+        if (!relativeTrimActive_) {
+            relativeTrimActive_ = true; relativeTrimW_ = 0;
+            relativeTrimAt_ = now; relativeTrimSequence_ = in.bmsSequence;
+        } else if (in.bmsSequence != relativeTrimSequence_) {
+            const float dt = clamp(float(uint32_t(now - relativeTrimAt_)) * 0.001f, 0, 10);
+            relativeTrimAt_ = now; relativeTrimSequence_ = in.bmsSequence;
+            relativeTrimW_ += kRelativeHoldTrimKiPerSecond * (kRelativeHoldBatteryMarginW - in.batteryW) * dt;
+        }
+        relativeTrimW_ = clamp(relativeTrimW_, 0, float(direct));
+        return std::max(0, direct - int(relativeTrimW_ + 0.5f));
+    }
 
     static float clamp(float value, float low, float high) {
         return value < low ? low : (value > high ? high : value);
@@ -351,6 +380,7 @@ private:
             batteryGraceBudgetW_ = 0;
         }
         qualifying_ = qualified_ = false; pairs_ = 0;
+        relativeTrimActive_ = false; relativeTrimW_ = 0;
         pauseDynamics();
     }
     CurrentDecision stop(CurrentDecision out, const char *reason) {

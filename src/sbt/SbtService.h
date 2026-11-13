@@ -202,7 +202,7 @@ class Service {
         if (mutex_) {
             xSemaphoreTake(mutex_, portMAX_DELAY);
             if (rootChanged) receiver_.reset();
-            else receiver_.disconnect();
+            else receiver_.transportLost(millis());
             xSemaphoreGive(mutex_);
         }
     }

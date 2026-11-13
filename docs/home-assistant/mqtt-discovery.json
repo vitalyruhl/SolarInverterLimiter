@@ -1,0 +1,809 @@
+{
+  "homeassistant/sensor/sbt_collector_uptime/config": {
+    "name": "SBT Collector Uptime",
+    "unique_id": "sbt_collector_uptime",
+    "default_entity_id": "sensor.sbt_collector_uptime",
+    "state_topic": "SolarBatteryTelemetry/System-Info/ESP",
+    "value_template": "{{ value_json.uptimeHuman }}",
+    "entity_category": "diagnostic",
+    "icon": "mdi:timer-outline",
+    "json_attributes_topic": "SolarBatteryTelemetry/System-Info/ESP",
+    "json_attributes": [
+      "uptimeMs"
+    ],
+    "expire_after": 180
+  },
+  "homeassistant/sensor/solarlimiter_uptime_human/config": {
+    "name": "SolarLimiter Uptime",
+    "unique_id": "solarlimiter_uptime_human",
+    "default_entity_id": "sensor.solarlimiter_uptime_human",
+    "state_topic": "SolarLimiter/System-Info/ESP",
+    "value_template": "{{ value_json.uptimeHuman if value_json is defined and value_json.uptimeHuman is defined and value_json.uptimeHuman is string and value_json.uptimeHuman | trim | length > 0 else 'unknown' }}",
+    "availability_topic": "SolarLimiter/System-Info/status",
+    "payload_available": "online",
+    "payload_not_available": "offline",
+    "icon": "mdi:timer-outline",
+    "expire_after": 180
+  },
+  "homeassistant/sensor/solarlimiter_discharge_budget/config": {
+    "name": "SolarLimiter Discharge Budget",
+    "unique_id": "solarlimiter_discharge_budget",
+    "default_entity_id": "sensor.solarlimiter_discharge_budget",
+    "state_topic": "SolarLimiter/Planning/DischargeBudget",
+    "value_template": "{{ 'ready' if value_json.valid | default(false) else 'invalid' }}",
+    "json_attributes_topic": "SolarLimiter/Planning/DischargeBudget",
+    "availability_topic": "SolarLimiter/System-Info/status",
+    "payload_available": "online",
+    "payload_not_available": "offline",
+    "expire_after": 180,
+    "icon": "mdi:battery-clock-outline"
+  },
+  "homeassistant/sensor/solarlimiter_charge_plan/config": {
+    "name": "SolarLimiter Charge Plan",
+    "unique_id": "solarlimiter_charge_plan",
+    "default_entity_id": "sensor.solarlimiter_charge_plan",
+    "state_topic": "SolarLimiter/Planning/ChargePlan",
+    "value_template": "{{ 'ready' if value_json.valid | default(false) else 'invalid' }}",
+    "json_attributes_topic": "SolarLimiter/Planning/ChargePlan",
+    "json_attributes": [
+      "v",
+      "valid",
+      "reason",
+      "kind",
+      "g",
+      "r",
+      "pv",
+      "t",
+      "d",
+      "n",
+      "target",
+      "unmetWh",
+      "w",
+      "s"
+    ],
+    "availability_topic": "SolarLimiter/System-Info/status",
+    "payload_available": "online",
+    "payload_not_available": "offline",
+    "expire_after": 180
+  },
+  "homeassistant/sensor/sil_configured_maximum_output/config": {
+    "name": "SIL configured maximum output",
+    "unique_id": "sil_configured_maximum_output",
+    "default_entity_id": "sensor.sil_configured_maximum_output",
+    "state_topic": "SolarLimiter/Planning/Config",
+    "value_template": "{%- set p = value_json | default({}, true) -%}\n{%- set w = p.maxOutputW | default(none) -%}\n{{- w if p is mapping and p.v | default(none) == 1\n    and p.valid | default(false) is sameas true\n    and w is number and w is not boolean\n    and 0 <= w <= 2147483647 and w % 1 == 0 else none -}}",
+    "unit_of_measurement": "W",
+    "device_class": "power",
+    "entity_category": "diagnostic",
+    "suggested_display_precision": 0,
+    "icon": "mdi:tune-vertical",
+    "json_attributes_topic": "SolarLimiter/Planning/Config",
+    "availability_topic": "SolarLimiter/System-Info/status",
+    "payload_available": "online",
+    "payload_not_available": "offline",
+    "expire_after": 180
+  },
+  "homeassistant/sensor/energy_review_20261031/sbt_bms_cell_01_voltage/config": {
+    "name": "SBT BMS Cell 01 Voltage",
+    "unique_id": "sbt_bms_cell_01_voltage",
+    "state_topic": "SolarBatteryTelemetry/bms/cells",
+    "value_template": "{{ (value_json.cells_mv[0] | float / 1000) if value_json.available and value_json.cells_mv is sequence and value_json.cells_mv | count == 14 else none }}",
+    "device_class": "voltage",
+    "state_class": "measurement",
+    "unit_of_measurement": "V",
+    "suggested_display_precision": 3,
+    "availability_mode": "all",
+    "availability": [
+      {
+        "topic": "SolarBatteryTelemetry/status",
+        "payload_available": "online",
+        "payload_not_available": "offline"
+      },
+      {
+        "topic": "SolarBatteryTelemetry/bms/availability",
+        "payload_available": "available",
+        "payload_not_available": "unavailable"
+      },
+      {
+        "topic": "SolarBatteryTelemetry/bms/cells",
+        "value_template": "{{ 'online' if value_json.available | default(false) else 'offline' }}"
+      }
+    ],
+    "device": {
+      "identifiers": [
+        "sbt_8857218f664c_bms"
+      ]
+    },
+    "default_entity_id": "sensor.sbt_bms_cell_01_voltage",
+    "origin": {
+      "name": "Owner-authorized energy entity setup",
+      "sw_version": "2026-10-31"
+    }
+  },
+  "homeassistant/sensor/energy_review_20261031/sbt_bms_cell_02_voltage/config": {
+    "name": "SBT BMS Cell 02 Voltage",
+    "unique_id": "sbt_bms_cell_02_voltage",
+    "state_topic": "SolarBatteryTelemetry/bms/cells",
+    "value_template": "{{ (value_json.cells_mv[1] | float / 1000) if value_json.available and value_json.cells_mv is sequence and value_json.cells_mv | count == 14 else none }}",
+    "device_class": "voltage",
+    "state_class": "measurement",
+    "unit_of_measurement": "V",
+    "suggested_display_precision": 3,
+    "availability_mode": "all",
+    "availability": [
+      {
+        "topic": "SolarBatteryTelemetry/status",
+        "payload_available": "online",
+        "payload_not_available": "offline"
+      },
+      {
+        "topic": "SolarBatteryTelemetry/bms/availability",
+        "payload_available": "available",
+        "payload_not_available": "unavailable"
+      },
+      {
+        "topic": "SolarBatteryTelemetry/bms/cells",
+        "value_template": "{{ 'online' if value_json.available | default(false) else 'offline' }}"
+      }
+    ],
+    "device": {
+      "identifiers": [
+        "sbt_8857218f664c_bms"
+      ]
+    },
+    "default_entity_id": "sensor.sbt_bms_cell_02_voltage",
+    "origin": {
+      "name": "Owner-authorized energy entity setup",
+      "sw_version": "2026-10-31"
+    }
+  },
+  "homeassistant/sensor/energy_review_20261031/sbt_bms_cell_03_voltage/config": {
+    "name": "SBT BMS Cell 03 Voltage",
+    "unique_id": "sbt_bms_cell_03_voltage",
+    "state_topic": "SolarBatteryTelemetry/bms/cells",
+    "value_template": "{{ (value_json.cells_mv[2] | float / 1000) if value_json.available and value_json.cells_mv is sequence and value_json.cells_mv | count == 14 else none }}",
+    "device_class": "voltage",
+    "state_class": "measurement",
+    "unit_of_measurement": "V",
+    "suggested_display_precision": 3,
+    "availability_mode": "all",
+    "availability": [
+      {
+        "topic": "SolarBatteryTelemetry/status",
+        "payload_available": "online",
+        "payload_not_available": "offline"
+      },
+      {
+        "topic": "SolarBatteryTelemetry/bms/availability",
+        "payload_available": "available",
+        "payload_not_available": "unavailable"
+      },
+      {
+        "topic": "SolarBatteryTelemetry/bms/cells",
+        "value_template": "{{ 'online' if value_json.available | default(false) else 'offline' }}"
+      }
+    ],
+    "device": {
+      "identifiers": [
+        "sbt_8857218f664c_bms"
+      ]
+    },
+    "default_entity_id": "sensor.sbt_bms_cell_03_voltage",
+    "origin": {
+      "name": "Owner-authorized energy entity setup",
+      "sw_version": "2026-10-31"
+    }
+  },
+  "homeassistant/sensor/energy_review_20261031/sbt_bms_cell_04_voltage/config": {
+    "name": "SBT BMS Cell 04 Voltage",
+    "unique_id": "sbt_bms_cell_04_voltage",
+    "state_topic": "SolarBatteryTelemetry/bms/cells",
+    "value_template": "{{ (value_json.cells_mv[3] | float / 1000) if value_json.available and value_json.cells_mv is sequence and value_json.cells_mv | count == 14 else none }}",
+    "device_class": "voltage",
+    "state_class": "measurement",
+    "unit_of_measurement": "V",
+    "suggested_display_precision": 3,
+    "availability_mode": "all",
+    "availability": [
+      {
+        "topic": "SolarBatteryTelemetry/status",
+        "payload_available": "online",
+        "payload_not_available": "offline"
+      },
+      {
+        "topic": "SolarBatteryTelemetry/bms/availability",
+        "payload_available": "available",
+        "payload_not_available": "unavailable"
+      },
+      {
+        "topic": "SolarBatteryTelemetry/bms/cells",
+        "value_template": "{{ 'online' if value_json.available | default(false) else 'offline' }}"
+      }
+    ],
+    "device": {
+      "identifiers": [
+        "sbt_8857218f664c_bms"
+      ]
+    },
+    "default_entity_id": "sensor.sbt_bms_cell_04_voltage",
+    "origin": {
+      "name": "Owner-authorized energy entity setup",
+      "sw_version": "2026-10-31"
+    }
+  },
+  "homeassistant/sensor/energy_review_20261031/sbt_bms_cell_05_voltage/config": {
+    "name": "SBT BMS Cell 05 Voltage",
+    "unique_id": "sbt_bms_cell_05_voltage",
+    "state_topic": "SolarBatteryTelemetry/bms/cells",
+    "value_template": "{{ (value_json.cells_mv[4] | float / 1000) if value_json.available and value_json.cells_mv is sequence and value_json.cells_mv | count == 14 else none }}",
+    "device_class": "voltage",
+    "state_class": "measurement",
+    "unit_of_measurement": "V",
+    "suggested_display_precision": 3,
+    "availability_mode": "all",
+    "availability": [
+      {
+        "topic": "SolarBatteryTelemetry/status",
+        "payload_available": "online",
+        "payload_not_available": "offline"
+      },
+      {
+        "topic": "SolarBatteryTelemetry/bms/availability",
+        "payload_available": "available",
+        "payload_not_available": "unavailable"
+      },
+      {
+        "topic": "SolarBatteryTelemetry/bms/cells",
+        "value_template": "{{ 'online' if value_json.available | default(false) else 'offline' }}"
+      }
+    ],
+    "device": {
+      "identifiers": [
+        "sbt_8857218f664c_bms"
+      ]
+    },
+    "default_entity_id": "sensor.sbt_bms_cell_05_voltage",
+    "origin": {
+      "name": "Owner-authorized energy entity setup",
+      "sw_version": "2026-10-31"
+    }
+  },
+  "homeassistant/sensor/energy_review_20261031/sbt_bms_cell_06_voltage/config": {
+    "name": "SBT BMS Cell 06 Voltage",
+    "unique_id": "sbt_bms_cell_06_voltage",
+    "state_topic": "SolarBatteryTelemetry/bms/cells",
+    "value_template": "{{ (value_json.cells_mv[5] | float / 1000) if value_json.available and value_json.cells_mv is sequence and value_json.cells_mv | count == 14 else none }}",
+    "device_class": "voltage",
+    "state_class": "measurement",
+    "unit_of_measurement": "V",
+    "suggested_display_precision": 3,
+    "availability_mode": "all",
+    "availability": [
+      {
+        "topic": "SolarBatteryTelemetry/status",
+        "payload_available": "online",
+        "payload_not_available": "offline"
+      },
+      {
+        "topic": "SolarBatteryTelemetry/bms/availability",
+        "payload_available": "available",
+        "payload_not_available": "unavailable"
+      },
+      {
+        "topic": "SolarBatteryTelemetry/bms/cells",
+        "value_template": "{{ 'online' if value_json.available | default(false) else 'offline' }}"
+      }
+    ],
+    "device": {
+      "identifiers": [
+        "sbt_8857218f664c_bms"
+      ]
+    },
+    "default_entity_id": "sensor.sbt_bms_cell_06_voltage",
+    "origin": {
+      "name": "Owner-authorized energy entity setup",
+      "sw_version": "2026-10-31"
+    }
+  },
+  "homeassistant/sensor/energy_review_20261031/sbt_bms_cell_07_voltage/config": {
+    "name": "SBT BMS Cell 07 Voltage",
+    "unique_id": "sbt_bms_cell_07_voltage",
+    "state_topic": "SolarBatteryTelemetry/bms/cells",
+    "value_template": "{{ (value_json.cells_mv[6] | float / 1000) if value_json.available and value_json.cells_mv is sequence and value_json.cells_mv | count == 14 else none }}",
+    "device_class": "voltage",
+    "state_class": "measurement",
+    "unit_of_measurement": "V",
+    "suggested_display_precision": 3,
+    "availability_mode": "all",
+    "availability": [
+      {
+        "topic": "SolarBatteryTelemetry/status",
+        "payload_available": "online",
+        "payload_not_available": "offline"
+      },
+      {
+        "topic": "SolarBatteryTelemetry/bms/availability",
+        "payload_available": "available",
+        "payload_not_available": "unavailable"
+      },
+      {
+        "topic": "SolarBatteryTelemetry/bms/cells",
+        "value_template": "{{ 'online' if value_json.available | default(false) else 'offline' }}"
+      }
+    ],
+    "device": {
+      "identifiers": [
+        "sbt_8857218f664c_bms"
+      ]
+    },
+    "default_entity_id": "sensor.sbt_bms_cell_07_voltage",
+    "origin": {
+      "name": "Owner-authorized energy entity setup",
+      "sw_version": "2026-10-31"
+    }
+  },
+  "homeassistant/sensor/energy_review_20261031/sbt_bms_cell_08_voltage/config": {
+    "name": "SBT BMS Cell 08 Voltage",
+    "unique_id": "sbt_bms_cell_08_voltage",
+    "state_topic": "SolarBatteryTelemetry/bms/cells",
+    "value_template": "{{ (value_json.cells_mv[7] | float / 1000) if value_json.available and value_json.cells_mv is sequence and value_json.cells_mv | count == 14 else none }}",
+    "device_class": "voltage",
+    "state_class": "measurement",
+    "unit_of_measurement": "V",
+    "suggested_display_precision": 3,
+    "availability_mode": "all",
+    "availability": [
+      {
+        "topic": "SolarBatteryTelemetry/status",
+        "payload_available": "online",
+        "payload_not_available": "offline"
+      },
+      {
+        "topic": "SolarBatteryTelemetry/bms/availability",
+        "payload_available": "available",
+        "payload_not_available": "unavailable"
+      },
+      {
+        "topic": "SolarBatteryTelemetry/bms/cells",
+        "value_template": "{{ 'online' if value_json.available | default(false) else 'offline' }}"
+      }
+    ],
+    "device": {
+      "identifiers": [
+        "sbt_8857218f664c_bms"
+      ]
+    },
+    "default_entity_id": "sensor.sbt_bms_cell_08_voltage",
+    "origin": {
+      "name": "Owner-authorized energy entity setup",
+      "sw_version": "2026-10-31"
+    }
+  },
+  "homeassistant/sensor/energy_review_20261031/sbt_bms_cell_09_voltage/config": {
+    "name": "SBT BMS Cell 09 Voltage",
+    "unique_id": "sbt_bms_cell_09_voltage",
+    "state_topic": "SolarBatteryTelemetry/bms/cells",
+    "value_template": "{{ (value_json.cells_mv[8] | float / 1000) if value_json.available and value_json.cells_mv is sequence and value_json.cells_mv | count == 14 else none }}",
+    "device_class": "voltage",
+    "state_class": "measurement",
+    "unit_of_measurement": "V",
+    "suggested_display_precision": 3,
+    "availability_mode": "all",
+    "availability": [
+      {
+        "topic": "SolarBatteryTelemetry/status",
+        "payload_available": "online",
+        "payload_not_available": "offline"
+      },
+      {
+        "topic": "SolarBatteryTelemetry/bms/availability",
+        "payload_available": "available",
+        "payload_not_available": "unavailable"
+      },
+      {
+        "topic": "SolarBatteryTelemetry/bms/cells",
+        "value_template": "{{ 'online' if value_json.available | default(false) else 'offline' }}"
+      }
+    ],
+    "device": {
+      "identifiers": [
+        "sbt_8857218f664c_bms"
+      ]
+    },
+    "default_entity_id": "sensor.sbt_bms_cell_09_voltage",
+    "origin": {
+      "name": "Owner-authorized energy entity setup",
+      "sw_version": "2026-10-31"
+    }
+  },
+  "homeassistant/sensor/energy_review_20261031/sbt_bms_cell_10_voltage/config": {
+    "name": "SBT BMS Cell 10 Voltage",
+    "unique_id": "sbt_bms_cell_10_voltage",
+    "state_topic": "SolarBatteryTelemetry/bms/cells",
+    "value_template": "{{ (value_json.cells_mv[9] | float / 1000) if value_json.available and value_json.cells_mv is sequence and value_json.cells_mv | count == 14 else none }}",
+    "device_class": "voltage",
+    "state_class": "measurement",
+    "unit_of_measurement": "V",
+    "suggested_display_precision": 3,
+    "availability_mode": "all",
+    "availability": [
+      {
+        "topic": "SolarBatteryTelemetry/status",
+        "payload_available": "online",
+        "payload_not_available": "offline"
+      },
+      {
+        "topic": "SolarBatteryTelemetry/bms/availability",
+        "payload_available": "available",
+        "payload_not_available": "unavailable"
+      },
+      {
+        "topic": "SolarBatteryTelemetry/bms/cells",
+        "value_template": "{{ 'online' if value_json.available | default(false) else 'offline' }}"
+      }
+    ],
+    "device": {
+      "identifiers": [
+        "sbt_8857218f664c_bms"
+      ]
+    },
+    "default_entity_id": "sensor.sbt_bms_cell_10_voltage",
+    "origin": {
+      "name": "Owner-authorized energy entity setup",
+      "sw_version": "2026-10-31"
+    }
+  },
+  "homeassistant/sensor/energy_review_20261031/sbt_bms_cell_11_voltage/config": {
+    "name": "SBT BMS Cell 11 Voltage",
+    "unique_id": "sbt_bms_cell_11_voltage",
+    "state_topic": "SolarBatteryTelemetry/bms/cells",
+    "value_template": "{{ (value_json.cells_mv[10] | float / 1000) if value_json.available and value_json.cells_mv is sequence and value_json.cells_mv | count == 14 else none }}",
+    "device_class": "voltage",
+    "state_class": "measurement",
+    "unit_of_measurement": "V",
+    "suggested_display_precision": 3,
+    "availability_mode": "all",
+    "availability": [
+      {
+        "topic": "SolarBatteryTelemetry/status",
+        "payload_available": "online",
+        "payload_not_available": "offline"
+      },
+      {
+        "topic": "SolarBatteryTelemetry/bms/availability",
+        "payload_available": "available",
+        "payload_not_available": "unavailable"
+      },
+      {
+        "topic": "SolarBatteryTelemetry/bms/cells",
+        "value_template": "{{ 'online' if value_json.available | default(false) else 'offline' }}"
+      }
+    ],
+    "device": {
+      "identifiers": [
+        "sbt_8857218f664c_bms"
+      ]
+    },
+    "default_entity_id": "sensor.sbt_bms_cell_11_voltage",
+    "origin": {
+      "name": "Owner-authorized energy entity setup",
+      "sw_version": "2026-10-31"
+    }
+  },
+  "homeassistant/sensor/energy_review_20261031/sbt_bms_cell_12_voltage/config": {
+    "name": "SBT BMS Cell 12 Voltage",
+    "unique_id": "sbt_bms_cell_12_voltage",
+    "state_topic": "SolarBatteryTelemetry/bms/cells",
+    "value_template": "{{ (value_json.cells_mv[11] | float / 1000) if value_json.available and value_json.cells_mv is sequence and value_json.cells_mv | count == 14 else none }}",
+    "device_class": "voltage",
+    "state_class": "measurement",
+    "unit_of_measurement": "V",
+    "suggested_display_precision": 3,
+    "availability_mode": "all",
+    "availability": [
+      {
+        "topic": "SolarBatteryTelemetry/status",
+        "payload_available": "online",
+        "payload_not_available": "offline"
+      },
+      {
+        "topic": "SolarBatteryTelemetry/bms/availability",
+        "payload_available": "available",
+        "payload_not_available": "unavailable"
+      },
+      {
+        "topic": "SolarBatteryTelemetry/bms/cells",
+        "value_template": "{{ 'online' if value_json.available | default(false) else 'offline' }}"
+      }
+    ],
+    "device": {
+      "identifiers": [
+        "sbt_8857218f664c_bms"
+      ]
+    },
+    "default_entity_id": "sensor.sbt_bms_cell_12_voltage",
+    "origin": {
+      "name": "Owner-authorized energy entity setup",
+      "sw_version": "2026-10-31"
+    }
+  },
+  "homeassistant/sensor/energy_review_20261031/sbt_bms_cell_13_voltage/config": {
+    "name": "SBT BMS Cell 13 Voltage",
+    "unique_id": "sbt_bms_cell_13_voltage",
+    "state_topic": "SolarBatteryTelemetry/bms/cells",
+    "value_template": "{{ (value_json.cells_mv[12] | float / 1000) if value_json.available and value_json.cells_mv is sequence and value_json.cells_mv | count == 14 else none }}",
+    "device_class": "voltage",
+    "state_class": "measurement",
+    "unit_of_measurement": "V",
+    "suggested_display_precision": 3,
+    "availability_mode": "all",
+    "availability": [
+      {
+        "topic": "SolarBatteryTelemetry/status",
+        "payload_available": "online",
+        "payload_not_available": "offline"
+      },
+      {
+        "topic": "SolarBatteryTelemetry/bms/availability",
+        "payload_available": "available",
+        "payload_not_available": "unavailable"
+      },
+      {
+        "topic": "SolarBatteryTelemetry/bms/cells",
+        "value_template": "{{ 'online' if value_json.available | default(false) else 'offline' }}"
+      }
+    ],
+    "device": {
+      "identifiers": [
+        "sbt_8857218f664c_bms"
+      ]
+    },
+    "default_entity_id": "sensor.sbt_bms_cell_13_voltage",
+    "origin": {
+      "name": "Owner-authorized energy entity setup",
+      "sw_version": "2026-10-31"
+    }
+  },
+  "homeassistant/sensor/energy_review_20261031/sbt_bms_cell_14_voltage/config": {
+    "name": "SBT BMS Cell 14 Voltage",
+    "unique_id": "sbt_bms_cell_14_voltage",
+    "state_topic": "SolarBatteryTelemetry/bms/cells",
+    "value_template": "{{ (value_json.cells_mv[13] | float / 1000) if value_json.available and value_json.cells_mv is sequence and value_json.cells_mv | count == 14 else none }}",
+    "device_class": "voltage",
+    "state_class": "measurement",
+    "unit_of_measurement": "V",
+    "suggested_display_precision": 3,
+    "availability_mode": "all",
+    "availability": [
+      {
+        "topic": "SolarBatteryTelemetry/status",
+        "payload_available": "online",
+        "payload_not_available": "offline"
+      },
+      {
+        "topic": "SolarBatteryTelemetry/bms/availability",
+        "payload_available": "available",
+        "payload_not_available": "unavailable"
+      },
+      {
+        "topic": "SolarBatteryTelemetry/bms/cells",
+        "value_template": "{{ 'online' if value_json.available | default(false) else 'offline' }}"
+      }
+    ],
+    "device": {
+      "identifiers": [
+        "sbt_8857218f664c_bms"
+      ]
+    },
+    "default_entity_id": "sensor.sbt_bms_cell_14_voltage",
+    "origin": {
+      "name": "Owner-authorized energy entity setup",
+      "sw_version": "2026-10-31"
+    }
+  },
+  "homeassistant/sensor/energy_review_20261031/sbt_bms_cells_sequence/config": {
+    "name": "SBT BMS Cells Sequence",
+    "unique_id": "sbt_bms_cells_sequence",
+    "state_topic": "SolarBatteryTelemetry/bms/cells",
+    "value_template": "{{ value_json.sample_sequence }}",
+    "entity_category": "diagnostic",
+    "availability_mode": "all",
+    "availability": [
+      {
+        "topic": "SolarBatteryTelemetry/status",
+        "payload_available": "online",
+        "payload_not_available": "offline"
+      },
+      {
+        "topic": "SolarBatteryTelemetry/bms/availability",
+        "payload_available": "available",
+        "payload_not_available": "unavailable"
+      },
+      {
+        "topic": "SolarBatteryTelemetry/bms/cells",
+        "value_template": "{{ 'online' if value_json.available | default(false) else 'offline' }}"
+      }
+    ],
+    "device": {
+      "identifiers": [
+        "sbt_8857218f664c_bms"
+      ]
+    },
+    "json_attributes_topic": "SolarBatteryTelemetry/bms/cells",
+    "json_attributes_template": "{{ {'sample_age_ms': value_json.sample_age_ms,\n    'received_at': value_json.received_at,\n    'source': value_json.source} | tojson }}",
+    "default_entity_id": "sensor.sbt_bms_cells_sequence",
+    "origin": {
+      "name": "Owner-authorized energy entity setup",
+      "sw_version": "2026-10-31"
+    }
+  },
+  "homeassistant/sensor/energy_review_20261031/sbt_loop_stack_min_free_bytes/config": {
+    "name": "SBT Loop Stack Minimum Free",
+    "unique_id": "sbt_loop_stack_min_free_bytes",
+    "state_topic": "SolarBatteryTelemetry/Diagnostics/Runtime",
+    "value_template": "{{ value_json.loop_stack_min_free_bytes if value_json.loop_stack_min_free_bytes is number else none }}",
+    "device_class": "data_size",
+    "state_class": "measurement",
+    "unit_of_measurement": "B",
+    "entity_category": "diagnostic",
+    "availability_mode": "all",
+    "availability": [
+      {
+        "topic": "SolarBatteryTelemetry/status",
+        "payload_available": "online",
+        "payload_not_available": "offline"
+      },
+      {
+        "topic": "SolarBatteryTelemetry/Diagnostics/Runtime",
+        "value_template": "{{ 'online' if value_json.loop_stack_min_free_bytes is number else 'offline' }}"
+      }
+    ],
+    "device": {
+      "identifiers": [
+        "sbt_runtime_diagnostics"
+      ],
+      "name": "SBT Runtime Diagnostics"
+    },
+    "default_entity_id": "sensor.sbt_loop_stack_min_free_bytes",
+    "origin": {
+      "name": "Owner-authorized energy entity setup",
+      "sw_version": "2026-10-31"
+    }
+  },
+  "homeassistant/sensor/energy_review_20261031/sbt_heap_free_bytes/config": {
+    "name": "SBT Heap Free",
+    "unique_id": "sbt_heap_free_bytes",
+    "state_topic": "SolarBatteryTelemetry/Diagnostics/Runtime",
+    "value_template": "{{ value_json.heap_free_bytes if value_json.heap_free_bytes is number else none }}",
+    "device_class": "data_size",
+    "state_class": "measurement",
+    "unit_of_measurement": "B",
+    "entity_category": "diagnostic",
+    "availability_mode": "all",
+    "availability": [
+      {
+        "topic": "SolarBatteryTelemetry/status",
+        "payload_available": "online",
+        "payload_not_available": "offline"
+      },
+      {
+        "topic": "SolarBatteryTelemetry/Diagnostics/Runtime",
+        "value_template": "{{ 'online' if value_json.heap_free_bytes is number else 'offline' }}"
+      }
+    ],
+    "device": {
+      "identifiers": [
+        "sbt_runtime_diagnostics"
+      ],
+      "name": "SBT Runtime Diagnostics"
+    },
+    "default_entity_id": "sensor.sbt_heap_free_bytes",
+    "origin": {
+      "name": "Owner-authorized energy entity setup",
+      "sw_version": "2026-10-31"
+    }
+  },
+  "homeassistant/sensor/energy_review_20261031/sbt_heap_largest_free_block_bytes/config": {
+    "name": "SBT Heap Largest Free Block",
+    "unique_id": "sbt_heap_largest_free_block_bytes",
+    "state_topic": "SolarBatteryTelemetry/Diagnostics/Runtime",
+    "value_template": "{{ value_json.heap_largest_free_block_bytes if value_json.heap_largest_free_block_bytes is number else none }}",
+    "device_class": "data_size",
+    "state_class": "measurement",
+    "unit_of_measurement": "B",
+    "entity_category": "diagnostic",
+    "availability_mode": "all",
+    "availability": [
+      {
+        "topic": "SolarBatteryTelemetry/status",
+        "payload_available": "online",
+        "payload_not_available": "offline"
+      },
+      {
+        "topic": "SolarBatteryTelemetry/Diagnostics/Runtime",
+        "value_template": "{{ 'online' if value_json.heap_largest_free_block_bytes is number else 'offline' }}"
+      }
+    ],
+    "device": {
+      "identifiers": [
+        "sbt_runtime_diagnostics"
+      ],
+      "name": "SBT Runtime Diagnostics"
+    },
+    "default_entity_id": "sensor.sbt_heap_largest_free_block_bytes",
+    "origin": {
+      "name": "Owner-authorized energy entity setup",
+      "sw_version": "2026-10-31"
+    }
+  },
+  "homeassistant/sensor/energy_review_20261031/sbt_heap_min_free_bytes/config": {
+    "name": "SBT Heap Minimum Free",
+    "unique_id": "sbt_heap_min_free_bytes",
+    "state_topic": "SolarBatteryTelemetry/Diagnostics/Runtime",
+    "value_template": "{{ value_json.heap_min_free_bytes if value_json.heap_min_free_bytes is number else none }}",
+    "device_class": "data_size",
+    "state_class": "measurement",
+    "unit_of_measurement": "B",
+    "entity_category": "diagnostic",
+    "availability_mode": "all",
+    "availability": [
+      {
+        "topic": "SolarBatteryTelemetry/status",
+        "payload_available": "online",
+        "payload_not_available": "offline"
+      },
+      {
+        "topic": "SolarBatteryTelemetry/Diagnostics/Runtime",
+        "value_template": "{{ 'online' if value_json.heap_min_free_bytes is number else 'offline' }}"
+      }
+    ],
+    "device": {
+      "identifiers": [
+        "sbt_runtime_diagnostics"
+      ],
+      "name": "SBT Runtime Diagnostics"
+    },
+    "default_entity_id": "sensor.sbt_heap_min_free_bytes",
+    "origin": {
+      "name": "Owner-authorized energy entity setup",
+      "sw_version": "2026-10-31"
+    }
+  },
+  "homeassistant/select/energy_review_20261031/solar_limiter_operating_mode/config": {
+    "name": "Solarregler Betriebsart",
+    "unique_id": "solar_limiter_operating_mode",
+    "icon": "mdi:solar-power",
+    "state_topic": "SolarLimiter/Control/Mode",
+    "command_topic": "SolarLimiter/Control/Mode/set",
+    "availability_mode": "all",
+    "availability": [
+      {
+        "topic": "SolarLimiter/System-Info/status",
+        "payload_available": "online",
+        "payload_not_available": "offline"
+      },
+      {
+        "topic": "SolarLimiter/Control/Mode",
+        "payload_available": "online",
+        "payload_not_available": "offline",
+        "value_template": "{{ 'online' if value in ['automatic', 'household_follow', 'charge_priority', 'pv_follow'] else 'offline' }}"
+      }
+    ],
+    "qos": 1,
+    "retain": false,
+    "optimistic": false,
+    "options": [
+      "Automatik",
+      "Hausverbrauch folger",
+      "Batterie-lade-Vorrang",
+      "PV-Folger"
+    ],
+    "value_template": "{{ {'automatic': 'Automatik', 'household_follow': 'Hausverbrauch folger',\n    'charge_priority': 'Batterie-lade-Vorrang', 'pv_follow': 'PV-Folger'}.get(value, '') }}",
+    "command_template": "{% set modes = {'Automatik': 'automatic', 'Hausverbrauch folger': 'household_follow',\n                'Batterie-lade-Vorrang': 'charge_priority', 'PV-Folger': 'pv_follow'} %}\n{{ {'mode': modes[value], 'expires_at': (as_timestamp(now()) | int) + 30} | to_json }}",
+    "default_entity_id": "select.solar_limiter_operating_mode",
+    "origin": {
+      "name": "Owner-authorized energy entity setup",
+      "sw_version": "2026-10-31"
+    }
+  }
+}

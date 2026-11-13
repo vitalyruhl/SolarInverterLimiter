@@ -154,6 +154,34 @@ static void reconnectNeverExtendsApprovedBatteryDeadline(){
  assert(!r.withinGrace(0,180200));
  assert(!r.valid("bms/power_w",180200));
 }
+static void ownTransportLossRearmsCarriedScalarsOnAdvancingHealth(){
+ // [MOCKED!] Broker session loss on SIL side; SBT keeps publishing change-only SOC.
+ sbt::Receiver r;r.setTimeoutSeconds(180);qualified(r,0);
+ assert(receive(r,"bms/alarm_bits","0",150));
+ r.transportLost(1000);r.transportLost(1500); // Disconnect plus connect callback.
+ assert(!r.valid("bms/state_of_charge_pct",1500));
+ assert(receive(r,"status","online",2000));
+ health(r,0,1001,2000); // Retained duplicate does not re-arm.
+ assert(!r.valid("bms/state_of_charge_pct",2000));
+ health(r,0,1002,5000);
+ assert(r.valid("bms/state_of_charge_pct",5000)&&r.valid("bms/power_w",5000)&&r.valid("bms/alarm_bits",5000));
+ // A null received after loss is not resurrected.
+ sbt::Receiver n;qualified(n,0);n.transportLost(1000);
+ assert(receive(n,"status","online",2000));assert(receive(n,"bms/power_w","null",2001));
+ health(n,0,1002,3000);
+ assert(n.valid("bms/state_of_charge_pct",3000)&&!n.valid("bms/power_w",3000));
+ // Too long gap, source offline and unavailable keep the strict re-acquisition.
+ sbt::Receiver late;qualified(late,0);late.transportLost(1000);
+ assert(receive(late,"status","online",61000));health(late,0,1002,61000);
+ assert(!late.valid("bms/state_of_charge_pct",61000));
+ sbt::Receiver off;qualified(off,0);off.transportLost(1000);
+ assert(receive(off,"status","offline",1100));assert(receive(off,"status","online",2000));
+ health(off,0,1002,3000);assert(!off.valid("bms/state_of_charge_pct",3000));
+ sbt::Receiver gone;qualified(gone,0);gone.transportLost(1000);
+ assert(receive(gone,"bms/availability","unavailable",1100));
+ assert(receive(gone,"status","online",2000));assert(receive(gone,"bms/availability","available",2000));
+ health(gone,0,1002,3000);assert(!gone.valid("bms/state_of_charge_pct",3000));
+}
 static void invalidEssentialKeepsCacheAndOriginalDeadline(){
  struct Invalid {const char* topic;const char* value;unsigned source;double previous;};
  for(const auto& bad : {Invalid{"bms/state_of_charge_pct","-1",0,50},
@@ -298,6 +326,7 @@ static void automaticMosCommandsRemainBlockedForEveryProtection() {
 
 int main() {
   reconnectNeverExtendsApprovedBatteryDeadline();
+  ownTransportLossRearmsCarriedScalarsOnAdvancingHealth();
   disconnectedBatteryExplainsMpptStandby();
   automaticMosCommandsRemainBlockedForEveryProtection();
   independentSoftwarePermissions();

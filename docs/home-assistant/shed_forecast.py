@@ -13,7 +13,7 @@ OWNER_CURRENT_LIMIT_FROM_UTC = 1792518660
 
 
 @pyscript_executor
-def _prepare_forecast(raw_periods, observed, daily_totals, generated, timezone, confirmed_from):
+def _prepare_forecast(raw_periods, observed, daily_totals, generated, timezone, confirmed_from, geometry):
     import datetime as dt
     import importlib.util
     import json
@@ -48,6 +48,12 @@ def _prepare_forecast(raw_periods, observed, daily_totals, generated, timezone, 
             raise ValueError('Unsupported Shed ledger schema')
     else:
         ledger = {'schema': 2, 'session': generated, 'snapshots': {}, 'days': {}, 'records': []}
+    previous_session = ledger['session']
+    geometry_changed = core.bind_geometry(ledger, geometry, generated)
+    if geometry_changed and path.exists():
+        backup = directory / f'ledger.geometry-{previous_session}.json'
+        if not backup.exists():
+            shutil.copyfile(path, backup)
     hourly = core.provider_hourly(raw_periods)
     ledger['period_semantics'] = 'provider_end_v1'
     local_zone = ZoneInfo(timezone)
@@ -152,7 +158,8 @@ def _prepare_forecast(raw_periods, observed, daily_totals, generated, timezone, 
     temporary.replace(path)
     return {'packets': packets, 'calibration': calibration,
             'known_slots': sum(value is not None for value in plan['p']),
-            'snapshot_periods': len(ledger['snapshots']), 'revision': generated}
+            'snapshot_periods': len(ledger['snapshots']), 'revision': generated,
+            'geometry_changed': geometry_changed}
 
 
 @service(supports_response='optional')
@@ -162,13 +169,23 @@ def shed_forecast_publish():
     entry = hass.config_entries.async_get_entry(SHED_ENTRY)
     if entry is None or entry.domain != 'forecast_solar' or entry.title != 'Shed':
         raise ValueError('Shed forecast entry identity mismatch')
+    if len(entry.subentries) != 1:
+        raise ValueError('Shed forecast requires exactly one PV plane')
     plane = list(entry.subentries.values())[0]
-    if len(entry.subentries) != 1 or plane.data.get('declination') != 14.8 or plane.data.get('modules_power') != 1840 or plane.data.get('azimuth') != 180:
-        raise ValueError('Shed forecast geometry mismatch')
+    geometry = {name: plane.data.get(name) for name in ('declination', 'modules_power', 'azimuth')}
     result = service.call('forecast_solar', 'get_forecast', config_entry=SHED_ENTRY,
                           resolution='raw', blocking=True, return_response=True)
     if not isinstance(result, dict) or not isinstance(result.get('wh_period'), dict):
         raise ValueError('Shed forecast service did not return native period energy')
+    # HA 2026.11 exposes START-indexed service energy; the core requires native END periods.
+    coordinator = entry.runtime_data
+    if coordinator is None or not coordinator.last_update_success:
+        raise ValueError('Shed forecast coordinator has no successful current update')
+    estimate = coordinator.data
+    if estimate is None or not isinstance(estimate.wh_period, dict):
+        raise ValueError('Shed forecast native END snapshot is unavailable')
+    native_periods = dict(estimate.wh_period)
+    result = {'wh_period': {stamp.isoformat(): energy for stamp, energy in native_periods.items()}}
     generated = int(datetime.datetime.now(datetime.timezone.utc).timestamp())
     observed = {}
     for key, entity_id in (('yield_wh', 'sensor.sbt_victron_yield_today_wh'),
@@ -196,7 +213,9 @@ def shed_forecast_publish():
                 daily_totals[offset] = float(entity.state) * 1000
             except (ValueError, TypeError):
                 pass
-    prepared = _prepare_forecast(result['wh_period'], observed, daily_totals, generated, hass.config.time_zone, OWNER_CURRENT_LIMIT_FROM_UTC)
+    prepared = _prepare_forecast(result['wh_period'], observed, daily_totals, generated, hass.config.time_zone, OWNER_CURRENT_LIMIT_FROM_UTC, geometry)
+    if prepared['geometry_changed']:
+        log.warning('[W] Shed geometry bound to HA configuration; calibration references restarted')
     for payload in prepared['packets']:
         service.call('mqtt', 'publish', topic=SCHEDULE_TOPIC, payload=payload,
                      qos=1, retain=False, blocking=True)
@@ -208,6 +227,7 @@ def shed_forecast_publish():
         'known_slots': prepared['known_slots'], 'snapshot_periods': prepared['snapshot_periods'],
         'native_resolution_minutes': 60, 'wire_quality': 'hourly_disaggregated',
         'period_semantics': 'provider_end_v1',
+        'geometry': geometry,
         'current_limit_proof': 'owner confirmed no configured limit; MPPT 150/35 hardware maximum 35 A',
         'current_limit_confirmed_from_utc': OWNER_CURRENT_LIMIT_FROM_UTC})
     return {'published_chunks': len(prepared['packets']),

@@ -1,5 +1,5 @@
 #pragma once
-#include "PreparedControl.h"
+#include "PriceAssessment.h"
 #include <algorithm>
 #include <cmath>
 #include <cstdint>
@@ -18,7 +18,7 @@ inline bool validRelativeTiers(const PreparedSettings& c) {
         std::isfinite(c.cheapTimePct)&&std::isfinite(c.veryExpensiveTimePct)&&std::isfinite(c.additionalExpensiveTimePct)&&
         c.cheapTimePct>=0&&c.veryExpensiveTimePct>=0&&c.additionalExpensiveTimePct>=0&&
         double(c.cheapTimePct)+c.veryExpensiveTimePct+c.additionalExpensiveTimePct<=100&&
-        std::isfinite(c.predictionPremiumPct)&&c.predictionPremiumPct>=0&&c.predictionPremiumPct<=100&&
+        validForecastPremiums(c)&&
         std::isfinite(c.chargePriorityThreshold)&&c.chargePriorityThreshold>0&&c.chargePriorityThreshold<100&&
         c.chargeInverterSharePct>=0&&c.chargeInverterSharePct<=100;
 }

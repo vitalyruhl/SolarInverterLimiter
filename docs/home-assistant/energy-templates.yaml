@@ -1,0 +1,164 @@
+# Energy, price and battery template entities used by SIL automations and dashboards.
+# Source: live Home Assistant export (2026-11-13). Keep in sync with the live system.
+# Live location: /config/templates.yaml (included as `template:`).
+# Not included here: Shed corrected power (shed-energy.yaml) and Victron display
+# helpers (victron-display.yaml).
+# rabot_energy_current_price = EPEX Spot total price minus 0.02 EUR/kWh correction.
+
+- sensor:
+  - name: meter_reading
+    unit_of_measurement: kWh
+    device_class: energy
+    state_class: total_increasing
+    availability: |
+      {% set raw = states('sensor.powermeter_emh_total_in') %} {% set offset = 9574 %} {{ is_number(raw) and 0 < (raw | float) and (raw | float) + offset <= 900000 }}
+    state: |
+      {% set raw = states('sensor.powermeter_emh_total_in') %} {% set offset = 9574 %} {% set previous = states('sensor.meter_reading') %} {% if is_number(raw) and 0 < (raw | float) and (raw | float) + offset <= 900000 %}
+        {% set value = (raw | float) + offset %}
+        {% if is_number(previous) and value < (previous | float) %}
+          {{ previous | float }}
+        {% else %}
+          {{ value | round(2) }}
+        {% endif %}
+      {% elif is_number(previous) %}
+        {{ previous | float }}
+      {% else %}
+        {{ none }}
+      {% endif %}
+  - name: meter_reading_out
+    unit_of_measurement: kWh
+    device_class: energy
+    state_class: total_increasing
+    state: |
+      {% set raw = states('sensor.powermeter_emh_total_out') %} {% set offset = 181 %} {% set previous = states('sensor.meter_reading_out') | float(0) %} {% if raw in ['unknown', 'unavailable', 'none'] %}
+        {{ previous }}
+      {% else %}
+        {% set value = (raw | float(0)) + offset %}
+        {% if value < previous %}
+          {{ previous }}
+        {% elif value > 900000 %}
+          {{ previous }}
+        {% else %}
+          {{ value | round(2) }}
+        {% endif %}
+      {% endif %}
+  - name: power_usage
+    unit_of_measurement: W
+    device_class: power
+    state_class: measurement
+    availability: |
+      {{ is_number(states('sensor.powermeter_emh_power_curr')) }}
+    state: |
+      {{ ([states('sensor.powermeter_emh_power_curr') | float(0), 0] | max) | round(0) }}
+  - name: meter_giving_away
+    unit_of_measurement: W
+    device_class: power
+    state_class: measurement
+    availability: |
+      {{ is_number(states('sensor.powermeter_emh_power_curr')) }}
+    state: |
+      {% set p = states('sensor.powermeter_emh_power_curr') | float(0) %} {% if p < 0 %}
+        {{ (p * -1) | round(0) }}
+      {% else %}
+        0
+      {% endif %}
+  - name: total_power_usage
+    unit_of_measurement: W
+    device_class: power
+    state_class: measurement
+    availability: |
+      {{ is_number(states('sensor.powermeter_emh_power_curr')) and is_number(states('sensor.tasmota_smartplug_12_energy_power')) }}
+    state: |
+      {{ ([states('sensor.powermeter_emh_power_curr') | float(0) + states('sensor.tasmota_smartplug_12_energy_power') | float(0), 0] | max) | round(0) }}
+  - name: total_power_usage_kw
+    unit_of_measurement: kW
+    device_class: power
+    state_class: measurement
+    availability: |
+      {{ is_number(states('sensor.total_power_usage')) }}
+    state: |
+      {{ ((states('sensor.total_power_usage') | float(0)) / 1000) | round(2) }}
+  - name: solar_self_consumption_power
+    unique_id: solar_self_consumption_power
+    unit_of_measurement: W
+    device_class: power
+    state_class: measurement
+    availability: |
+      {{ is_number(states('sensor.powermeter_emh_power_curr')) and is_number(states('sensor.shed_inverter_corrected_power')) }}
+    state: |
+      {% set ac_power = states('sensor.shed_inverter_corrected_power') | float(0) %} {% set grid_export = [-(states('sensor.powermeter_emh_power_curr') | float(0)), 0] | max %} {{ ([ac_power - grid_export, 0] | max) | round(0) }}
+  - name: money_saved_rate
+    unique_id: money_saved_rate
+    unit_of_measurement: €/h
+    state_class: measurement
+    availability: |
+      {{ is_number(states('sensor.solar_self_consumption_power')) and is_number(states('sensor.rabot_energy_current_price')) }}
+    state: |
+      {% set self_kw = states('sensor.solar_self_consumption_power') | float(0) / 1000 %} {% set price = states('sensor.rabot_energy_current_price') | float(0) %} {{ (self_kw * price) | round(6) }}
+  - name: money_saved
+    unit_of_measurement: €
+    availability: |
+      {{ is_number(states('sensor.money_saved_daily')) }}
+    state: |
+      {{ states('sensor.money_saved_daily') | float(0) | round(2) }}
+  - name: rabot_energy_current_price
+    unique_id: rabot_energy_current_price
+    unit_of_measurement: EUR/kWh
+    device_class: monetary
+    state_class: measurement
+    availability: |
+      {% set data = state_attr('sensor.epex_spot_data_total_price_2', 'data') or [] %} {% set now_ts = as_timestamp(now()) %} {% set ns = namespace(price = none) %} {% for entry in data %}
+        {% set start = as_timestamp(entry.start_time, none) %}
+        {% set end = as_timestamp(entry.end_time, none) if entry.end_time is defined else (start + 3600 if start is not none else none) %}
+        {% if start is not none and end is not none and start <= now_ts < end and is_number(entry.price_per_kwh) %}
+          {% set ns.price = entry.price_per_kwh | float %}
+        {% endif %}
+      {% endfor %} {% set epex_total = ns.price if ns.price is not none else states('sensor.epex_spot_data_total_price_2') | float(none) %} {{ epex_total is not none }}
+    state: |
+      {% set data = state_attr('sensor.epex_spot_data_total_price_2', 'data') or [] %} {% set now_ts = as_timestamp(now()) %} {% set ns = namespace(price = none) %} {% for entry in data %}
+        {% set start = as_timestamp(entry.start_time, none) %}
+        {% set end = as_timestamp(entry.end_time, none) if entry.end_time is defined else (start + 3600 if start is not none else none) %}
+        {% if start is not none and end is not none and start <= now_ts < end and is_number(entry.price_per_kwh) %}
+          {% set ns.price = entry.price_per_kwh | float %}
+        {% endif %}
+      {% endfor %} {% set epex_total = ns.price if ns.price is not none else states('sensor.epex_spot_data_total_price_2') | float(none) %} {{ ((epex_total - 0.02) | round(4)) if epex_total is not none else none }}
+  - name: sbt_solar_yield_today_kwh
+    unique_id: sbt_solar_yield_today_kwh
+    unit_of_measurement: kWh
+    device_class: energy
+    state_class: total_increasing
+    availability: |
+      {{ is_number(states('sensor.sbt_victron_yield_today_wh')) and is_state('binary_sensor.sbt_victron_availability', 'on') }}
+    state: |
+      {{ (states('sensor.sbt_victron_yield_today_wh') | float(0) / 1000) | round(3) }}
+- switch:
+  - name: SBT BMS Control Enabled
+    unique_id: sbt_bms_control_enabled
+    default_entity_id: switch.sbt_bms_control_enabled
+    icon: mdi:shield-lock-open
+    availability: |-
+      {{ has_value('sensor.sbt_bms_control') and
+         state_attr('sensor.sbt_bms_control', 'enabled') is boolean }}
+    state: '{{ state_attr(''sensor.sbt_bms_control'', ''enabled'') }}'
+    turn_on:
+    - action: mqtt.publish
+      data:
+        topic: SolarBatteryTelemetry/bms/control_enabled/set
+        qos: 0
+        retain: false
+        payload: |-
+          {{ {'state': true,
+              'request_id': 'ha_gate_' ~ ((as_timestamp(now()) * 1000000) | int),
+              'session': state_attr('sensor.sbt_bms_control', 'session') or '',
+              'expires_at': (as_timestamp(now()) | int) + 30} | to_json }}
+    turn_off:
+    - action: mqtt.publish
+      data:
+        topic: SolarBatteryTelemetry/bms/control_enabled/set
+        qos: 0
+        retain: false
+        payload: |-
+          {{ {'state': false,
+              'request_id': 'ha_gate_' ~ ((as_timestamp(now()) * 1000000) | int),
+              'session': state_attr('sensor.sbt_bms_control', 'session') or '',
+              'expires_at': (as_timestamp(now()) | int) + 30} | to_json }}

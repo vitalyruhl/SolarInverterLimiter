@@ -9,6 +9,22 @@ MAX_SLOTS = 144
 CHUNK_SLOTS = 24
 
 
+def bind_geometry(ledger, geometry, generated):
+    """Keep calibration and frozen references within one configured PV plane."""
+    for name in ('declination', 'modules_power', 'azimuth'):
+        value = geometry.get(name)
+        if isinstance(value, bool) or not isinstance(value, (int, float)) or not math.isfinite(value):
+            raise ValueError('Invalid Shed forecast geometry')
+    if not 0 <= geometry['declination'] <= 90 or not 0 <= geometry['azimuth'] <= 360 or geometry['modules_power'] <= 0:
+        raise ValueError('Shed forecast geometry outside supported range')
+    if ledger.get('geometry') == geometry:
+        return False
+    ledger.update(geometry=dict(geometry), session=generated, snapshots={},
+                  original_days={}, days={}, records=[])
+    ledger.pop('source_sequences', None)
+    return True
+
+
 def _hourly_rows(wh_period):
     if not isinstance(wh_period, dict) or len(wh_period) > 96:
         raise ValueError('Invalid bounded hourly series')

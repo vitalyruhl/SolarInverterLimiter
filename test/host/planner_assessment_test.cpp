@@ -18,7 +18,7 @@ template<class P> static const char* receive2(P& p,const std::string& s,uint32_t
 }
 template<class C> static auto settings(C& c,float tolerance,float premium,int)
  ->decltype(c.deferralToleranceEurKwh=tolerance,c.predictionPremiumPct=premium,void()) {
- c.deferralToleranceEurKwh=tolerance;c.predictionPremiumPct=premium;
+ c.deferralToleranceEurKwh=tolerance;c.predictionPremium12hPct=premium;c.predictionPremium24hPct=premium;c.predictionPremiumPct=premium;
 }
 template<class C> static void settings(C&,float,float,long) {}
 template<class P> static auto origin(const P& p,uint32_t at,int)->decltype(p.originAt(at)){return p.originAt(at);}
@@ -84,6 +84,22 @@ static void strictHeldPricesAndCache() {
  PlanCaptureContext before,after;before.settings=cfg;after=before;settings(after.settings,.03f,0,0);
  assert(!before.sameHard(after));
  after=before;settings(after.settings,0,30,0);assert(!before.sameHard(after));
+ after=before;after.settings.predictionPremium12hPct=5;assert(!before.sameHard(after));
+ after=before;after.settings.predictionPremium24hPct=5;assert(!before.sameHard(after));
+}
+static void forecastHorizonSteps() {
+ PreparedSettings cfg;cfg.predictionPremium12hPct=3;cfg.predictionPremium24hPct=8;cfg.predictionPremiumPct=10;
+ for (auto sample : std::vector<std::pair<uint32_t,float>>{{0,3},{43200,3},{43201,8},{86400,8},{86401,10},{129600,10},{200000,10}})
+  near(forecastPremium(cfg,t,t+sample.first),sample.second);
+ near(forecastPremium(cfg,t,t-1),3);
+ near(assessedPrice(-.2f,PriceOrigin::Forecast,forecastPremium(cfg,t,t+86401)),-.18f);
+ near(assessedPrice(.2f,PriceOrigin::Market,forecastPremium(cfg,t,t+86401)),.2f);
+ near(assessedPrice(.2f,PriceOrigin::Unknown,forecastPremium(cfg,t,t+86401)),.2f);
+ for(float bad:{-1.f,101.f,NAN,INFINITY}) {
+  auto invalid=cfg;invalid.predictionPremium12hPct=bad;assert(!validPriceAssessment(invalid));
+  invalid=cfg;invalid.predictionPremium24hPct=bad;assert(!validPriceAssessment(invalid));
+  invalid=cfg;invalid.predictionPremiumPct=bad;assert(!validPriceAssessment(invalid));
+ }
 }
 static void premiumsAreValuationOnly() {
  PreparedSettings cfg;cfg.valid=true;settings(cfg,0,30,0);
@@ -153,7 +169,7 @@ static void malformedAndDefaultWire() {
  assert(max.slots()==288);
 }
 int main() {
- shadowExpiryAndWithdrawalPreserveEnergy();atomicOrigins();strictHeldPricesAndCache();premiumsAreValuationOnly();
+ shadowExpiryAndWithdrawalPreserveEnergy();atomicOrigins();strictHeldPricesAndCache();premiumsAreValuationOnly();forecastHorizonSteps();
  rawNegativeAndAcquisitionGates();malformedAndDefaultWire();
  std::cout<<"[MOCKED!] Assessment origins, raw gates, strict holding, cache and atomic wire tests passed\n";
 }

@@ -82,15 +82,15 @@ static void allFinalBranches(){
  offset=50;configuredMin=0;negativePriceOverrideTarget=-1;
  currentDecision={};currentDecision.direct=true;currentDecision.ceilingW=0;
  applyDecision();assert(issued==0);
- currentDecision.ceilingW=1;applyDecision();assert(issued==51);
+ currentDecision.ceilingW=1;applyDecision();assert(issued==1);
  currentDecision.ceilingW=900;applyDecision();assert(issued==900);
  currentDecision={};currentDecision.ceilingW=900;
  currentInverterOutputW=20;signedGridPowerW=80;limiterSettings.enableController.value=true;
  resetPidController();applyDecision();
- assert(pidBaseTarget==100&&inverterCalculatedValue==100&&issued==150);
- // Existing negative-price override passes the same single final correction point.
+ assert(pidBaseTarget==150&&inverterCalculatedValue==150&&issued==150);
+ // Explicit negative-price output is independent of the demand bias.
  currentDecision.ceilingW=200;negativePriceOverrideTarget=100;
- applyDecision();assert(inverterCalculatedValue==100&&issued==150);
+ applyDecision();assert(inverterCalculatedValue==100&&issued==100);
  negativePriceOverrideTarget=0;applyDecision();assert(issued==0);
  negativePriceOverrideTarget=-1;currentDecision={};
  limiterSettings.enableController.value=false;applyDecision();assert(issued==900);
@@ -102,17 +102,18 @@ static void pvOnlyCorrectionOnce(){
   in.chargerW=200;in.householdW=80;
   control::CurrentControl c;
   currentInverterOutputW=20;signedGridPowerW=60;offset=correction;configuredMin=500;
+  in.correctionW=correction;
   limiterSettings.enableController.value=enabled;resetPidController();
   for(unsigned i=0;i<3;++i){
    in.chargerSequence=i+1;clockMs=100+i*3000;
    currentDecision=c.update(cfg,in,enabled,true,configuredMax,0,clockMs);applyDecision();
    if(i<2)assert(issued==0);
   }
-  assert(currentDecision.pvOnly&&inverterCalculatedValue==80&&issued==80+correction);
-  assert(pidBaseTarget==80); // No offset in the input or PV budget.
+  assert(currentDecision.pvOnly&&issued==std::max(0,80+correction));
+  assert(pidBaseTarget==80+correction); // Bias applies to household demand, not the PV budget.
   in.chargerW=50;clockMs+=2000;
   currentDecision=c.update(cfg,in,enabled,true,configuredMax,issued,clockMs);
-  applyDecision();assert(inverterCalculatedValue==50&&issued==std::max(0,50+correction));
+  applyDecision();assert(issued==std::min(50,std::max(0,80+correction)));
   in.chargerW=0;clockMs+=2000;
   currentDecision=c.update(cfg,in,enabled,true,configuredMax,issued,clockMs);
   applyDecision();assert(issued==0); // Positive bias never lifts a missing-PV stop.
@@ -123,12 +124,13 @@ static void pvOnlyCorrectionOnce(){
   in.chargerW=houseLimited?1000:200;in.householdW=houseLimited?100:1000;
   currentInverterOutputW=0;signedGridPowerW=int(in.householdW);
   offset=houseLimited?-50:50;configuredMin=0;resetPidController();
+  in.correctionW=offset;
   limiterSettings.enableController.value=true;control::CurrentControl c;
   for(unsigned i=0;i<3;++i){
    in.chargerSequence=i+1;clockMs=100+i*3000;
    currentDecision=c.update(cfg,in,true,true,900,0,clockMs);applyDecision();
   }
-  assert(issued==(houseLimited?50:250)); // 100-50 and 200+50, after the complete calculation.
+  assert(issued==(houseLimited?50:200)); // Demand bias never raises available PV.
  }
 }
 static void heldBaseSurvivesRepeatedGraceAndRecovery(){
@@ -141,27 +143,28 @@ static void heldBaseSurvivesRepeatedGraceAndRecovery(){
   kRs485MockTransport=mock;offset=correction;configuredMin=0;configuredMax=900;
   negativePriceOverrideTarget=-1;limiterSettings.enableController.value=true;
   currentInverterOutputW=200;signedGridPowerW=0;resetPidController();
-  issueInverterCommand(200,900,offset);
-  assert(inverterSetValue==200+offset);
+  issueInverterCommand(200,900,0);
+  assert(inverterSetValue==200);
+  const int expectedHeld=correction<0?150:200;
   in.chargerValid=false;in.sourcesWithinGrace=true;
   for(unsigned i=0;i<3;++i){
    clockMs=8000+i*2000;
    currentDecision=c.update(cfg,in,true,true,900,heldControlCommand(),clockMs);
    assert(!std::strcmp(currentDecision.reason,"source_grace"));
-   applyDecision();assert(inverterSetValue==200+offset);
+   applyDecision();assert(inverterSetValue==expectedHeld);
   }
   in.chargerValid=true;
   for(unsigned i=0;i<3;++i){
    in.bmsSequence=in.chargerSequence=4+i;clockMs=16000+i*3000;
    currentDecision=c.update(cfg,in,true,true,900,heldControlCommand(),clockMs);
    if(i<2)assert(!std::strcmp(currentDecision.reason,"source_recovery"));
-   assert(currentDecision.ceilingW==200);
-   applyDecision();assert(inverterSetValue==200+offset);
+   assert(currentDecision.ceilingW==expectedHeld);
+   applyDecision();assert(inverterSetValue==expectedHeld);
   }
   // Qualified PI/economic ramps also restart from the raw held command.
   in.bmsSequence=in.chargerSequence=7;clockMs+=1000;
   currentDecision=c.update(cfg,in,true,true,900,heldControlCommand(),clockMs);
-  assert(currentDecision.ceilingW==250);
+  assert(currentDecision.ceilingW==expectedHeld+50);
  }
  kRs485MockTransport=false;
 }
@@ -184,7 +187,7 @@ static void productionModeGateKeepsBoundedReconnectOutput(){
    currentDecision=c.update(cfg,in,enabled,true,900,heldControlCommand(),clockMs);
    applyProductionModeGate(modeInputs,c);
    assert(!modeDecision.handled&&currentDecision.sourceGrace);
-   applyDecision();assert(issued==200+correction);
+   applyDecision();assert(issued==200);
   }
   // The first fresh packet is still recovery, including with Limiter OFF.
   in.bmsValid=in.chargerValid=in.batteryDischargeIntentAvailable=in.batteryChargeAvailable=true;
@@ -193,13 +196,13 @@ static void productionModeGateKeepsBoundedReconnectOutput(){
   currentDecision=c.update(cfg,in,enabled,true,900,heldControlCommand(),clockMs);
   applyProductionModeGate(modeInputs,c);
   assert(currentDecision.sourceGrace&&!modeDecision.handled);
-  applyDecision();assert(issued==200+correction);
+  applyDecision();assert(issued==200);
   in.bmsValid=in.chargerValid=in.batteryDischargeIntentAvailable=in.batteryChargeAvailable=false;
   in.futureValid=false;modeInputs.bmsValid=false;
   // A live lower household demand may reduce output; an old MIN cannot lift it.
   currentInverterOutputW=0;signedGridPowerW=0;
   for(unsigned i=0;i<20;++i){clockMs+=2000;applyDecision();}
-  assert(issued<200+correction);
+  assert(issued<200);
   in.bmsWithinGrace=false;clockMs+=2000;
   currentDecision=c.update(cfg,in,enabled,true,900,heldControlCommand(),clockMs);
   applyProductionModeGate(modeInputs,c);applyDecision();
@@ -373,7 +376,7 @@ static void configuredMinimumOverridesEconomicsAfterCorrection(){
    currentDecision=c.update(cfg,in,true,true,900,0,clockMs);applyDecision();
    if(i<2)assert(issued==0);
   }
-  assert(issued==(correction==50?750:700));
+  assert(issued==700);
   assert(currentDecision.ceilingW<700); // Original planner/PV ceiling remains observable.
   assert(!std::strcmp(currentDecision.reason,"minimum_output"));
   assert(currentDecision.reserveAllowed&&!currentDecision.pvOnly);
@@ -487,6 +490,7 @@ static void fullBatteryRunsHouseholdPidWithoutMinimum(){
  for(int demand:{0,50,200})for(int correction:{-50,0,50}){
   control::CurrentControl c;configuredMin=700;configuredMax=900;offset=correction;
   in.householdW=float(demand);
+  in.correctionW=correction;
   currentInverterOutputW=0;signedGridPowerW=demand;negativePriceOverrideTarget=-1;
   limiterSettings.enableController.value=true;resetPidController();lastIssuedBaseCommandW=0;
   for(unsigned i=0;i<10;++i){
@@ -495,12 +499,59 @@ static void fullBatteryRunsHouseholdPidWithoutMinimum(){
    assert(issued>=0&&issued<=std::max(0,demand+correction));
   }
   assert(issued<configuredMin);
-  if(demand>0&&demand+correction>0)assert(issued>0);
-  else assert(issued==0);
+  assert(issued==std::max(0,demand+correction));
  }
 }
 
+static void batteryPlanIsLimitedByCorrectedHouseholdDemand() {
+ configuredMin=0; configuredMax=900; offset=-100; negativePriceOverrideTarget=-1;
+ limiterSettings.enableController.value=true;
+ currentDecision={}; currentDecision.ceilingW=200;
+ currentInverterOutputW=0; signedGridPowerW=600; resetPidController();
+ applyDecision(); assert(issued==200);
+ currentDecision.ceilingW=900; resetPidController();
+ applyDecision(); assert(issued==500);
+}
+
+static void reserveSurvivesTransientModeStop() {
+ control::PreparedSettings cfg;cfg.valid=true;cfg.relativeTimePolicy=true;
+ cfg.reserveOffSocPercent=5;cfg.reserveOnSocPercent=10;
+ control::CurrentInputs in;
+ in.bmsValid=in.batteryChargeAvailable=in.batteryDischargeIntentAvailable=true;
+ in.chargerValid=in.metersValid=in.priceValid=in.futureValid=in.relativePricePositive=true;
+ in.soc=12;in.price=.4f;in.householdW=600;in.futureBatteryCeilingW=500;
+ control::ModeInputs mode;mode.metersValid=mode.bmsValid=mode.dischargeAllowed=true;
+ mode.soc=12;mode.householdW=600;mode.maximumW=900;mode.reserveOff=5;mode.reserveOn=10;
+ control::CurrentControl c;modePolicy=control::OperatingModePolicy{};
+ configuredMin=0;configuredMax=900;offset=0;negativePriceOverrideTarget=-1;
+ limiterSettings.enableController.value=true;currentInverterOutputW=0;signedGridPowerW=600;
+ resetPidController();
+ auto tick=[&]() {
+  currentDecision=c.update(cfg,in,true,true,900,0,clockMs);
+  applyProductionModeGate(mode,c);applyAutomaticTestOutput();
+ };
+ for(unsigned i=0;i<3;++i){in.bmsSequence=in.chargerSequence=i+1;clockMs=100+i*3000;tick();}
+ assert(issued==500&&currentDecision.reserveAllowed);
+ in.metersValid=mode.metersValid=false;clockMs+=3000;tick();assert(issued==0);
+ in.metersValid=mode.metersValid=true;in.soc=mode.soc=7;
+ for(unsigned i=0;i<3;++i){
+  in.bmsSequence=in.chargerSequence=i+4;clockMs+=3000;tick();
+  if(i<2)assert(issued==0);
+ }
+ assert(issued==500&&currentDecision.reserveAllowed);
+ in.soc=5;in.priceValid=false;in.relativePricePositive=false;clockMs+=3000;
+ auto stopped=c.update(cfg,in,true,true,900,0,clockMs);
+ assert(stopped.direct&&stopped.reserveKnown&&!stopped.reserveAllowed);
+ c.resetTransient();in.soc=mode.soc=7;in.priceValid=in.relativePricePositive=true;
+ for(unsigned i=0;i<3;++i){in.bmsSequence=in.chargerSequence=i+7;clockMs+=3000;tick();}
+ assert(issued==0&&currentDecision.reserveKnown&&!currentDecision.reserveAllowed);
+ in.soc=mode.soc=10;clockMs+=3000;tick();
+ assert(currentDecision.ceilingW==500&&currentDecision.reserveAllowed&&issued>0&&issued<=500);
+}
+
 int main(){
+ reserveSurvivesTransientModeStop();
+ batteryPlanIsLimitedByCorrectedHouseholdDemand();
  automaticPvFallbackSurvivesMissingBms();
  automaticPvFallbackExpiresGraceAndRequalifiesAfterStops();
  productionModeGateKeepsBoundedReconnectOutput();

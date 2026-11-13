@@ -6,6 +6,7 @@
 #include <WiFi.h>
 #include <time.h>
 #include <cmath>
+#include <cstring>
 
 #include <AsyncTCP.h>
 #include <ESPAsyncWebServer.h>
@@ -121,7 +122,7 @@ static constexpr uint32_t kI2cHz = 400000;
 #endif
 
 #ifndef VERSION
-#define VERSION "5.8.2"
+#define VERSION "5.9.6"
 #endif
 
 static sil::RuntimeDiagnostics runtimeDiagnostics;
@@ -152,6 +153,9 @@ static void setupLogging();
 static void setupMqtt();
 static void setupNetworkDefaults();
 static bool enforceShadowIsolation();
+#if defined(SIL_TEST_MQTT_DROP_OLDEST) && SIL_TEST_MQTT_DROP_OLDEST
+static void runMqttDropProbe();
+#endif
 #if defined(SIL_PLANNER_SHADOW) && SIL_PLANNER_SHADOW && defined(SIL_SHADOW_STAGE_TRACE) && SIL_SHADOW_STAGE_TRACE
 static uint32_t shadowRxCallbacks=0;
 static void shadowTraceStage(const char* stage,uint32_t previousFailures,uint32_t previousRx);
@@ -219,7 +223,7 @@ void ProjectConfig();
 #pragma region configuration variables
 
 // Project settings (ConfigOptions API)
-enum class RelativeValue { Cheap, VeryExpensive, Expensive, StorageAdvantage, PredictionPremium };
+enum class RelativeValue { Cheap, VeryExpensive, Expensive, StorageAdvantage, PredictionPremium12h, PredictionPremium24h, PredictionPremium };
 static bool validateRelativeValue(RelativeValue field,float value);
 // Validate before Config::set; normal and shadow HTTP paths share this numeric contract.
 class RelativeFloatSetting : public Config<float> {
@@ -256,7 +260,9 @@ struct LimiterSettings
     Config<String> priceScheduleInputTopic{ConfigOptions<String>{.key = "fcTopic", .name = "Price Schedule Topic", .category = "MQTT-Topics", .defaultValue = String(control::kDefaultPriceScheduleTopic), .sortOrder = 54}};
     Config<String> pvScheduleInputTopic{ConfigOptions<String>{.key = "pvTopic", .name = "PV Forecast Topic", .category = "MQTT-Topics", .defaultValue = String("homeassistant/sensor/solar_forecast/shed/schedule"), .sortOrder = 55}};
     Config<float> deferralToleranceEurKwh{ConfigOptions<float>{.key = "defTol", .name = "Held Energy Deferral Tolerance (EUR/kWh)", .category = "Limiter", .defaultValue = 0.03f, .showInWeb = !control::kRelativeTimePolicy, .sortOrder = 28,.card="Limiter",.cardPretty="Limiter",.cardOrder=0}};
-    RelativeFloatSetting predictionPremiumPct{RelativeValue::PredictionPremium,ConfigOptions<float>{.key = "predPct", .name = "Forecast Price Uncertainty Premium (%)", .category = "Limiter", .defaultValue=control::ApplicationDefaults::predictionPremiumPct, .sortOrder=14,.card="Limiter",.cardPretty="Limiter",.cardOrder=0}};
+    RelativeFloatSetting predictionPremium12hPct{RelativeValue::PredictionPremium12h,ConfigOptions<float>{.key = "pred12Pct", .name = "Forecast Premium up to 12h (%)", .category = "Limiter", .defaultValue=control::ApplicationDefaults::predictionPremium12hPct, .sortOrder=14,.card="Limiter",.cardPretty="Limiter",.cardOrder=0}};
+    RelativeFloatSetting predictionPremium24hPct{RelativeValue::PredictionPremium24h,ConfigOptions<float>{.key = "pred24Pct", .name = "Forecast Premium 12h to 24h (%)", .category = "Limiter", .defaultValue=control::ApplicationDefaults::predictionPremium24hPct, .sortOrder=15,.card="Limiter",.cardPretty="Limiter",.cardOrder=0}};
+    RelativeFloatSetting predictionPremiumPct{RelativeValue::PredictionPremium,ConfigOptions<float>{.key = "predPct", .name = "Forecast Premium beyond 24h (%)", .category = "Limiter", .defaultValue=control::ApplicationDefaults::predictionPremiumPct, .sortOrder=16,.card="Limiter",.cardPretty="Limiter",.cardOrder=0}};
     Config<float> forecastPriceFactor{ConfigOptions<float>{.key = "fcPriceF", .name = "Forecast Price Factor", .category = "Limiter", .defaultValue = 0.93137255f, .showInWeb = !control::kRelativeTimePolicy, .sortOrder = 27,.card="Limiter",.cardPretty="Limiter",.cardOrder=0}};
 
 #if SIL_RELATIVE_TIME_POLICY
@@ -273,6 +279,8 @@ struct LimiterSettings
         cfg.addSetting(&storageMinimumNetAdvantageEurKwh);
 #endif
         cfg.addSetting(&deferralToleranceEurKwh);
+        cfg.addSetting(&predictionPremium12hPct);
+        cfg.addSetting(&predictionPremium24hPct);
         cfg.addSetting(&predictionPremiumPct);
         cfg.addSetting(&priceScheduleInputTopic);
         cfg.addSetting(&pvScheduleInputTopic);
@@ -752,6 +760,9 @@ void loop()
     const uint32_t shadowmqttRx=shadowRxCallbacks;
 #endif
     mqtt.loop();
+#if defined(SIL_TEST_MQTT_DROP_OLDEST) && SIL_TEST_MQTT_DROP_OLDEST
+    runMqttDropProbe();
+#endif
 #if defined(SIL_PLANNER_SHADOW) && SIL_PLANNER_SHADOW && defined(SIL_SHADOW_STAGE_TRACE) && SIL_SHADOW_STAGE_TRACE
     shadowTraceStage("mqtt",shadowmqttFailures,shadowmqttRx);
 #endif
@@ -762,8 +773,8 @@ void loop()
         refreshPreparedSettings();
 #endif
         resetPidController();
-        currentControl = control::CurrentControl{};
-        modePolicy = control::OperatingModePolicy{};
+        currentControl.resetTransient();
+        modePolicy.resetTransient();
         planCaptureContextKnown = false;
         ++planContextEpoch;
         dischargeBudget.requestCapture(); chargePlan.requestCapture();
@@ -1326,6 +1337,8 @@ static bool validateRelativeValue(RelativeValue field,float value) {
     case RelativeValue::VeryExpensive:candidate.veryExpensiveTimePct=value;break;
     case RelativeValue::Expensive:candidate.additionalExpensiveTimePct=value;break;
     case RelativeValue::StorageAdvantage:candidate.storageMinimumNetAdvantageEurKwh=value;break;
+    case RelativeValue::PredictionPremium12h:candidate.predictionPremium12hPct=value;break;
+    case RelativeValue::PredictionPremium24h:candidate.predictionPremium24hPct=value;break;
     case RelativeValue::PredictionPremium:candidate.predictionPremiumPct=value;break;
     }
     return control::validRelativeTiers(candidate);
@@ -1334,6 +1347,8 @@ static void refreshPreparedSettings()
 {
     forecastPriceFactor = limiterSettings.forecastPriceFactor.get();
     preparedSettings.deferralToleranceEurKwh = limiterSettings.deferralToleranceEurKwh.get();
+    preparedSettings.predictionPremium12hPct = limiterSettings.predictionPremium12hPct.get();
+    preparedSettings.predictionPremium24hPct = limiterSettings.predictionPremium24hPct.get();
     preparedSettings.predictionPremiumPct = limiterSettings.predictionPremiumPct.get();
     preparedSettings.relativeTimePolicy=control::kRelativeTimePolicy;
 #if SIL_RELATIVE_TIME_POLICY
@@ -1379,6 +1394,8 @@ static void configureLimiterSettingsBehavior()
     limiterSettings.priceComfort.setCallback([](float) { refreshPreparedSettings(); });
     limiterSettings.priceDeadband.setCallback([](float) { refreshPreparedSettings(); });
     limiterSettings.deferralToleranceEurKwh.setCallback([](float) { refreshPreparedSettings(); });
+    limiterSettings.predictionPremium12hPct.setCallback([](float) { refreshPreparedSettings(); });
+    limiterSettings.predictionPremium24hPct.setCallback([](float) { refreshPreparedSettings(); });
     limiterSettings.predictionPremiumPct.setCallback([](float) { refreshPreparedSettings(); });
     limiterSettings.forecastPriceFactor.setCallback([](float) { refreshPreparedSettings(); });
 #if SIL_RELATIVE_TIME_POLICY
@@ -1522,10 +1539,11 @@ static bool shadowWebWriteAllowed(const String& category,const String& key,const
         if(setting==&limiterSettings.additionalExpensiveTimePct)candidate.additionalExpensiveTimePct=number;
         return control::validRelativeTiers(candidate);
     }
-    if(setting==&limiterSettings.deferralToleranceEurKwh||setting==&limiterSettings.predictionPremiumPct) {
+    if(setting==&limiterSettings.deferralToleranceEurKwh||setting==&limiterSettings.predictionPremium12hPct||
+       setting==&limiterSettings.predictionPremium24hPct||setting==&limiterSettings.predictionPremiumPct) {
         char* end=nullptr;const float number=std::strtof(value.c_str(),&end);
         return end!=value.c_str()&&end&&!*end&&std::isfinite(number)&&number>=0&&
-            (setting!=&limiterSettings.predictionPremiumPct||number<=100);
+            (setting==&limiterSettings.deferralToleranceEurKwh||number<=100);
     }
     return true;
 }
@@ -1586,6 +1604,45 @@ static bool mockMqttIsIsolated()
 }
 #endif
 
+#if defined(SIL_TEST_MQTT_DROP_OLDEST) && SIL_TEST_MQTT_DROP_OLDEST
+static_assert(CM_MQTT_BOUNDED_IO && kRs485MockTransport && !control::kPlannerShadowProfile &&
+              FEATURE_ANY_RELAY_OUTPUTS == 0, "MQTT drop trial requires the isolated mock fixture");
+static void runMqttDropProbe()
+{
+    static bool attempted = false;
+    static uint32_t connectedSince = 0;
+    if (attempted) return;
+    if (!mqtt.isConnected()) { connectedSince = 0; return; }
+    if (!connectedSince) { connectedSince = millis(); return; }
+    if (uint32_t(millis() - connectedSince) < 30000) return;
+    attempted = true;
+    if (!mockMqttIsIsolated()) {
+        Serial.println("[E] [MOCKED!] MQTT_PROBE routing invalid");
+        return;
+    }
+
+    // Exceed one loop's TX budget without stalling Wi-Fi or touching production topics.
+    const auto before = mqtt.getBoundedIoStats();
+    unsigned accepted = 0;
+    char payload[513];
+    for (unsigned i = 0; i < 96; ++i) {
+        const int prefix = snprintf(payload, sizeof(payload), "[MOCKED!] drop-probe %03u ", i);
+        if (prefix < 0 || size_t(prefix) >= sizeof(payload)) {
+            Serial.println("[E] [MOCKED!] MQTT_PROBE format failed");
+            return;
+        }
+        std::memset(payload + prefix, 'x', sizeof(payload) - 1 - prefix);
+        payload[sizeof(payload) - 1] = '\0';
+        if (mqtt.publishRaw("SILHardening/COM8/out/Diagnostics/DropProbe", payload, false)) ++accepted;
+    }
+    const auto &after = mqtt.getBoundedIoStats();
+    Serial.printf("[I] [MOCKED!] MQTT_PROBE sent=96 accepted=%u dropped=%lu bytes=%lu queued=%u fail_delta=%lu\n",
+        accepted, ulong(after.txDroppedPublishes - before.txDroppedPublishes),
+        ulong(after.txDroppedBytes - before.txDroppedBytes), unsigned(mqtt.getTxQueueUsed()),
+        ulong(after.txFailures - before.txFailures));
+}
+#endif
+
 static void setupNetworkDefaults()
 {
     const String currentSsid = wifiSettings.wifiSsid.get();
@@ -1638,6 +1695,25 @@ static void setupNetworkDefaults()
     }
 
     mqtt.attach(ConfigManager); // Re-attach to apply loaded values (attach() is idempotent)
+#if CM_MQTT_BOUNDED_IO
+    // Weak Wi-Fi stalls exceed CM's 4.6 KB / 5 s defaults; stored higher UI values still win.
+    if (mqttSettings.txQueueBytes.get() < 8192) mqttSettings.txQueueBytes.set(8192);
+    if (mqttSettings.txStallTimeoutMs.get() < 30000) mqttSettings.txStallTimeoutMs.set(30000);
+#endif
+#if defined(SIL_TEST_MQTT_DROP_OLDEST) && SIL_TEST_MQTT_DROP_OLDEST
+#ifndef SIL_TEST_MQTT_DROP_OLDEST_ACTIVE
+#define SIL_TEST_MQTT_DROP_OLDEST_ACTIVE 1
+#endif
+    mqtt.setDropOldestQueuedPublishes(SIL_TEST_MQTT_DROP_OLDEST_ACTIVE != 0);
+    mqtt.onDroppedMessage([](uint32_t messageCount, uint32_t byteCount) {
+        const auto &stats = mqtt.getBoundedIoStats();
+        Serial.printf("[W] [MOCKED!] MQTT_DROP ms=%lu messages=%lu bytes=%lu total_messages=%lu total_bytes=%lu\n",
+            ulong(millis()), ulong(messageCount), ulong(byteCount),
+            ulong(stats.txDroppedPublishes), ulong(stats.txDroppedBytes));
+    });
+    Serial.printf("[I] [MOCKED!] MQTT_DROP active=%d queue=%u stall_ms=%lu\n", SIL_TEST_MQTT_DROP_OLDEST_ACTIVE != 0,
+        unsigned(mqttSettings.txQueueBytes.get()), ulong(mqttSettings.txStallTimeoutMs.get()));
+#endif
     if (mqttSettings.server.get().isEmpty())
     {
 #if CM_HAS_WIFI_SECRETS
@@ -1878,10 +1954,10 @@ static String addRelativeDiagnostics(const char* base,bool tierState) {
     result+=fields;
     if(tierState){
         snprintf(fields,sizeof(fields),
-            ",\"tiersValid\":%s,\"currentPriceTier\":\"%s\",\"tierStart\":%lu,\"tierSlots\":%u,"
+            ",\"tiersValid\":%s,\"currentPriceTier\":\"%s\",\"tierStart\":%lu,\"tierAt\":%lu,\"tierSlots\":%u,"
             "\"tierCheapSlots\":%u,\"tierNeutralSlots\":%u,\"tierExpensiveSlots\":%u,\"tierVeryExpensiveSlots\":%u,"
             "\"cheapMaxAssessedEurKwh\":%s,\"expensiveMinAssessedEurKwh\":%s,\"veryExpensiveMinAssessedEurKwh\":%s",
-            ready?"true":"false",ready?futurePrices.currentPriceTier():"unknown",ulong(ready?futurePrices.tierStart():0),ready?144u:0u,
+            ready?"true":"false",ready?futurePrices.currentPriceTier():"unknown",ulong(ready?futurePrices.tierStart():0),ulong(ready?futurePrices.tierAt():0),ready?144u:0u,
             ready?futurePrices.tierCount(control::PriceTier::Cheap):0,ready?futurePrices.tierCount(control::PriceTier::Neutral):0,
             ready?futurePrices.tierCount(control::PriceTier::Expensive):0,ready?futurePrices.tierCount(control::PriceTier::VeryExpensive):0,
             JsonNumberText(ready?futurePrices.tierBoundary(control::PriceTier::Cheap):NAN,8).text,
@@ -1894,17 +1970,20 @@ static String addRelativeDiagnostics(const char* base,bool tierState) {
 #endif
 static String buildPlanningConfigPayload()
 {
-    char payload[512];
+    char payload[640];
     snprintf(payload,sizeof(payload),
         "{\"v\":1,\"valid\":%s,\"resOff\":%s,\"resOn\":%s,\"mosMan\":%s,\"invEn\":%s,"
         "\"priceC\":%s,\"priceDb\":%s,\"hystDb\":%s,\"fcPriceF\":%s,\"maxOutputW\":%d,"
-        "\"deferralToleranceEurKwh\":%s,\"predictionPremiumPct\":%s,\"shadowProfile\":%s,\"priceInputVersion\":%u}",
+        "\"deferralToleranceEurKwh\":%s,\"predictionPremium12hPct\":%s,\"predictionPremium24hPct\":%s,"
+        "\"predictionPremiumPct\":%s,\"predictionPremiumModel\":\"horizon_steps_v1\",\"shadowProfile\":%s,\"priceInputVersion\":%u}",
         preparedSettings.valid?"true":"false",JsonNumberText(preparedSettings.reserveOffSocPercent,4).text,
         JsonNumberText(preparedSettings.reserveOnSocPercent,4).text,preparedSettings.mosManualMode?"true":"false",
         preparedSettings.inverterEnabled?"true":"false",JsonNumberText(preparedSettings.priceComfortEurPerKwh,4).text,
         JsonNumberText(preparedSettings.priceDeadbandEurPerKwh,4).text,JsonNumberText(preparedSettings.priceHysteresisEurPerKwh,4).text,
         JsonNumberText(forecastPriceFactor,6).text,limiterSettings.maxOutput.get(),
-        JsonNumberText(preparedSettings.deferralToleranceEurKwh,8).text,JsonNumberText(preparedSettings.predictionPremiumPct,4).text,
+        JsonNumberText(preparedSettings.deferralToleranceEurKwh,8).text,
+        JsonNumberText(preparedSettings.predictionPremium12hPct,4).text,JsonNumberText(preparedSettings.predictionPremium24hPct,4).text,
+        JsonNumberText(preparedSettings.predictionPremiumPct,4).text,
         control::kPlannerShadowProfile?"true":"false",control::kPriceInputVersion);
 #if SIL_RELATIVE_TIME_POLICY
     return addRelativeDiagnostics(payload,false);
@@ -1924,12 +2003,15 @@ static String buildPlanningAssessmentPayload()
     snprintf(payload,sizeof(payload),
         "{\"v\":1,\"g\":%lu,\"valid\":%s,\"reason\":\"%s\",\"priceRevision\":%lu,\"priceStart\":%lu,\"priceSlots\":%u,\"priceAgeS\":%lu,"
         "\"inputVersion\":%u,\"originUnknown\":%u,\"originMarket\":%u,\"originForecast\":%u,"
-        "\"deferralToleranceEurKwh\":%s,\"predictionPremiumPct\":%s,\"currentRawEurKwh\":%s,\"currentAssessedEurKwh\":%s,"
+        "\"deferralToleranceEurKwh\":%s,\"predictionPremium12hPct\":%s,\"predictionPremium24hPct\":%s,"
+        "\"predictionPremiumPct\":%s,\"predictionPremiumModel\":\"horizon_steps_v1\",\"currentRawEurKwh\":%s,\"currentAssessedEurKwh\":%s,"
         "\"currentMeasuredEurKwh\":%s,\"availableWh\":%s,\"fullCapacityAh\":%s,\"soc\":%s,\"batteryW\":%s,\"chargerW\":%s,"
         "\"bmsSequence\":%lu,\"chargerSequence\":%lu,\"bmsValid\":%s,\"chargerValid\":%s,\"mockTransport\":%s,\"shadowProfile\":%s}",
         ulong(utc),futurePrices.priceFresh(utc)?"true":"false",futurePrices.testPriceStatus(utc),ulong(futurePrices.revision()),ulong(futurePrices.start()),futurePrices.slots(),
         ulong(utc>=futurePrices.revision()?utc-futurePrices.revision():0),futurePrices.inputVersion(),counts[0],counts[1],counts[2],
-        JsonNumberText(preparedSettings.deferralToleranceEurKwh,8).text,JsonNumberText(preparedSettings.predictionPremiumPct,4).text,
+        JsonNumberText(preparedSettings.deferralToleranceEurKwh,8).text,
+        JsonNumberText(preparedSettings.predictionPremium12hPct,4).text,JsonNumberText(preparedSettings.predictionPremium24hPct,4).text,
+        JsonNumberText(preparedSettings.predictionPremiumPct,4).text,
         JsonNumberText(raw,8).text,JsonNumberText(assessed,8).text,JsonNumberText(electricityPriceEurKwh,8).text,
         JsonNumberText(futurePlan.availableWh,2).text,JsonNumberText(source.bmsValid?source.fullCapacityAh:NAN,2).text,
         JsonNumberText(source.bmsValid?source.soc:NAN,2).text,JsonNumberText(source.bmsValid?source.batteryW:NAN,2).text,
@@ -1944,7 +2026,19 @@ static String buildPlanningAssessmentPayload()
 // Application publication pacing; CM core telemetry and physical control cadence are unchanged.
 static bool appPublishAccepted=false;
 static uint32_t appPublishAt=0;
-static bool appPublishReady(){return !appPublishAccepted||uint32_t(millis()-appPublishAt)>=250UL;}
+// A lost Wi-Fi segment stalls TCP until retransmission. Frames queued meanwhile can overflow
+// CM's bounded TX queue, which drops the whole MQTT session and forces control recovery.
+// Backpressure is only counted while queued bytes cannot be sent, so healthy links never wait.
+static constexpr uint32_t kTxSettleMs=1000;
+static bool appTransportSettled(){
+    static uint32_t seenBackpressure=0,backpressureAt=0;
+    const uint32_t backpressure=mqtt.getBoundedIoStats().txBackpressure;
+    if(backpressure!=seenBackpressure){seenBackpressure=backpressure;backpressureAt=millis();}
+    return !backpressureAt||uint32_t(millis()-backpressureAt)>=kTxSettleMs;
+}
+static bool appPublishReady(){
+    return appTransportSettled()&&(!appPublishAccepted||uint32_t(millis()-appPublishAt)>=250UL);
+}
 static void appPublished(bool accepted){if(accepted){appPublishAccepted=true;appPublishAt=millis();}}
 #if defined(SIL_PLANNER_SHADOW) && SIL_PLANNER_SHADOW
 static void shadowTraceTx(const char* tag,size_t bytes,uint32_t previousFailures) {
@@ -2432,6 +2526,7 @@ static void processRS485Tick()
     inputs.softwareMosLockOnly = source.softwareMosLockOnly;
     inputs.chargerFault = source.chargerFault;
     inputs.householdW = measuredInverterW + measuredGridW;
+    inputs.correctionW = offset;
     inputs.chargerValid = source.chargerValid;
     inputs.chargerStandby = source.chargerStandby;
     inputs.metersValid = gridFresh && inverterFresh;
@@ -2543,11 +2638,11 @@ static void processRS485Tick()
         currentDecision.strategy = modeDecision.effective;
         currentDecision.reason = modeDecision.reason;
         // Retain qualified PV recovery state only while the automatic fallback owns output.
-        if (!modeDecision.automaticPvFallback) currentControl = control::CurrentControl{};
+        if (!modeDecision.automaticPvFallback) currentControl.resetTransient();
     }
     // Origin-price freshness has final priority; explicit production modes retain their existing independence.
     if(control::priceInputRequiredForMode(operatingModes.confirmed().mode==control::OperatingMode::Automatic) && !futurePrices.priceFresh(utc)) {
-        currentControl=control::CurrentControl{};currentDecision=control::CurrentDecision{};
+        currentControl.resetTransient();currentDecision=control::CurrentDecision{};
         currentDecision.direct=true;currentDecision.reason=futurePrices.testPriceStatus(utc);
         modeDecision=control::ModeDecision{};modeDecision.reason=currentDecision.reason;
         modePublishDirty=true;
@@ -2624,9 +2719,9 @@ static void processRS485Tick()
     }
     else
     {
-        pidBaseTarget = control::saturatingAdd(currentInverterOutputW, signedGridPowerW);
+        pidBaseTarget = control::saturatingAdd(control::saturatingAdd(currentInverterOutputW, signedGridPowerW), offset);
         const int effectiveCeiling = max(outputMinimumW, constrain(currentDecision.ceilingW, 0, configuredMax));
-        const int effectiveMin = currentDecision.sourceGrace ? 0 : min(configuredMin, effectiveCeiling);
+        const int effectiveMin = min(outputMinimumW, effectiveCeiling);
         pidClampedBaseTarget = constrain(pidBaseTarget, effectiveMin, effectiveCeiling);
         pidInput = pidClampedBaseTarget;
         if (pidController.initialized && !control::checkedFloatToInt(roundf(pidController.output), pidInput)) resetPidController();
@@ -2642,21 +2737,21 @@ static void processRS485Tick()
     if (negativePriceOverrideTarget >= 0)
     {
         inverterSetValue = min(negativePriceOverrideTarget, currentDecision.ceilingW);
-        issueInverterCommand(inverterSetValue, configuredMax, offset);
+        issueInverterCommand(inverterSetValue, configuredMax, 0);
     }
     else if (currentDecision.direct)
     {
         inverterSetValue = constrain(currentDecision.ceilingW, 0, configuredMax);
         resetPidController();
-        issueInverterCommand(inverterSetValue, configuredMax, offset);
+        issueInverterCommand(inverterSetValue, configuredMax, 0);
     }
     else if (limiterSettings.enableController.get() || currentDecision.pvOnly || currentDecision.sourceGrace)
     {
         const int correctedValue = inverterCalculatedValue;
         const int ceiling = max(outputMinimumW, constrain(currentDecision.ceilingW, 0, configuredMax));
-        const int effectiveMin = currentDecision.sourceGrace ? 0 : min(configuredMin, ceiling);
+        const int effectiveMin = min(outputMinimumW, ceiling);
         inverterSetValue = constrain(correctedValue, effectiveMin, ceiling);
-        issueInverterCommand(inverterSetValue, configuredMax, offset, outputMinimumW);
+        issueInverterCommand(inverterSetValue, configuredMax, 0, outputMinimumW);
         lmg.logTag(LL::Trace, "RS485", "Controller enabled -> set inverter to %d W (calc=%d, corr=%d)", inverterSetValue, inverterCalculatedValue, correctedValue);
         lmg.logTag(LL::Trace, "PID", "inv=%d gridSigned=%d gridIn=%d gridOut=%d off=%d base=%d clamp=%d in=%d out=%d min=%d max=%d set=%d",
                    currentInverterOutputW, signedGridPowerW, gridImportW, gridExportW, offset, pidBaseTarget, pidClampedBaseTarget,
@@ -2667,7 +2762,7 @@ static void processRS485Tick()
         inverterSetValue = configuredMax;
         resetPidController();
         lmg.logTag(LL::Info, "RS485", "Controller disabled -> using MAX output");
-        issueInverterCommand(inverterSetValue, configuredMax, offset);
+        issueInverterCommand(inverterSetValue, configuredMax, 0);
     }
 
 #if CM_ENABLE_LOGGING && CM_ENABLE_VERBOSE_LOGGING

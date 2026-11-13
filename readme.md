@@ -1,418 +1,274 @@
 # ESP32 RS485 Solar Inverter Limiter
 
-## Full battery PV with relative planning (5.8.2)
+SolarInverterLimiter (SIL) is ESP32 firmware that calculates and sends a power
+limit to a grid-tie inverter over RS485. It follows household demand from MQTT
+meter data, plans battery discharge against electricity prices and PV forecasts,
+and consumes BMS/MPPT telemetry from SolarBatteryTelemetry (SBT).
 
-The relative planner preserves the guarded full-battery PV restart: at 100% SOC,
-qualified healthy inputs and a valid positive-price plan allow household demand
-to release curtailed PV even when measured MPPT output is zero. Missing plans,
-source faults and nonpositive prices still stop output. Host regression coverage
-does not establish new hardware acceptance.
+Current firmware version: **5.9.6** (`VERSION` in `src/main.cpp`).
 
-## Relative planner promotion (5.8.1)
+## Recent changes
 
-Normal and isolated shadow builds now use the reviewed relative planner,
-10/10/20% time defaults, a 0.05 EUR/kWh storage hurdle and 10% origin premium.
-Normal uses its dedicated production V2 input; shadow retains hard-disabled
-hardware and guarded routing. Native UI categories/cards change without NVS
-key changes. See the [policy, layout and deployment gates](docs/planner-shadow-comparison.md).
-Runtime acceptance remains subject to the test and owner production checks.
+- **5.9.6**: Builds against the released ConfigurationsManager 4.12.0 from the
+  PlatformIO registry instead of the local test packages; all profiles,
+  including `testesp_mqtt_drop_oldest`, now use the registry package.
+- **5.9.5**: Without a planned battery budget, the relative policy trims direct
+  PV passthrough on BMS feedback until the battery no longer discharges; fixed
+  standby loads and low-load inverter losses are no longer covered by the
+  battery. Adds the `testesp_mqtt_drop_off` comparison profile.
+- **5.9.4**: Adds an isolated, opt-in CM MQTT drop-oldest trial. Normal profiles
+  retain their previous CM package and queue policy; there is no production rollout.
+- **5.9.3**: Builds against the local ConfigurationsManager (CM) 4.12.0 package
+  with `ESP32Async/ESPAsyncWebServer@3.12.1` and `ESP32Async/AsyncTCP@3.5.0`
+  (replacing the esphome web server fork). After stored settings load, SIL
+  raises the bounded MQTT TX queue to at least 8192 bytes and the TX stall
+  timeout to at least 30000 ms; higher stored values are kept.
+- **5.9.2**: After a short loss of SIL's own MQTT broker session (at most 60 s),
+  SBT values that were fresh at the loss are re-armed by the first newly
+  advancing SBT health sequence, so change-only values such as SOC and alarm
+  bits need not be republished. Deadlines are not renewed; collector `offline`,
+  source `unavailable`, a session change or a newer packet for the value take
+  precedence.
+- **5.9.1**: Large application MQTT frames are deferred for 1 s after CM reports
+  TCP backpressure, so the bounded TX queue does not overflow and drop the
+  session during WiFi stalls. Healthy links are not delayed.
+- **5.9.0**: Forecast prices use horizon-based premiums: up to 12 h, 12-24 h and
+  beyond 24 h (defaults 3 / 8 / 10%, keys `pred12Pct`, `pred24Pct`, `predPct`).
+- **5.8.3**: `Output Correction Offset (W)` biases household demand before the
+  PID or manual-mode calculation instead of the final command (see
+  [Control behavior](#control-behavior)).
 
-## Full battery PV and manual MOS ownership (5.6.1)
-
-At a fresh, qualified 100% SOC, the automatic limiter allows household demand to
-release PV that a full battery has curtailed. Current measured MPPT output no
-longer holds that request at zero. Normal planning resumes below 100%, with
-existing protection and source-freshness gates preserved. SIL no longer sends
-automatic MOS commands; manual SBT controls and the BMS's own protection remain.
-See [operating modes](docs/operating-modes.md) for the control boundaries.
-
-## Explicit operating modes (5.6.0)
-
-Production 5.6.0 was confirmed after the owner-authorized five-minute test on
-2026-10-31. See the [hardware gates](docs/acceptance/2026-10-31-operating-modes-hardware-gate.md)
-for the mocked bench boundary, successful web upload and unchanged Automatic mode.
-
-Select `automatic`, `household_follow`, `charge_priority` or `pv_follow` through the persisted CM settings or confirmed MQTT state. The new PV follower caps corrected household demand by fresh measured PV times 0.90 and produces zero at night; surplus PV remains available for charging. Household following applies correction once before the MAX clamp. Charge priority defaults to 95%, keeps all charging power until full, and returns to priority below that threshold. Automatic holds output when BMS feedback is unverified; deliberate manual following reports that condition explicitly. See [operating modes](docs/operating-modes.md) and the [additive Home Assistant select](docs/home-assistant-operating-modes.yaml). No mode writes MOS registers or changes reserve settings.
-
-The documented battery label (50.4 V / 114 Ah, approximately 5.746 kWh) differs from the existing planner basis and observed reported capacity (51.38 V / 131.25 Ah, approximately 6.744 kWh). This is a [future calibration boundary](docs/operating-modes.md#battery-energy-calibration-boundary); runtime voltage, capacity and SOC defaults remain unchanged.
-
-## Independent BMS and MPPT capabilities (5.4.10 history)
-
-Fresh BMS data keep battery energy accounting and price planning active when MPPT telemetry is unavailable; advancing BMS samples qualify that mode independently. The former automatic missing-BMS PV fallback is superseded by explicit mode selection in 5.5.0. The former fixed 500 W idle fallback cannot replace an economic hold. Automatic treats actual discharge MOS OFF with an unavailable battery-powered MPPT as contextual standby: current output stays zero, including with Limiter OFF, while unknown voltage/current remain unknown. Future charging may use a fresh BMS-voltage bound for the installed MPPT; retained known faults prevent forecast recharge credit. Display plans retain only their original bounded BMS grace and generation deadline. See the [5.4.10 acceptance report](docs/acceptance/2026-10-28-mppt-standby-independent-sources.md).
-
-## Input-update continuity (5.4.9)
-
-Short source requalification no longer discards a valid display plan when a new current price or accepted price/PV content arrives at the same time. These updates request capture; actual settings/source changes and known faults still revoke retention. Held timestamps and arrays keep their original 180-second deadline, and live control remains independent. The chronological PV recharge behavior introduced in 5.4.8 is unchanged. See the [combined acceptance report](docs/acceptance/2026-10-27-chronological-pv-recharge.md).
-
-## Chronological PV recharge (5.4.8)
-
-The planner now accounts for discharge, later PV recharge and a subsequent expensive discharge in one chronological energy balance. Live allowance and both MQTT projections share the same flows. Known later sunlight can fund later targets within charging/headroom limits; it cannot fund earlier output or increase the measured battery ledger. Existing price economics, source protections and configured MAX remain authoritative. See the [planning model](docs/control-planning/05-energy-planning.md) and [5.4.8 acceptance report](docs/acceptance/2026-10-27-chronological-pv-recharge.md).
-
-## Brief source-gap continuity and WiFi recovery (5.4.6 preparation)
-
-Both plan publications now keep a previously valid projection across brief source interruptions, within its original 180-second freshness limit, source grace and coverage. They retain the exact original timestamp and arrays. Hard changes and known faults invalidate immediately; source recovery requests a fresh projection promptly. Actual source qualification, controller output and permissions are unchanged. See the [wire contract](docs/control-planning/mqtt-schedule-contract.md#battery-discharge-budget-output-v1).
-
-The current build selects immutable CM 4.10.3 at `file://.local/cm-wifi-recovery-4.10.3-final-package`, with outputs under `.pio/operating-modes-5.6.0`. Recovery delegates OFF/STA lifecycle and runtime buffer selection to Arduino, and checks initialization failure. This corrects inconsistent ownership and an observed buffer-policy mismatch; it does not establish the cause of the SBT panic. The bounded recovery and polling-retention runs are recorded in [the 5.4.7 acceptance report](docs/acceptance/2026-10-27-poll-retention-and-wifi-recovery.md). The tracked `dependencies/cm/cm-4.10.3-source.zip`, companion SHA256 and original manifest provide the exact source. For a clean restore, use the hash-checked procedure below with version 4.10.3 and destination `.local/cm-wifi-recovery-4.10.3-final-package`.
-
-`testesp_recovery` additionally performs exactly one explicitly logged stack reset after healthy mock planning; a compile-time assertion prevents using this injection with real RS485 transport. Normal `usb`, `ota` and `testesp` profiles contain no recovery injection. Device acceptance for 5.4.6 is pending until its separate run is recorded.
-
-## MQTT send-progress deadline (5.4.5)
-
-The 5.4.5 checkpoint uses an immutable CM 4.10.2 source snapshot through `file://.local/cm-mqtt-progress-4.10.2-package`; its build outputs are isolated under `.pio/mqtt-progress-5.4.5`. The bounded MQTT adapter expires pending data after five seconds without a positive TCP send, rather than five seconds of a continuously nonempty queue. Enqueue and transient socket errors do not renew this deadline. FIFO size, per-call budgets and overflow handling remain unchanged. A positive send is TCP-stack acceptance, not a broker acknowledgement or an absolute message-age guarantee.
-
-The owner-authorized production OTA was accepted on 2026-10-26 at 20:00:38 UTC. Fresh identity, version, profile and all 75 settings were verified. A subsequent full fifteen-minute observation found no SIL reset or transport error; it separately captured an SBT panic and temporary source invalidation. This is bounded acceptance, not a long-term crash-free claim. See the [checkpoint evidence](docs/acceptance/2026-10-26-discharge-projection-and-mqtt-progress.md).
-
-The archive, its SHA256 and original per-file manifest are tracked under `dependencies/cm/cm-4.10.2-*`. They include the preceding BLE-safe WiFi coexistence policy, although SIL remains a WiFi-only consumer. This is a local tested snapshot, not a Registry release. Restore it into the exact ignored package directory before building in a clean checkout:
-
-```powershell
-$archive = 'dependencies/cm/cm-4.10.2-source.zip'
-$expected = (Get-Content -LiteralPath ($archive + '.sha256')).Split(' ')[0]
-if ((Get-FileHash -Algorithm SHA256 -LiteralPath $archive).Hash.ToLowerInvariant() -ne $expected) { throw 'CM archive hash mismatch' }
-$destination = '.local/cm-mqtt-progress-4.10.2-package'
-if (Test-Path -LiteralPath $destination) { throw 'Preserve the existing package; choose a clean checkout for restore' }
-Expand-Archive -LiteralPath $archive -DestinationPath $destination
-```
-
-## Complete discharge projection (5.4.4 preparation, included in 5.4.5)
-
-The discharge-budget schedule now projects all considered quarter-hours chronologically, including comparable-price windows, instead of exporting only the current allowance and protected future reservations. Both the live economic ceiling and projected allowances use configured `Max Output (W)` (900 W in the owner configuration). This is a conditional upper bound, not a promised household load or future inverter command. The first value remains the real current scalar ceiling; measured demand and live reserve, fault, source and output rules still determine the command.
-
-Projection uses a private energy/headroom ledger: qualified PV is stored chronologically once, first restoring any missing Reserve OFF energy. The initial 5.4.4/5.4.5 model used MAX to account for PV load after removing the fixed 650 W assumption; 5.4.8 replaces that storage assumption with the shared chronological charge/discharge flows described above. Price factor and forecast calibration remain unchanged. See the [schedule contract](docs/control-planning/mqtt-schedule-contract.md#battery-discharge-budget-output-v1). This planning correction does not establish an MQTT-outage fix or device acceptance.
-
-## WiFi power-save checkpoint 5.4.3
-
-Companion CM implementation checkpoint: `801e3cf76dc0c8801a4176241a600aa92be9336f`
-(on `fix/mqtt-session-recovery`). The version-specific archived inputs below,
-including their original manifests, remain the exact firmware dependency source.
-
-The 5.4.3 checkpoint selected frozen CM 4.10.0 through the explicit URI
-`file://.local/cm-wifi-sleep-4.10.0-package`. Build and dependency outputs use
-`.pio/wifi-sleep-5.4.3`. The owner-authorized OTA was accepted on 2026-10-25 at
-20:20:52.937270 UTC. Identity, version, Settings-only profile and inactive OTA
-were verified, with all 74 previous settings preserved and only WiFiPowerSave
-added. The accepted binary SHA256 is
-`fc9df288d6bb51c9994c1e8a1057b795d0d187705fb25c95f1d1ae2b3bfc7aba`.
-
-The ignored 188-file source package has manifest SHA256
-`f54c592f118b9615926cd15d13ec0eeedecd2af3fdb4985acb69c94a4d74a081`.
-The exact source ZIP and original manifest are tracked under `dependencies/cm/`,
-including the original LICENSE. This is a historical **WiFi-only** reproduction
-snapshot: native NONE with BLE controller initialization has a known classic
-ESP32 platform incompatibility addressed later by CM 4.10.1. Do not treat this
-4.10.0 archive as BLE acceptance. The current CM 4.10.1 checkout cannot replace it.
-The preparation helper at that checkpoint expected a matching CM 4.10.0 checkout.
-The current helper prepares only 4.10.3; restore the historical archive explicitly
-when reproducing 5.4.3. No Registry publication is implied. Later
-documentation notes do not change the frozen package or accepted firmware.
-
-From the repository root, restore the exact source package before building:
-
-```powershell
-$archive = 'dependencies/cm/cm-4.10.0-source.zip'
-$expected = '524b6c084529a1cd9339874b4137bc80f648ee507d73b34d0e3c41dac7fb43c3'
-if ((Get-FileHash -Algorithm SHA256 -LiteralPath $archive).Hash.ToLowerInvariant() -ne $expected) { throw 'CM archive hash mismatch' }
-$destination = '.local/cm-wifi-sleep-4.10.0-package'
-if (Test-Path -LiteralPath $destination) { throw 'Preserve the existing package; choose a clean checkout for restore' }
-Expand-Archive -LiteralPath $archive -DestinationPath $destination
-```
-
-The ZIP contains exactly the 188 manifest entries plus `manifest.sha`. Its
-roundtrip was hash-verified before this checkpoint; the build wrapper verifies
-the full extracted package again. The companion `.zip.sha256` and external
-`.manifest.sha` preserve the archive digest and original source manifest.
-
-CM adds exactly one persistent WiFi setting, `WiFiPowerSave` (default false).
-Loaded values apply before initial connection; an existing explicit value remains
-authoritative. SIL does not add a direct `WiFi.setSleep()` override. Rollout
-comparison must allow this one new setting while preserving all previous values.
-
-The wrapper verifies the complete frozen source manifest and every immutable
-consumer source before and after UI generation, including core/WiFi sources and
-`src/html_content.cpp`. Only the generated `src/html_content.h`, `webui/dist/`
-and explicitly scoped tool caches may differ in the consumed copy. Settings-only
-source/feature/header-hash proof remains mandatory. This does not establish that
-WiFi sleep caused the observed MQTT interruptions. Focused host checks, real/mock
-builds and bounded device checks completed; the fixture recovered fresh accepted
-plans after a TX expiry while control continued and heap integrity remained valid.
-The TX stall still occurred with native sleep OFF, so MQTT cause and long-term
-stability remain open.
-
-## Historical MQTT recovery checkpoint 5.4.2
-
-This historical checkpoint used the bounded local CM 4.9.2 development package.
-Its original package and artifacts are retained privately; the current preparation
-helper targets 4.10.0 instead. A fixed-memory transmit FIFO handles temporary send pressure
-and short writes without immediately reconnecting. Its oldest pending bytes have
-a five-second limit; fatal socket errors, expiry, and overflow still close the
-connection. A closed session never transfers pending application bytes to the next.
-
-Serial diagnostics and `<base>/Diagnostics/Runtime` now include cumulative RX and
-TX transport counters, distinguishing temporary pressure from fatal failures.
-`<base>/Planning/Config.maxOutputW` reports the actual configured `LimiterMaxW`
-without changing that setting. It can provide the configured reference for a
-dashboard discharge axis. Existing planning/source-safety decisions are unchanged.
-Invalid charge projections still publish `valid=false` and empty arrays; they do
-not authorize use of stale source data.
-
-Host characterization does not prove cancellation of already queued TCP bytes.
-The observed delayed CONNECT/session replacement remains a separate field issue.
-The focused host checks, real/mock builds, and bounded COM8 pretest passed. The
-owner-authorized frozen 5.4.2 image was installed at 17:42:46 UTC on 2026-10-25.
-Post-reboot identity, Settings-only profile, inactive OTA, and all 74 settings
-were verified. This is a bounded observation, not a long-term stability claim.
-Subsequent production monitoring recorded two TX expiries and renewed MQTT
-connections while ESP uptime and valid plans continued. The availability defect
-therefore remains open despite the verified improvement under transient pressure.
-
-## Historical runtime hardening checkpoint 5.4.1
-
-This historical checkpoint used an unpublished CM 4.9.1 source package through
-an explicit consumer-local `file://` dependency at `.local/cm-hardening-package`.
-Its original package and artifacts are retained privately; the current helper
-cannot reconstruct this historical version from the current CM checkout.
-Settings-only UI and
-disabled generic verbose logging remain required. Bounded MQTT receives assemble
-over loop iterations with a 30-second first-byte deadline; reconnect keeps already
-accepted price/PV plans within their original validity. Numeric conversion and
-control arithmetic fail closed on invalid or unrepresentable values. Synchronous
-smart-roaming scans are disabled in SIL to avoid pausing control.
-
-Serial `[I] DIAG` records expose stage timing, loop gaps, heap/stack reserve and
-transport failures every five seconds. A small RTC record retains the last stage
-for the next boot when RTC memory survives the reset. The non-retained
-`<base>/Diagnostics/Runtime` topic and ESP System-Info report reset evidence;
-WiFi System-Info omits duplicate ESP uptime. A hardware reset still loses the
-in-memory price/PV plans. Mock builds suppress RS485 and BMS emergency writes and
-must use isolated MQTT inputs/outputs. USB fixture port is COM8.
-
-Focused host/build checks and bounded COM8 observations are recorded in the
-[acceptance report](docs/acceptance/2026-10-25-mqtt-runtime-hardening.md).
-The owner-authorized frozen 5.4.1 image was installed by production OTA on
-2026-10-25 at 15:04 UTC; version, Settings-only profile and all 74 settings were
-verified after reboot. Long-term stability, extra MQTT reconnects and the
-offline WiFi-stage latency remain open observations.
-
-## Charging-intent preview (5.4.0)
-
-The new diagnostic charge projection shows when the currently recognized policy deliberately withholds PV for the battery; a separate series exposes expected sunlight. It projects the existing economic request and reserve full/half policy without changing controller decisions, MOS commands or NVS. Blue/DC withholding is distinct from the existing red/AC discharge allowance and is not a complete future inverter SetValue. Missing forecast intervals remain unknown. See the [wire contract](docs/control-planning/mqtt-schedule-contract.md#charge-intent-projection-output-v1-540-test-candidate) and [implementation plan](docs/superpowers/plans/2026-10-23-charge-intent-projection.md). After isolated COM8 acceptance, the owner authorized production OTA; the frozen real-transport image was installed and version 5.4.0 verified with Live disabled, Settings enabled and all captured setting values preserved.
-
-The separate instrumented COM8 fixture completed a 15-minute observation plus a passive tail without an unexpected reset; four complete HTTP reads and authentic public MQTT/HA test delivery passed. This bounded isolated result does not establish production or long-term stability, and does not diagnose production NVS. See the [acceptance record](docs/acceptance/2026-10-23-charge-intent-projection.md) for source provenance, memory/stack/timing, test-transport repairs, production verification and remaining limits. The earlier production reset cause remains open; `Connectivity check target = off` disables the extra target probe, while the separate WiFi-loss reboot and loop watchdog remain active.
-
-The owner-authorized Home card #3 uses production price, red AC discharge, blue DC withholding and dashed DC solar forecast, preserving actual recorded discharge history. Its window includes three previous hours and the existing 24-hour forward endpoint. Invalid/stale/unknown intervals remain gaps. The isolated TEST dashboard continues to use its own test entities; a view-level `type: panel` wrapper must not be pasted into a single-card editor.
-
-## Control correction (5.3.0)
-
-Stored energy is allocated by relative useful prices within the existing 36-hour window, independently of the comfort/deadband bands. New charging retains the existing round-trip efficiency, wear, and minimum-benefit checks. Reserve OFF charging uses all available PV when the price is not expensive; between OFF and ON, cheap prices reserve half of charger DC power. Economic charging may request a higher common target. Reserve discharge hysteresis and the existing qualified MIN override remain in force.
-
-The obsolete `Battery Power Deadband (W)` / `pwrDb` setting and positive preservation charging floor are removed. The owner-configured output correction remains unchanged and is still applied exactly once. Existing stored keys need no NVS rewrite; the removed key is ignored. The published CM 4.9.0 dependency and Settings-only build profile are unchanged. Owner-authorized production OTA on 2026-10-23 confirmed version 5.3.0 and preserved all remaining Limiter settings. See the [verification and deployment record](docs/acceptance/2026-10-23-relative-price-and-reserve-control.md); the earlier intermittent reset/HTTP investigation remains open.
-
-## Settings-only production build
-
-Production profiles use the published `vitaly.ruhl/ESP32 Configuration Manager@4.9.0` package, with `CM_ENABLE_LIVE_UI=0` and `CM_ENABLE_SETTINGS_UI=1` in the shared PlatformIO configuration. Both backend presentation code and embedded Vue assets use this Settings-only flavor. The consumer hook builds the UI from the registry package's published sources in its project-local dependency directory and verifies registry provenance, compiler flags, generated-header flavor, and source/asset hashes. An adjacent CM checkout or a stale Live-enabled header is rejected. Node.js/npm are needed when the selected UI asset requires regeneration. `usb` and `ota` use real transport; only `testesp` enables the mock transport.
-
-## Historical integration handoff (5.1.1 development)
-
-The [integration plan](docs/superpowers/plans/2026-10-20-sil-sbt-ha-integration.md) has been explicitly continued. See the [acceptance and owner handoff](docs/acceptance/2026-10-20-integration-acceptance.md) for exact build/device results and remaining gates. Production ESP deployment remains with the owner; the requested local intermediate commits preserve the current development state without clearing device acceptance. The current candidate uses local ConfigurationsManager 4.8.0; final device acceptance remains open due to SBT HTTP timeouts and added overload failures. See exact per-image evidence before any rollout.
-
-The receiver retains last-good values through transient source loss. `SBT Data Timeout (s)` is 1..9999 seconds, default 180; invalid entries normalize visibly to 180. Since 5.1.3, fresh actual MOS flags and genuine directional alarms govern physical battery capability; historical acknowledged requests have no control authority. The global software-lock bit cannot identify a direction and remains diagnostic. Actual discharge MOS OFF does not cap the calculated or transmitted inverter request: SIL continues to plan and send ordinary desired discharge under existing economics, reserve, protection, settings and transport rules. Physical discharge capability is reported separately; SIL never enables a MOS to satisfy that intent. Charge MOS OFF disables PV storage reservation. With charging enabled, cheap/forecast-charge periods still reserve PV normally. Missing PV/meters and genuine charger/protection faults retain restrictive behavior.
-
-SIL does not publish MOS commands. BMS protection, fault clears, mode changes and reconnects never cause SIL to switch either MOS. It still consumes directional BMS restrictions and stops inverter output when discharge protection requires it. The BMS retains its own protection and manual MOS operation remains available through SBT's existing control gate. The legacy `mosMan` setting is preserved but does not grant SIL MOS ownership. This policy replaces the earlier automatic one-shot emergency both-off behavior starting with 5.6.1; local build validation remains separate from hardware acceptance.
-
-SBT 1.2.0 adds independent `bms/temperature_1_c` and `bms/temperature_2_c`; SIL has 31 receiver slots and 29 visible SBT fields. NTC identities use raw JBD order, labeled Top/Bottom; a missing sensor is unavailable. The System live card is removed; only UsedHeap, FreeHeap and HeapFragmentation appear under Limiter. `SIL_DEACTIVATE_BME280_CARD=1` hides the BME280 card, while 0 shows it; sampling/MQTT remain enabled independently. I2C uses SDA21/SCL22/400000 Hz; old pin/frequency NVS keys are inert.
-
-`Output Correction Offset (W)` retains the persisted `LimiterCorrW` key and applies exactly once to the complete calculated command, immediately before transmission. It is no longer part of the PID input. Before the qualified minimum-output override below, an uncorrected zero remains zero and configured MAX remains MAX; every intermediate result is offset and then clamped to 0..MAX before conversion to the wire type. Thus 0 + 50 = 0 W, 1 + 50 = 51 W, 1 - 50 = 0 W, and 200 + 50 = 250 W. This intentional final bias may exceed the pre-correction PV or household ceiling; other battery and forecast efficiency models are unchanged.
-
-Since 5.2.1, `Min Output (W)` overrides price and charging-plan limits when fresh, qualified sources permit discharge intent and the reserve latch allows it. The final command, including output correction, cannot fall below MIN, bounded by MAX: MIN 700 W and offset -50 W still request at least 700 W. This also applies to an economic zero and when charge MOS is OFF; actual discharge MOS OFF retains the desired-output behavior above. Reserve restrictions, genuine faults, negative-price stops, missing meters, transport/inverter OFF, and source grace/recovery cannot gain a minimum override. Existing source-loss fallback and PV-only behavior remain unchanged. Set MIN to 0 for unrestricted economic planning; existing persisted nonzero values adopt this precedence. `minimum_output` identifies a minimum-determined command, while the discharge-budget schedule remains the planner's original allocation. No MOS command is introduced.
-
-Independent atomic price-v1/PV-v2 schedules feed bounded cached planning. Forecast energy never increases the measured battery pool. Qualified PV before the earliest future reserved target can reduce that future reservation, bounded by MPPT power, household demand, losses and SOC headroom. See the [wire contract](docs/control-planning/mqtt-schedule-contract.md) and [HA migration](docs/home-assistant/shed-migration.md). Calibration remains neutral until 14 eligible completed days in 30; missing intervals remain missing.
-
-Version 5.2.0 adds a non-retained diagnostic [battery discharge-budget schedule](docs/control-planning/mqtt-schedule-contract.md#battery-discharge-budget-output-v1). The existing per-quarter allocations can be overlaid on the same 24-hour price chart with a right W axis using the [MQTT sensor](docs/home-assistant/sil-discharge-budget-sensor.yaml) and [card example](docs/home-assistant/sil-price-discharge-overlay.yaml). The budget is planned battery AC contribution, not measured discharge or a complete future inverter SetValue. Actual discharge MOS OFF does not suppress the budget; charge MOS OFF retains the existing PV-storage veto. This version was tested by USB only on the isolated dedicated test ESP; production SIL and Home Assistant remain unchanged. See the [bounded acceptance evidence](docs/acceptance/2026-10-22-discharge-budget-export.md).
-
-This project is an ESP32-based solar inverter limiter that can be used to limit the power output of a solar inverter to a specific value. The project uses an ESP32 microcontroller and an RS485 module to communicate with the inverter.
+The Home Assistant planner-shadow scripts additionally hold last-good prices
+across short tariff alignment mismatches and accept the previous price revision
+briefly after a republish; that logic lives under `docs/home-assistant/`, not in
+the firmware.
 
 ## Features
 
-- ESP32-based solar inverter limiter
-- RS485 communication with solar inverter
-- Publishes power and sensor values via MQTT
-- Configurable power output limit
-- Web-based settings UI (ConfigManager)
-- BME280 sensor support; OLED and GUI/MQTT logging are disabled in the production profiles
+- RS485 inverter limit output (Serial2, 4800 baud default)
+- Household-demand PID from MQTT grid and PV meter values
+- Relative-price battery planning with price schedule and PV forecast inputs
+- Explicit operating modes, see [operating modes](docs/operating-modes.md)
+- SBT BMS/MPPT telemetry receiver with freshness and fault gating
+- MQTT publication of setpoint, planning and diagnostics
+- Settings-only web UI (CM), OTA updates
+- Optional BME280 temperature/humidity/dewpoint sensor; OLED, fan/heater relays
+  and GUI/MQTT logging are disabled in all PlatformIO profiles
 
-## Historical compact metadata checkpoint (5.0.2)
+## Hardware and wiring
 
-At that checkpoint, CM >=4.7.0 supported 19 enabled GUI descriptors and
-40 SBT receiver descriptors use compact Float/Int/Bool/Text storage. Keys,
-placement, getters, individual provider order, units, precision and control
-algorithms remain unchanged. Optional fan/heater controls retain their existing
-builders; those features are disabled in the COM7 comparison profile.
+- ESP32 development board (`nodemcu-32s` in PlatformIO)
+- RS485 module (e.g. MAX485 or similar)
+- Optional BME280 on I2C
 
-The normal profiles now use `symlink://../ConfigurationsManager`: the adjacent
-local CM >=4.7.0 checkout is required, including any uncommitted development
-changes. No stale Git pin or unpublished release reference is used. This is an
-explicit development binding, not a reproducible released dependency; pin a
-published compatible CM commit when this coordinated work is released.
+```
+ESP32 Pin | Function
+--------- | ------------------------------------------------
+GPIO 19   | RS485 TX (setting RS485Tx)
+GPIO 18   | RS485 RX (setting RS485Rx; received data unused)
+GPIO 4    | RS485 DE/RE direction (setting RS485DE)
+GPIO 21   | I2C SDA (fixed)
+GPIO 22   | I2C SCL (fixed, 400 kHz)
+GPIO 14   | Reset button (held at boot restores defaults)
+GPIO 13   | AP mode button (held at boot starts AP mode)
+GND / VCC | RS485 module supply (5 V or 3.3 V depending on module)
+```
 
-All existing profiles disable OLED. Their unused SSD1306, GFX and BusIO package
-declarations have been removed. Re-enabling OLED also requires declaring its
-display dependencies; BME280 support is retained.
+The cooling fan (GPIO 23) and heater (GPIO 27) relay outputs exist only when
+`FEATURE_FAN_ENABLED` / `FEATURE_HEATER_ENABLED` are set; both default to 0. See
+the [GPIO reference](docs/esp32-connection.md) for pin constraints.
 
-The explicitly authorized COM7 comparison uses the ignored local configuration
-`.pio/compact-runtime-metadata/platformio-test.ini`, binding
-`C:/Daten/_Codding/ESP32/ConfigurationsManager` via symlink and a read-only asset
-preflight. Build it with:
+## Build and upload
+
+Common settings live in `[env]` of `platformio.ini` (platform
+`platformio/espressif32@7.0.1`, Arduino, `-std=gnu++17`, LTO,
+`CM_ENABLE_LIVE_UI=0`, `CM_ENABLE_SETTINGS_UI=1`, `CM_MQTT_BOUNDED_IO=1`).
+Build outputs use `.pio/operating-modes-5.6.0`; library dependencies use
+`.pio/plan-retention-5.4.7-final/libdeps`.
+
+| Environment | Purpose |
+| --- | --- |
+| `usb` | Production profile, upload/monitor on COM8 |
+| `ota` | Production profile, OTA upload (`espota`) |
+| `ota_no_oled` | Compatibility alias of `ota` |
+| `ota_no_oled_no_bme` | `ota` without BME280 (no temperature/humidity/dewpoint values or topics) |
+| `testesp` | Mock RS485 transport (`SIL_MOCK_TRANSPORT=1`) on COM8 |
+| `testesp_recovery` | `testesp` plus exactly one logged stack reset after healthy mock planning |
+| `testesp_mqtt_drop_oldest` | Temporary CM drop-oldest trial on COM7, with isolated fixture routing and no hardware TX |
+| `testesp_mqtt_drop_off` | `testesp_mqtt_drop_oldest` with drop-oldest disabled (comparison baseline) |
+| `planner_shadow` | Isolated planner comparison: mocked transport, fan/heater disabled, guarded `SolarLimiterTest` routing |
+| `planner_shadow_trace` | `planner_shadow` plus numeric TX failure stage diagnostics |
 
 ```powershell
-pio run -e testesp -c .pio/compact-runtime-metadata/platformio-test.ini
-./tools/test/run-compact-runtime-metadata-tests.ps1
+pio run -e usb                # build
+pio run -e usb -t upload      # USB upload
+pio run -e ota -t upload      # OTA upload
+pio device monitor -e usb     # serial monitor (115200)
 ```
 
-This local profile retains BME280 and mocked RS485 output, omits BLE/NimBLE,
-disables CM logging like the SBT comparison, and preserves the test ESP's existing
-OTA password. Production-profile provisioning behavior is unchanged. Parent
-uploads only the application to COM7; the repository partition table must not be
-written to the test device. The [portable plan and evidence](docs/acceptance/2026-10-18-compact-runtime-metadata-evidence.md)
-records the unresolved HTTP crash context and hardware acceptance boundary.
+Mock images (`testesp*`) never write RS485 hardware. They force DHCP, the MQTT
+root `SILHardening/COM8/out` and client ID `SILHardening-COM8-device`, and
+disable MQTT if fixture isolation is incomplete. `planner_shadow*` requires mock
+transport at compile time and only publishes below `SolarLimiterTest/`. Never
+upload mock or shadow images to the production inverter.
 
-Common always-used PlatformIO settings now live in `[env]`; the five existing
-profiles initially resolved to exactly the same option values after that
-organization-only change. Following owner feedback, the common dependency was
-then switched to local CM >=4.7.0 and unused OLED packages were removed. These
-are intentional dependency changes. The ignored comparison configuration still
-selects its own logging and build-partition choices.
+### ConfigurationsManager dependency
 
-## ConfigManager v4 note
+Published builds consume ConfigurationsManager (CM) 4.12.0 from the PlatformIO
+registry (`vitaly.ruhl/ESP32 Configuration Manager@4.12.0`).
 
-- Current development dependency: adjacent local `ConfigurationsManager` >=4.7.0 via symlink. The earlier published 4.6.0 pin is historical.
-- The pre-build step uses `tools/precompile_wrapper.py`.
-- The wrapper resolves the declared local symlink, checks CM version mirrors and
-  the existing WebUI asset, and never modifies the shared checkout.
-- Link-time optimization preserves OTA slot headroom without changing the partition layout. Normal UART logging at Info level and ESP32 ROM/panic diagnostics remain available.
-- Prepare changed WebUI assets in ConfigurationsManager itself before consuming
-  them; SIL builds use the reviewed generated asset without rebuilding it.
-- Historical SIL firmware `4.3.2` adopted this pinned dependency without changing the inverter control algorithm.
-- Memory decision (2026-10-16): remove OLED and GUI/MQTT logging now, retain normal UART Info logging and BME280 support. If a future build reaches a demonstrated memory limit, the maintainer has authorized removing BME280 support as a fallback; it is not removed preemptively.
+`tools/precompile_wrapper.py` accepts exactly one explicit CM dependency,
+verifies its version and builds the Settings-only WebUI inside the consumed
+copy. Node.js/npm are required when the UI asset must be regenerated.
 
-Build and hardware acceptance evidence: [CM runtime validation](docs/cm-runtime-validation-2026-10-16.md).
+The temporary `testesp_mqtt_drop_oldest` profile uses the same registry
+package. It enables
+`setDropOldestQueuedPublishes(true)` and registers `onDroppedMessage` after
+settings load, retaining the 8192-byte queue / 30000-ms stall minimums.
+The callback logs dropped message/encoded-byte deltas and cumulative totals
+to serial, without publishing recursively. `testesp_mqtt_drop_off` builds the
+same image and probe with drop-oldest disabled as a comparison baseline.
 
-## Maintenance notes 2026-05-15
+This trial requires the existing isolated fixture at `192.168.2.220:18884`
+and `SILHardening/COM8` routing. After 30 seconds connected, it sends one
+non-retained burst of 96 x 512-byte probe payloads to its own diagnostic topic
+to exercise queue pressure and deferred callbacks. It then resumes ordinary
+operation. Only completely unsent eligible publishes can be discarded,
+including retained ones; a successful publish is not a delivery guarantee.
+The option's retention and any production use remain undecided.
 
-- Governance was migrated from `.github/copilot-instructions.md` to the agent-based structure in `.github/AGENTS.md` and `.github/agents/*.agent.md`.
-- The repository guidance now treats this project as a C++/ESP32/PlatformIO project. GitHub Projects are optional; the current project value is `none`.
-- GitHub Issues, Pull Requests, and agent-created GitHub comments should be written in English. Normal user chat may remain informal German.
-- The legacy Feierabend workflow trigger was removed in favor of explicit workflow shortcuts.
-- PID inverter regulation now uses signed E320 grid power from `tele/powerMeter/powerMeter/SENSOR` at JSON path `E320.Power_in`.
-- PID base target is `solarPowerW + signedGridPowerW + offset`; positive grid power means import and negative grid power means export.
-- PID logging derives `gridIn = max(signedGridPowerW, 0)` and `gridOut = max(-signedGridPowerW, 0)` for live diagnostics.
-- Home Assistant should publish electricity price inputs to `SolarLimiter/Input/ElectricityPrice` and `SolarLimiter/Input/NegativePrice`.
-- Negative-price handling is available in the ESP32 settings: force output to configured minimum or explicitly set output to `0` when `NegativePrice` is `1`.
-- Dependency maintenance updated `Adafruit GFX Library` to `1.12.6`, `ArduinoJson` to `7.4.3`, and PlatformIO platform `espressif32` to `platformio/espressif32@7.0.1`.
-- `pio pkg outdated`, `pio run -e usb`, and `pio run -e ota` were successful after the dependency updates.
-- Live OTA upload and boot smoke test succeeded after the `espressif32` update.
+## First start
 
-Open follow-up:
-- Firmware flash usage remains tight at about `98.8%`.
-- PID tuning may still require further live observation.
-- Negative-price handling should be verified during an actual negative-price period or with a controlled MQTT test payload.
+1. Build and upload (`pio run -e usb -t upload`).
+2. On first boot, or when the WiFi SSID is empty, the device starts an access
+   point. Holding the AP button (GPIO 13) at boot also starts AP mode.
+3. Connect to the AP and open the web UI (usually `http://192.168.4.1/`) to
+   configure WiFi, MQTT and the limiter settings.
+4. Afterwards the Settings UI is available on the device IP in the LAN.
 
-## Historical SBT receiver preparation (4.4.0, test branch)
+Optional defaults for WiFi/MQTT can be provided in `src/secret/secrets.h` (see
+`src/secret/secrets.example.h`). The web UI is Settings-only; Live views are
+compiled out (`CM_ENABLE_LIVE_UI=0`), runtime values are published via MQTT.
 
-The following describes the earlier 4.4.0 checkpoint; current behavior is documented above. Its `sbt` runtime group received the 29 documented SBT channels and separate source-health/control feedback. Set **SBT MQTT Input Root** to the collector root (default `SolarBatteryTelemetry`). Values remain unavailable until root/source availability and a fresh advancing heartbeat agree. Unchanged numeric values remain valid while health advances; unsupported, malformed, absent or stale values appear as `null`.
+## Control behavior
 
-MOS shutdown envelopes are prepared as pure previews only. `commands_locked` is always true; this version has no command publishing path, control action or activation setting. The new inputs do not feed the inverter limiter or price logic.
+### Relative planner
 
-For the COM7 receiver test, MQTT uses a unique client ID, publish root `SILTest/COM7`, and a 50 ms listen interval; RS485 stays disabled. The previous 500 ms interval processes bursts too slowly for a 15-second health deadline. Any future deployment needs an explicit receiving-throughput review. The extension has not been deployed to the production SIL.
+Normal and shadow builds use the relative-time-tier planner
+(`relative_time_tiers_v1`). It classifies 144 accepted quarter-hour prices into
+cheap / very expensive / additional expensive shares and applies a configurable
+minimum storage net advantage. Forecast prices are valued as
+`raw + abs(raw) * premium / 100`, with the premium selected by slot horizon
+(up to 12 h, up to 24 h, beyond). A nonpositive or missing current price stops
+output in this policy.
 
-See [receiver plan](docs/acceptance/2026-10-16-sbt-telemetry-inputs-evidence.md) and [acceptance evidence](docs/sbt-receiver-validation-2026-10-16.md). Focused host tests: `./tools/test/run-sbt-receiver-tests.ps1` after the USB dependencies have been resolved; the script requires LLVM Clang on Windows. Add `-SbtRepository ../SolarBatteryTelemetry` to verify the actual sibling publisher-to-receiver contract. Corrected hardware MQTT acceptance passed on COM7. The later UI check also received real BMS/Victron samples after the collector returned to its normal site; long-term source/network stability remains separate. See the evidence document for exact results and limits.
+| Setting | Default |
+| --- | --- |
+| Cheap / very expensive / additional expensive time | 10 / 10 / 20% |
+| Storage net advantage | 0.05 EUR/kWh |
+| Forecast premium up to 12 h / 24 h / beyond | 3 / 8 / 10% |
+| Reserve OFF / ON | 5 / 10% |
+| Charge priority threshold / inverter share | 80 / 10% |
+| MAX / MIN / Idle | 900 / 0 / 500 W |
+| Output correction | -100 W |
+| SBT data timeout | 180 s (1..9999) |
 
-## Hardware Requirements
+`Idle Output (W)` is retained as a setting but does not select an output.
 
-- ESP32 microcontroller
-- RS485 module (e.g. MAX485 or similar)
+### Operating modes and battery
 
-## How to use
+Modes `automatic`, `household_follow`, `charge_priority` and `pv_follow` are
+described in [operating modes](docs/operating-modes.md). At a fresh, qualified
+100% SOC with a valid positive-price plan, household demand may release PV that
+a full battery has curtailed, even when measured MPPT output is zero.
 
-1. Build and upload with PlatformIO:
-  - Build: `pio run -e usb`
-  - Upload: `pio run -e usb -t upload`
-2. On first boot (or when WiFi SSID is empty) the device starts an access point:
-3. Connect to the AP and open the web UI (usually `http://192.168.4.1/`) to configure WiFi/MQTT and other settings.
-4. After WiFi is configured the web UI will be available on the device IP in your LAN.
+SIL never publishes BMS MOS commands. It consumes directional BMS restrictions
+and stops inverter output when discharge protection requires it; manual MOS
+control remains in SBT and the BMS keeps its own protection. The legacy `mosMan`
+setting is preserved without granting MOS ownership. Fresh actual MOS flags and
+genuine directional alarms govern physical battery capability. Actual discharge
+MOS OFF does not cap the calculated request; charge MOS OFF disables PV storage
+reservation.
 
-## Build variants
+The SBT receiver retains last-good values through transient source loss within
+`SBT Data Timeout (s)`; invalid entries normalize to 180. Values become
+available only when root/source availability and an advancing heartbeat agree.
+BMS and MPPT freshness are checked independently.
 
-- `usb`: production profile without OLED or GUI/MQTT logging; BME280 remains enabled.
-- `testesp`: mock RS485 profile; the bounded integration acceptance uses a private derivative with CM logging disabled and the actual test-board partition layout. Mock images force the MQTT publication root `SILTest` and a test client identity. Never upload them to the production inverter.
-- `ota`: the same lean production profile with OTA upload.
-- `ota_no_oled`: compatibility alias for the production profile.
-- `ota_no_oled_no_bme`: disables both OLED and BME280 so the example also builds without the I2C sensor/display stack.
+### Output correction, reserve and minimum
 
-When `FEATURE_BME280_ENABLED=0`, the temperature, humidity, and dewpoint runtime values and MQTT topics are omitted. I2C pins/frequency are fixed; an editable OLED address exists only when OLED is enabled.
+`Output Correction Offset (W)` (key `LimiterCorrW`) biases household demand
+before automatic PID regulation or manual following. It is not deducted from the
+battery plan. For 600 W demand and -100 W offset, a 200 W battery ceiling stays
+200 W, while a 900 W ceiling is limited to 500 W.
 
-## Wiring Diagram
+The reserve latch closes at or below Reserve OFF and opens at or above Reserve
+ON. After a restart it starts blocked until fresh SOC reaches Reserve ON.
 
-- connect the RS485 module to the ESP32 microcontroller as follows:
-- see Wokwi for a wiring example
+`Min Output (W)` overrides price limits only in the legacy (non-relative)
+policy, when qualified sources permit discharge and the reserve latch allows it.
+The relative-time policy does not apply this override.
 
-```
-ESP32 Pin | RS485 Pin
---------- | ---------
-GPIO 19   | TXD (Transmitter)
-GPIO 18   | RXD (Receiver)
-GND       | GND
-VCC       | VCC (5V or 3.3V depending on the RS485 module)
-```
+Negative-price handling (`LimiterNegPrice` / `LimNegZero`) is mutually
+exclusive: force MIN or set output to 0 (default) while
+`SolarLimiter/Input/NegativePrice` is true.
 
-## Home Assistant Integration
+## MQTT
 
-- See the examples in `docs/HomeAssistant.yaml` and `docs/HomeAssistant_Dashboard.yaml`.
-- Minimal MQTT sensor example (topics depend on the configured MQTT base topic):
+Topics are relative to the configured publish root (default `SolarLimiter`).
 
-```yaml
-mqtt:
-  sensor:
-    - name: "SolarLimiter_SetValue"
-      state_topic: "SolarLimiter/SetValue"
-      unique_id: SolarLimiter_SetValue
-      device_class: power
-      unit_of_measurement: "W"
+| Direction | Topic | Content |
+| --- | --- | --- |
+| Out | `<root>/SetValue` | Sent inverter limit (W) |
+| Out | `<root>/CalculatedValue` | Calculated output before the final send decision (W) |
+| Out | `<root>/GetValue` | Received signed grid power (W) |
+| Out | `<root>/Temperature`, `/Humidity`, `/Dewpoint` | BME280 values (if enabled) |
+| Out | `<root>/Planning/Config`, `/Assessment`, `/State` | Planner configuration and state |
+| Out | `<root>/Planning/DischargeBudget`, `/ChargePlan` | Projected schedules |
+| Out | `<root>/Diagnostics/Runtime` | Runtime/transport diagnostics |
+| Out/In | `<root>/Control/Mode`, `/Mode/set`, `/ModeStatus` | Operating mode, see [operating modes](docs/operating-modes.md) |
+| In | `tele/powerMeter/powerMeter/SENSOR` (`E320.Power_in`) | Signed grid power, positive = import |
+| In | `tele/tasmota_1DEE45/SENSOR` (`ENERGY.Power`) | PV power |
+| In | `SolarLimiter/Input/NegativePrice`, `SolarLimiter/Input/ElectricityPrice` | Price flags/value |
+| In | `SolarLimiter/Input/PriceSchedule` | Price schedule (input version 2) |
+| In | `homeassistant/sensor/solar_forecast/shed/schedule` | PV forecast schedule |
+| In | `SolarBatteryTelemetry/...` | SBT BMS/MPPT telemetry (`SBT MQTT Input Root`) |
 
-    - name: "SolarLimiter_GetValue"
-      state_topic: "SolarLimiter/GetValue"
-      unique_id: SolarLimiter_GetValue
-      device_class: power
-      unit_of_measurement: "W"
+Input topics are configurable under Settings > MQTT-Topics. The bounded MQTT TX
+queue settings (`txQueueBytes`, `txStallTimeoutMs`) are enforced to at least
+8192 bytes / 30000 ms at boot.
 
-    - name: "SolarLimiter_Temperature"
-      state_topic: "SolarLimiter/Temperature"
-      unique_id: SolarLimiter_Temperature
-      device_class: temperature
-      unit_of_measurement: "Â°C"
+## Home Assistant
 
-    - name: "SolarLimiter_Humidity"
-      state_topic: "SolarLimiter/Humidity"
-      unique_id: SolarLimiter_Humidity
-      device_class: humidity
-      unit_of_measurement: "%"
+All Home Assistant files live in `docs/home-assistant/`; see
+[docs/home-assistant/README.md](docs/home-assistant/README.md) for the file map
+(MQTT entities, retained discovery configs, templates, automations, UI helpers,
+pyscripts and the Overview/Power dashboard views).
 
-    - name: "SolarLimiter_Dewpoint"
-      state_topic: "SolarLimiter/Dewpoint"
-      unique_id: SolarLimiter_Dewpoint
-      device_class: temperature
-      unit_of_measurement: "Â°C"
+## Tests
 
-```
+Host test scripts live in `tools/test/` (for example
+`run-operating-modes-tests.ps1`, `run-sbt-receiver-tests.ps1`,
+`run-future-prices-tests.ps1`). They require LLVM Clang on Windows and the
+resolved `usb` dependencies. Host results do not establish hardware acceptance.
 
+## Version history (condensed)
 
-### Live telemetry pages
+Detailed acceptance reports and plans for these versions were removed from
+`docs/` in commit `53537d0`; they remain available in git history.
 
-The application Live views are Temperature Sensor (BME280 temperature, humidity,
-dewpoint and pressure), Limiter, and BMS / MPPT 150/35. The collector view includes
-source freshness/reasons, received BMS/MPPT channels and read-only MOS status;
-SIL command transmission remains locked. Unavailable measurements remain empty.
-The core System page is retained. BMS/MPPT measurements use two decimal places;
-counts and bit fields use integers.
-
-SBT MQTT Input Root is under Settings > MQTT Topics > MQTT-Received. The explicit
-storage key is unchanged; its Settings API category is now MQTT-Topics. I2C settings
-remain visible because the existing BME280 uses SDA/SCL (default GPIO21/GPIO22).
+- **5.8.2**: Full-battery PV restart preserved with the relative planner.
+- **5.8.1**: Relative planner promoted to normal builds with the defaults above.
+- **5.6.1**: Full-battery PV release; SIL stops sending automatic MOS commands.
+- **5.6.0**: Explicit operating modes (`pv_follow` added; earlier charge
+  priority defaults were 95% / 0%).
+- **5.4.x**: Independent BMS/MPPT qualification (5.4.10), plan retention across
+  short source gaps (5.4.6/5.4.9), chronological PV recharge planning (5.4.8),
+  WiFi recovery with CM 4.10.3 (5.4.7), MQTT send-progress deadline with CM
+  4.10.2 (5.4.5), complete discharge projection (5.4.4), WiFi power-save setting
+  `WiFiPowerSave` with CM 4.10.0 (5.4.3), bounded MQTT TX FIFO (5.4.2), runtime
+  diagnostics and fail-closed numerics (5.4.1), charge-intent projection (5.4.0).
+- **5.3.0**: Relative-price allocation and reserve charging; `pwrDb` removed.
+- **5.2.x**: Discharge-budget schedule (5.2.0); qualified MIN override (5.2.1).
+- **5.1.x / 5.0.x**: SBT/HA integration and compact runtime metadata.
+- **4.4.0**: First SBT receiver; **4.3.2**: CM v4 adoption.

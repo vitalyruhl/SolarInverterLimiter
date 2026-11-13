@@ -24,13 +24,14 @@ class BuildEnvironment(dict):
         super().__init__(PIOENV="usb", BUILD_FLAGS="-DCM_ENABLE_LIVE_UI=0 -DCM_ENABLE_SETTINGS_UI=1 -DCM_ENABLE_LOGGING=0")
         self.root = root
         self.development = False
+        self.development_uri = DEVELOPMENT_URI
 
     def subst(self, key):
         return str(self.root / ".pio/libdeps") if key == "$PROJECT_LIBDEPS_DIR" else str(self.root)
 
     def GetProjectOption(self, key, default=None):
         if key == "lib_deps":
-            return [DEVELOPMENT_URI] if self.development else ["vitaly.ruhl/ESP32 Configuration Manager@4.9.0"]
+            return [self.development_uri] if self.development else ["vitaly.ruhl/ESP32 Configuration Manager@4.12.0"]
         return default
 
     def Replace(self, **kwargs):
@@ -50,10 +51,10 @@ class ConsumerPreparationTest(unittest.TestCase):
         self.library = self.root / ".pio/libdeps/usb/ESP32 Configuration Manager"
         for name in ("src", "tools", "webui"):
             (self.library / name).mkdir(parents=True)
-        (self.library / "library.json").write_text(json.dumps({"name": "ESP32 Configuration Manager", "version": "4.9.0"}))
-        (self.library / ".piopm").write_text(json.dumps({"version": "4.9.0", "spec": {"owner": "vitaly.ruhl"}}))
-        (self.library / "src/ConfigManager.h").write_text('#define CONFIGMANAGER_VERSION "4.9.0"')
-        (self.library / "webui/package.json").write_text(json.dumps({"version": "4.9.0"}))
+        (self.library / "library.json").write_text(json.dumps({"name": "ESP32 Configuration Manager", "version": "4.12.0"}))
+        (self.library / ".piopm").write_text(json.dumps({"version": "4.12.0", "spec": {"owner": "vitaly.ruhl"}}))
+        (self.library / "src/ConfigManager.h").write_text('#define CONFIGMANAGER_VERSION "4.12.0"')
+        (self.library / "webui/package.json").write_text(json.dumps({"version": "4.12.0"}))
         (self.library / "tools/preCompile_script.py").write_text("# [MOCKED!] External published builder boundary\n")
         # [MOCKED!] Published flag resolver interface; production build uses the real registry module.
         (self.library / "tools/webui_features.py").write_text("""def feature_values(env):
@@ -103,7 +104,7 @@ def source_fingerprint(root, features):
         self.assertEqual(options['env']['CM_ENABLE_LOGGING'], '0')
 
     def test_wrong_registry_owner_is_rejected_before_ui_build(self):
-        (self.library / '.piopm').write_text(json.dumps({'version':'4.9.0','spec':{'owner':'other'}}))
+        (self.library / '.piopm').write_text(json.dumps({'version':'4.12.0','spec':{'owner':'other'}}))
         with self.assertRaisesRegex(RuntimeError, 'registry'):
             self.run_hook()
         self.assertEqual(len(self.calls), 0)
@@ -118,23 +119,40 @@ def source_fingerprint(root, features):
         self.run_hook(without_file=True)
         self.assertEqual(len(self.calls), 1)
 
-    def prepare_development(self):
+    def prepare_development(self, version="4.10.3", uri=DEVELOPMENT_URI):
         self.environment.development = True
-        (self.library / "library.json").write_text(json.dumps({"name": "ESP32 Configuration Manager", "version": "4.10.3"}))
-        (self.library / "src/ConfigManager.h").write_text('#define CONFIGMANAGER_VERSION "4.10.3"')
-        (self.library / "webui/package.json").write_text(json.dumps({"version": "4.10.3"}))
-        (self.library / ".piopm").write_text(json.dumps({"version": "4.10.3", "spec": {"uri": DEVELOPMENT_URI}}))
+        self.environment.development_uri = uri
+        (self.library / "library.json").write_text(json.dumps({"name": "ESP32 Configuration Manager", "version": version}))
+        (self.library / "src/ConfigManager.h").write_text(f'#define CONFIGMANAGER_VERSION "{version}"')
+        (self.library / "webui/package.json").write_text(json.dumps({"version": version}))
+        (self.library / ".piopm").write_text(json.dumps({"version": version, "spec": {"uri": uri}}))
         for name in ("src/wifi/WiFiManager.cpp", "src/core/CoreSettings.h", "src/mqtt/MQTTManager.h", "src/html_content.cpp", "webui/dist/index.html"):
             path = self.library / name
             path.parent.mkdir(exist_ok=True, parents=True)
             path.write_text("// [MOCKED!] Immutable input or initial generated asset\n")
-        self.package = self.root / ".local/cm-wifi-recovery-4.10.3-final-package"
+        self.package = self.root / uri.removeprefix("file://")
         shutil.copytree(self.library, self.package, ignore=shutil.ignore_patterns('.piopm'))
-        manifest = "# source_head=" + "a" * 40 + "\n# source_version=4.10.3\n"
+        manifest = "# source_head=" + "a" * 40 + f"\n# source_version={version}\n"
         manifest += "".join(hashlib.sha256(path.read_bytes()).hexdigest() + "  " + path.relative_to(self.package).as_posix() + "\n"
                             for path in sorted(self.package.rglob('*')) if path.is_file())
         (self.package / "manifest.sha").write_text(manifest)
         (self.library / "manifest.sha").write_text(manifest)
+
+    def test_drop_oldest_snapshot_rejects_stale_same_version_sources(self):
+        self.prepare_development("4.12.0", "file://.local/cm-mqtt-drop-oldest-4.12.0-package")
+        self.run_hook()
+        (self.library / "src/mqtt/MQTTManager.h").write_text("// [MOCKED!] Earlier CM 4.12.0 source\n")
+        with self.assertRaisesRegex(RuntimeError, "stale"):
+            self.run_hook()
+        self.assertEqual(len(self.calls), 1)
+
+    def test_drop_oldest_snapshot_rejects_previous_same_version_uri(self):
+        self.prepare_development("4.12.0", "file://.local/cm-mqtt-drop-oldest-4.12.0-package")
+        (self.library / ".piopm").write_text(json.dumps({
+            "version": "4.12.0", "spec": {"uri": "file://.local/cm-mqtt-tx-4.12.0-package"}}))
+        with self.assertRaisesRegex(RuntimeError, "provenance"):
+            self.run_hook()
+        self.assertEqual(len(self.calls), 0)
 
     def test_stale_consumed_wifi_or_core_source_is_rejected(self):
         self.prepare_development()

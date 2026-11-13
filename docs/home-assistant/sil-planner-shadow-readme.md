@@ -1,6 +1,6 @@
 # Isolated SIL planner comparison in Home Assistant
 
-This example keeps production and hardware-mocked test price lifecycles separate. Existing tariffs, shared v1 price/PV automations and the Test-Vivil Home view remain unchanged. Device profile promotion and input-topic selection require their separate firmware gate. The HA adapter sends price input only, never inverter or BMS commands.
+This example keeps production and hardware-mocked test price lifecycles separate. Existing tariffs, shared v1 price/PV automations and the production dashboards remain unchanged. Device profile promotion and input-topic selection require their separate firmware gate. The HA adapter sends price input only, never inverter or BMS commands.
 
 ## Persistent adapter
 
@@ -18,7 +18,7 @@ An OS file lock covers cache read and request-gate persistence across module rel
 
 The existing total-price calculation is reproduced exactly, including the provider's six-decimal raw-price rounding, percentage surcharge on the absolute raw price, fixed surcharge, tax, and final six-decimal rounding. Every selected quarter-hour must match the existing HA total-price sensor in integer micro-EUR/kWh before any test frame is published. A mismatch, missing interval, expired cache, unsupported resolution, or invalid numeric value blocks the feed visibly. There is no production-price fallback and no clock-based origin inference.
 
-A blocked feed sends a separate v2 withdrawal (`n=0`, `k=0`, empty `p`/`o`) and immediately hides old test output locally. Status distinguishes zero published price chunks from a withdrawal message. The shadow firmware independently expires test input after 180 seconds without a fresh revision, preserving its measured-energy ledger. Diagnostic output alone cannot make an expired or mismatched price revision appear current. Retained configuration is marked retained rather than described as newly measured telemetry.
+A blocked feed first falls back to the last aligned snapshot (see "Last-good hold" below). Only when no such snapshot is available does it send a separate v2 withdrawal (`n=0`, `k=0`, empty `p`/`o`) and immediately hide old test output locally. Status distinguishes zero published price chunks from a withdrawal message. The shadow firmware independently expires test input after 180 seconds without a fresh revision, preserving its measured-energy ledger. Diagnostic output alone cannot make an expired or mismatched price revision appear current. Retained configuration is marked retained rather than described as newly measured telemetry.
 
 Current upstream schemas define `market` as actual EPEX SPOT data and `forecast` as a prediction. Unknown/missing strings remain unknown. The provider origin is separate from the fetch time: a fresh request does not prove market confirmation.
 
@@ -26,7 +26,13 @@ Current upstream schemas define `market` as actual EPEX SPOT data and `forecast`
 
 `pyscript.sil_production_publish_prices` publishes only `SolarLimiter/Input/PriceSchedule`, non-retained QoS 1, on its own minute timer. Its own `sensor.sil_production_price_input`, task guard, revision and withdrawal are independent of test configuration, Assessment validity and device availability. Test withdrawals cannot address the production topic; production failures cannot withdraw the test topic. Both consumers require matching v2 firmware with a 180-second input TTL. Do not point production at `SolarLimiterTest` or send v2 into the existing shared v1 topic.
 
-The production reader calls `production_from_cache`, which reads the existing provider cache under its OS lock, checks source age (at most 4500 seconds), rejects failed refreshes and repeats exact HA tariff alignment. It neither calls the provider nor changes the persisted request gate. Raw micro-EUR/kWh and per-slot origins remain unchanged; the device applies its reported forecast-only premium. Missing, expired or mismatched data sends only an isolated production withdrawal. Source-alignment gaps remain visible rather than being filled or relabeled.
+The production reader calls `production_from_cache`, which reads the existing provider cache under its OS lock, checks source age (at most 4500 seconds), rejects failed refreshes and repeats exact HA tariff alignment. It neither calls the provider nor changes the persisted request gate. Raw micro-EUR/kWh and per-slot origins remain unchanged; the device applies its reported forecast-only premium. Missing, expired or mismatched data first uses the last-good hold; after that it sends only an isolated production withdrawal. Source-alignment gaps remain visible rather than being filled or relabeled.
+
+## Last-good hold
+
+The provider cache refreshes at its own hourly gate, while the HA EPEX sensor refreshes on its own schedule. Between the two refreshes, a new provider forecast value can transiently differ from the HA sensor (`tariff_alignment_mismatch`). Withdrawing on every such window caused repeated planner outages of about 15 minutes.
+
+Each successfully aligned snapshot is therefore persisted separately for production (`/config/data/sil_planner_shadow/last-good-production.json`) and test (`last-good-test.json`). If preparation fails, `with_last_good` reissues the stored prices with a fresh revision, trimmed to the current quarter-hour, for at most `HOLD_MAX_AGE` (3 hours) after the last successful alignment. The input sensor stays `ready` with `held=true`, `heldSince`, `heldAgeS` and the fixed `heldReason` code. Production never exposes price details. After the hold expires, or if the remaining coverage is shorter than two slots, the original error is raised and the normal withdrawal applies. The next aligned snapshot replaces the hold immediately. The firmware's 180-second input TTL is unchanged.
 
 The existing minute cache-maintenance path remains required even if the test ESP is unplugged. That path checks only the real EPEX entry identity, coordinator and reference tariff; it does not depend on the test device, test config or test Assessment. Its hourly persisted request gate and authentication handling remain unchanged. Removing that maintenance path would eventually expire both cached consumers; it must remain installed independently of whether the test device is used.
 
@@ -36,9 +42,9 @@ Production Assessment is observed separately as `sensor.sil_comparison_productio
 
 The script observes an explicit diagnostic topic allowlist and creates only `sensor.sil_shadow_*` and `sensor.sil_comparison_production_*` states. Test budget, charge intent, config, state, assessment and runtime are read from the `SolarLimiterTest` namespace. Only production Planning/State and Planning/Config are observed. There are no actuator subscriptions or trigger publications.
 
-`sil-planner-shadow-view.yaml` is one view to append at index 1 of the existing Test-Vivil dashboard; it is not a replacement dashboard. Keep the existing first view exactly unchanged. The view shows 36 hours forward plus three hours of history and overlays production/test budgets on one W axis, anchored to their validated configured maximum values plus 100 W.
+The production entities (`sensor.sil_production_price_input`, `sensor.sil_comparison_production_*`) feed the Overview forecast card in `dashboard-overview-home.yaml` and `dashboard-overview-power.yaml`. The former test-dashboard comparison view is no longer tracked in the repository; the `sil_shadow_*` test entities remain available for ad-hoc views.
 
-The raw tariff remains distinct from the orange planning-assessment curve. The latter is shown only when the test input revision/start/count match the firmware's accepted Assessment summary and the shadow configuration is available. Forecast-only risk assessment uses the configured percentage, including `raw + abs(raw) * percentage / 100` for negative prices. Legacy 5.7 applies `fcPriceF`; an actual `allocationPolicy=relative_time_tiers_v1` diagnostic selects the 5.8 schedule-origin assessment without that legacy factor. Unknown origins receive no premium. The view never writes settings: the owner's persisted forecast premium remains authoritative. Relative tier percentages are displayed only when the new firmware actually reports them.
+The raw tariff remains distinct from the orange planning-assessment curve. The latter is shown only when the test input revision/start/count match the firmware's accepted Assessment summary and the shadow configuration is available. Forecast-only risk assessment uses `raw + abs(raw) * percentage / 100`, including for negative prices. The `horizon_steps_v1` model uses the reported projection time and separate 12-hour, 24-hour and later percentages; configuration and assessment values must match. Older firmware uses its reported uniform percentage. Legacy 5.7 applies `fcPriceF`; relative planning does not. Unknown origins receive no premium. The view never writes settings.
 
 ## Future DC energy
 
@@ -62,6 +68,6 @@ Run the focused pure-adapter checks with mocked fixtures before deployment. Veri
 
 Run the maintained offline energy regressions from the repository root with `python test/host/ha_forecast_integrals_test.py`. They import the curated core and execute the actual energy timer against synthetic states, without Home Assistant or network access. Coverage includes DC units, boundary overlaps, DST days, missing versus zero values, own-controller cohorts, soft price heartbeats and withdrawals.
 
-For rollback, remove only the added comparison view and the two newly installed files after preserving any desired test evidence. Stop the isolated shadow firmware separately. Do not remove or modify the production Shed forecast adapter, existing price/PV automations, source integration or original dashboard content.
+For rollback, remove only the two installed Pyscript files after preserving any desired test evidence. Stop the isolated shadow firmware separately. Do not remove or modify the production Shed forecast adapter, existing price/PV automations, source integration or original dashboard content.
 
 Official source semantics: [Energyforecast FAQ](https://energyforecast.de/faq?locale=de), [V1 schema](https://energyforecast.de/api-docs/v1/swagger.yaml), [V2 schema](https://energyforecast.de/api-docs/v2/swagger.yaml).

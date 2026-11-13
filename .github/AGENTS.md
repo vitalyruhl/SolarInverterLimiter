@@ -148,6 +148,39 @@ reported before any further action.
   understood and either clean, committed, or intentionally dirty by user
   request.
 
+## Local Development Data
+
+This repository is public. Development data must stay local and must never be
+committed or pushed.
+
+- Development data includes plans, specs, acceptance and validation reports,
+  device or OTA evidence, serial and monitor logs, captured MQTT or Home
+  Assistant payloads, agent or tool state (for example `superpowers`, `codex`,
+  `serena`, `projectatlas`, `codegraphy`), editor state under `.vscode/`
+  (only `.vscode/extensions.json` is shared), scratch scripts, and unreleased
+  dependency snapshots or archives.
+- Store working records, plans and evidence under `.Temp/` (for example
+  `.Temp/superpowers/`, `.Temp/acceptance/`).
+- Store local dependency packages and archives under `.local/` (for example
+  `.local/cm-mqtt-tx-4.12.0-package`, `.local/cm-archives/`).
+- Both paths, and all tool state directories, are ignored in the tracked
+  `.gitignore`. Do not rely on `.git/info/exclude` alone, because it does not
+  exist in fresh clones.
+- Published builds must consume dependencies from their public registry, for
+  example ConfigurationsManager from the PlatformIO registry. A `file://.local/`
+  dependency is allowed only for local testing and must be replaced by the
+  released registry version before integration into `main`.
+- Do not track dependency source archives, vendored snapshots or their hash
+  manifests in the repository.
+- Tracked documentation describes implemented behavior and its usage. It must
+  not contain session logs, acceptance transcripts, or raw evidence; summarize
+  the result and keep the evidence in `.Temp/`.
+- Before staging, verify with `git status --short` that no development data
+  appears. If a tool creates a new local directory in the repository root, move
+  it under `.Temp/` or add it to `.gitignore` before staging.
+- Removing data from the current tree does not remove it from git history.
+  History rewriting requires an explicit user request.
+
 ## Autonomy Levels
 
 - Level A, safe: read-only actions such as search, read, and analysis may be done

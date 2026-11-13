@@ -16,8 +16,13 @@ Import("env")
 # Use the compiler-aware archiver for size-saving link-time optimization.
 env.Replace(AR="xtensa-esp32-elf-gcc-ar", RANLIB="xtensa-esp32-elf-gcc-ranlib")
 
-registry_requirement = "vitaly.ruhl/ESP32 Configuration Manager@4.9.0"
-development_requirements = ("file://.local/cm-wifi-recovery-4.10.3-final-package",)
+registry_version = "4.12.0"
+registry_requirement = f"vitaly.ruhl/ESP32 Configuration Manager@{registry_version}"
+development_requirements = {
+    "file://.local/cm-wifi-recovery-4.10.3-final-package": "4.10.3",
+    "file://.local/cm-mqtt-tx-4.12.0-package": "4.12.0",
+    "file://.local/cm-mqtt-drop-oldest-4.12.0-package": "4.12.0",
+}
 dependencies = env.GetProjectOption("lib_deps", [])
 if isinstance(dependencies, str):
     dependencies = dependencies.splitlines()
@@ -25,7 +30,7 @@ selected = [value.strip() for value in dependencies]
 development_matches = [item for item in development_requirements if selected.count(item) == 1]
 development = len(development_matches) == 1
 requirement = development_matches[0] if development else registry_requirement
-expected_version = "4.10.3" if development else "4.9.0"
+expected_version = development_requirements[requirement] if development else registry_version
 if selected.count(requirement) != 1 or len(development_matches) > 1 or (development and registry_requirement in selected):
     raise RuntimeError(f"Select exactly one explicit CM dependency: {requirement}")
 
@@ -37,7 +42,7 @@ try:
     provenance = json.loads((library_dir / ".piopm").read_text(encoding="utf-8"))
 except (OSError, ValueError) as error:
     raise RuntimeError("ConfigManager registry provenance missing or invalid.") from error
-if not development and (provenance.get("version") != "4.9.0" or provenance.get("spec", {}).get("owner") != "vitaly.ruhl"):
+if not development and (provenance.get("version") != registry_version or provenance.get("spec", {}).get("owner") != "vitaly.ruhl"):
     raise RuntimeError("ConfigManager registry owner/version does not match the pinned requirement.")
 if development and (provenance.get("version") != expected_version or provenance.get("spec", {}).get("uri") != requirement):
     raise RuntimeError("ConfigManager development URI/version provenance mismatch.")
@@ -60,7 +65,7 @@ if development:
     finally:
         sys.dont_write_bytecode = previous_bytecode_policy
     source_package = Path(env.subst("$PROJECT_DIR")) / requirement.removeprefix("file://")
-    package_helper.verify_development_package(source_package, library_dir)
+    package_helper.verify_development_package(source_package, library_dir, expected_version)
 
 # Build only the consumer-local package; never modify PlatformIO's shared cache
 # or the adjacent development checkout while generating embedded UI assets.
@@ -77,7 +82,7 @@ process_env.update(NODE_ENV="production", NPM_CONFIG_INCLUDE="dev")
 subprocess.run([sys.executable, str(library_dir / "tools/preCompile_script.py")],
                cwd=str(library_dir), env=process_env, check=True)
 if development:
-    package_helper.verify_development_package(source_package, library_dir)
+    package_helper.verify_development_package(source_package, library_dir, expected_version)
 
 asset = library_dir / "src/html_content.h"
 asset_text = asset.read_text(encoding="utf-8")

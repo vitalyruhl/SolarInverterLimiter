@@ -10,6 +10,8 @@ from urllib.request import urlopen
 ORIGINS={'market':1,'forecast':2}
 REQUEST_INTERVAL=3600
 MAX_SOURCE_AGE=4500
+# Last aligned prices stay valid this long when fresh data is missing or mismatched.
+HOLD_MAX_AGE=3*3600
 
 @contextmanager
 def cache_guard(path):
@@ -91,6 +93,9 @@ def prepare(response,reference,options,now):
         prices.append(round(price*1000000))
         origins.append(ORIGINS.get(row.get('price_origin'),0))
     if len(prices)<2: raise ValueError('provider_coverage')
+    return _snapshot(prices,origins,start,now)
+
+def _snapshot(prices,origins,start,now):
     frames=[]
     for chunk,index in enumerate(range(0,len(prices),24)):
         packet={'v':2,'r':int(now),'t':start,'d':900,'n':len(prices),'k':chunk,
@@ -101,6 +106,40 @@ def prepare(response,reference,options,now):
             'originUnknown36h':origins[:144].count(0),'originMarket36h':origins[:144].count(1),
             'originForecast36h':origins[:144].count(2),
             'originForecast':origins.count(2),'frames':frames,'tariff_aligned':True}
+
+def held_snapshot(last,now,max_age=HOLD_MAX_AGE):
+    """Re-issue the last aligned prices with a fresh revision, trimmed to the current quarter."""
+    if not isinstance(last,dict) or any(type(last.get(key)) is not int for key in ('r','t')):
+        raise ValueError('hold_unavailable')
+    prices=last.get('p');origins=last.get('o')
+    if (not isinstance(prices,list) or not isinstance(origins,list) or len(prices)!=len(origins)
+        or any(type(value) is not int for value in prices+origins)):raise ValueError('hold_unavailable')
+    age=int(now)-last['r']
+    if not 0<=age<=max_age:raise ValueError('hold_expired')
+    start=int(now)//900*900
+    if start<last['t'] or (start-last['t'])%900:raise ValueError('hold_unavailable')
+    skip=(start-last['t'])//900
+    if len(prices)-skip<2:raise ValueError('hold_coverage')
+    out=_snapshot(prices[skip:],origins[skip:],start,now)
+    out.update(held=True,heldSince=last['r'],heldAgeS=age)
+    return out
+
+def with_last_good(produce,now,path,max_age=HOLD_MAX_AGE):
+    """Persist each aligned snapshot; on failure keep the last one for at most max_age seconds."""
+    path=Path(path)
+    try:
+        prepared=produce()
+    except ValueError as error:
+        try:
+            held=held_snapshot(json.loads(path.read_text(encoding='utf-8')),now,max_age)
+        except (OSError,ValueError,TypeError):
+            raise error from None
+        held['heldError']=str(error)
+        return held
+    path.parent.mkdir(parents=True,exist_ok=True)
+    _persist_cache(path,{key:prepared[key] for key in ('r','t','p','o')})
+    prepared['held']=False
+    return prepared
 
 def fetch_provider(token):
     query=urlencode({'token':token,'fixed_cost_cent':0,'vat':0,

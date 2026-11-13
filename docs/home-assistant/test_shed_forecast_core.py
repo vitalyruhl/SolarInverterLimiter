@@ -2,7 +2,10 @@ import datetime as dt
 import importlib.util
 import json
 from pathlib import Path
+import runpy
+from types import SimpleNamespace
 import unittest
+from unittest.mock import Mock
 
 path = Path(__file__).with_name('shed_forecast_core.py')
 spec = importlib.util.spec_from_file_location('shed_forecast_core', path)
@@ -10,6 +13,59 @@ core = importlib.util.module_from_spec(spec)
 spec.loader.exec_module(core)
 
 class ForecastTests(unittest.TestCase):
+    def test_geometry_change_restarts_references_but_unchanged_plane_keeps_them(self):
+        geometry = {'declination': 20, 'modules_power': 1840, 'azimuth': 180}
+        ledger = {'session': 1, 'geometry': dict(geometry, declination=14.8),
+                  'snapshots': {'old': {}}, 'original_days': {'old': {}},
+                  'days': {'old': {}}, 'records': [{'eligible': True}], 'source_sequences': {}}
+        self.assertTrue(core.bind_geometry(ledger, geometry, 2))
+        for key in ('snapshots', 'original_days', 'days', 'records'):
+            self.assertFalse(ledger[key])
+        self.assertEqual(ledger['session'], 2)
+        self.assertNotIn('source_sequences', ledger)
+        ledger['snapshots']['new'] = {'wh': 42}
+        self.assertFalse(core.bind_geometry(ledger, dict(geometry), 3))
+        self.assertEqual(ledger['snapshots'], {'new': {'wh': 42}})
+        self.assertEqual(ledger['session'], 2)
+        legacy = {'session': 1, 'records': [{'eligible': True}]}
+        self.assertTrue(core.bind_geometry(legacy, geometry, 2))
+        self.assertEqual(legacy['records'], [])
+
+    def test_invalid_geometry_cannot_clear_existing_references(self):
+        geometry = {'declination': 20, 'modules_power': 1840, 'azimuth': 180}
+        for invalid in ({}, dict(geometry, declination=float('nan')),
+                        dict(geometry, modules_power=True), dict(geometry, modules_power=0),
+                        dict(geometry, azimuth=361)):
+            ledger = {'session': 1, 'records': [{'eligible': True}]}
+            with self.assertRaises(ValueError):
+                core.bind_geometry(ledger, invalid, 2)
+            self.assertEqual(ledger, {'session': 1, 'records': [{'eligible': True}]})
+
+    def test_publisher_accepts_updated_ha_geometry_without_hardcoded_inclination(self):
+        service = Mock(side_effect=lambda **kwargs: lambda func: func)
+        service.call.return_value = {'wh_period': {}}
+        namespace = runpy.run_path(str(path.with_name('shed_forecast.py')), init_globals={
+            'pyscript_executor': lambda func: func, 'service': service})
+        publish = namespace['shed_forecast_publish']
+        geometry = {'declination': 20, 'modules_power': 1840, 'azimuth': 180}
+        entry = SimpleNamespace(domain='forecast_solar', title='Shed',
+            subentries={'plane': SimpleNamespace(data=geometry)},
+            runtime_data=SimpleNamespace(last_update_success=True,
+                data=SimpleNamespace(wh_period={})))
+        prepare = Mock(return_value={'packets': ['{}'], 'known_slots': 12, 'revision': 123,
+            'snapshot_periods': 24, 'geometry_changed': True,
+            'calibration': {'quality': 'uncalibrated', 'factor': 1000, 'raw_factor': None,
+                            'count': 0, 'age_days': 65535}})
+        status = Mock()
+        publish.__globals__.update(task=Mock(), log=Mock(), state=status,
+            hass=SimpleNamespace(config_entries=SimpleNamespace(async_get_entry=lambda key: entry),
+                states=SimpleNamespace(get=lambda key: None),
+                config=SimpleNamespace(time_zone='Europe/Berlin')),
+            _prepare_forecast=prepare)
+        self.assertEqual(publish()['known_slots'], 12)
+        self.assertEqual(prepare.call_args.args[-1], geometry)
+        self.assertEqual(status.set.call_args.kwargs['new_attributes']['geometry'], geometry)
+
     def test_hourly_energy_is_conserved_without_filling_missing_night(self):
         now = int(dt.datetime(2026, 10, 21, 6, 0, tzinfo=dt.timezone.utc).timestamp())
         plan = core.normalize_hourly({'2026-10-21T09:00:00+02:00': 117}, now)
