@@ -5,10 +5,14 @@ limit to a grid-tie inverter over RS485. It follows household demand from MQTT
 meter data, plans battery discharge against electricity prices and PV forecasts,
 and consumes BMS/MPPT telemetry from SolarBatteryTelemetry (SBT).
 
-Current firmware version: **5.9.4** (`VERSION` in `src/main.cpp`).
+Current firmware version: **5.9.5** (`VERSION` in `src/main.cpp`).
 
 ## Recent changes
 
+- **5.9.5**: Without a planned battery budget, the relative policy trims direct
+  PV passthrough on BMS feedback until the battery no longer discharges; fixed
+  standby loads and low-load inverter losses are no longer covered by the
+  battery. Adds the `testesp_mqtt_drop_off` comparison profile.
 - **5.9.4**: Adds an isolated, opt-in CM MQTT drop-oldest trial. Normal profiles
   retain their previous CM package and queue policy; there is no production rollout.
 - **5.9.3**: Builds against the local ConfigurationsManager (CM) 4.12.0 package
@@ -88,6 +92,7 @@ Build outputs use `.pio/operating-modes-5.6.0`; library dependencies use
 | `testesp` | Mock RS485 transport (`SIL_MOCK_TRANSPORT=1`) on COM8 |
 | `testesp_recovery` | `testesp` plus exactly one logged stack reset after healthy mock planning |
 | `testesp_mqtt_drop_oldest` | Temporary CM drop-oldest trial on COM7, with isolated fixture routing and no hardware TX |
+| `testesp_mqtt_drop_off` | `testesp_mqtt_drop_oldest` with drop-oldest disabled (comparison baseline) |
 | `planner_shadow` | Isolated planner comparison: mocked transport, fan/heater disabled, guarded `SolarLimiterTest` routing |
 | `planner_shadow_trace` | `planner_shadow` plus numeric TX failure stage diagnostics |
 
@@ -124,7 +129,8 @@ snapshot; neither earlier package is overwritten. It enables
 `setDropOldestQueuedPublishes(true)` and registers `onDroppedMessage` after
 settings load, retaining the 8192-byte queue / 30000-ms stall minimums.
 The callback logs dropped message/encoded-byte deltas and cumulative totals
-to serial, without publishing recursively.
+to serial, without publishing recursively. `testesp_mqtt_drop_off` builds the
+same image and probe with drop-oldest disabled as a comparison baseline.
 
 This trial requires the existing isolated fixture at `192.168.2.220:18884`
 and `SILHardening/COM8` routing. After 30 seconds connected, it sends one

@@ -498,6 +498,46 @@ static void fullBatteryRestartsCurtailedPv() {
   assert(grace.update(cfg, in, true, true, 900, 500, 6400).ceilingW == 0);
 }
 
+static void relativeHoldTrimsPassthroughUntilBatteryStopsDischarging() {
+  PreparedSettings cfg; cfg.valid = true; cfg.relativeTimePolicy = true;
+  auto in = qualifiedStorageInputs();
+  in.relativePricePositive = true; in.futureReason = "relative_hold"; in.futurePriceTier = "cheap";
+  in.futureBatteryCeilingW = 0; in.futurePvCeilingW = 120; in.batteryW = -30;
+  CurrentControl control;
+  auto out = qualifyStorage(control, cfg, in);
+  assert(out.ceilingW == 120 && !out.direct && !std::strcmp(out.reason, "relative_hold"));
+  uint32_t now = 6100;
+  for (unsigned i = 0; i < 10; ++i) {
+    ++in.bmsSequence; now += 2000;
+    out = control.update(cfg, in, true, true, 900, 120, now);
+  }
+  assert(out.ceilingW == 120 - 70); // 0.1/s * 35 W * 20 s
+  const int trimmed = out.ceilingW;
+  assert(control.update(cfg, in, true, true, 900, 120, now + 500).ceilingW == trimmed); // no new BMS sample
+  in.batteryW = 25;
+  for (unsigned i = 0; i < 10; ++i) {
+    ++in.bmsSequence; now += 2000;
+    out = control.update(cfg, in, true, true, 900, 120, now);
+  }
+  assert(out.ceilingW == 90); // charging gradually returns passthrough
+  for (unsigned i = 0; i < 10; ++i) {
+    ++in.bmsSequence; now += 2000;
+    out = control.update(cfg, in, true, true, 900, 120, now);
+  }
+  assert(out.ceilingW == 120); // trim never adds power beyond the direct PV ceiling
+  in.batteryW = -500;
+  for (unsigned i = 0; i < 10; ++i) {
+    ++in.bmsSequence; now += 2000;
+    out = control.update(cfg, in, true, true, 900, 120, now);
+  }
+  assert(out.ceilingW == 0);
+  in.futureBatteryCeilingW = 200;
+  out = control.update(cfg, in, true, true, 900, 0, now + 1000);
+  assert(out.ceilingW == 320 && !std::strcmp(out.strategy, "discharge")); // a planned budget disables the trim
+  in.futureBatteryCeilingW = 0; ++in.bmsSequence;
+  assert(control.update(cfg, in, true, true, 900, 0, now + 2000).ceilingW == 120); // restarts untrimmed
+}
+
 static void relativeFullBatteryRestartsCurtailedPv() {
   PreparedSettings cfg; cfg.valid = true; cfg.relativeTimePolicy = true;
   auto in = qualifiedStorageInputs();
@@ -534,6 +574,7 @@ static void relativeFullBatteryRestartsCurtailedPv() {
 }
 
 int main() {
+  relativeHoldTrimsPassthroughUntilBatteryStopsDischarging();
   relativeFullBatteryRestartsCurtailedPv();
   fullBatteryRestartsCurtailedPv();
   batteryPlanningSurvivesMissingMppt();

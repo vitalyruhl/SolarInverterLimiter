@@ -122,7 +122,7 @@ static constexpr uint32_t kI2cHz = 400000;
 #endif
 
 #ifndef VERSION
-#define VERSION "5.9.4"
+#define VERSION "5.9.5"
 #endif
 
 static sil::RuntimeDiagnostics runtimeDiagnostics;
@@ -1701,14 +1701,17 @@ static void setupNetworkDefaults()
     if (mqttSettings.txStallTimeoutMs.get() < 30000) mqttSettings.txStallTimeoutMs.set(30000);
 #endif
 #if defined(SIL_TEST_MQTT_DROP_OLDEST) && SIL_TEST_MQTT_DROP_OLDEST
-    mqtt.setDropOldestQueuedPublishes(true);
+#ifndef SIL_TEST_MQTT_DROP_OLDEST_ACTIVE
+#define SIL_TEST_MQTT_DROP_OLDEST_ACTIVE 1
+#endif
+    mqtt.setDropOldestQueuedPublishes(SIL_TEST_MQTT_DROP_OLDEST_ACTIVE != 0);
     mqtt.onDroppedMessage([](uint32_t messageCount, uint32_t byteCount) {
         const auto &stats = mqtt.getBoundedIoStats();
         Serial.printf("[W] [MOCKED!] MQTT_DROP ms=%lu messages=%lu bytes=%lu total_messages=%lu total_bytes=%lu\n",
             ulong(millis()), ulong(messageCount), ulong(byteCount),
             ulong(stats.txDroppedPublishes), ulong(stats.txDroppedBytes));
     });
-    Serial.printf("[I] [MOCKED!] MQTT_DROP enabled queue=%u stall_ms=%lu\n",
+    Serial.printf("[I] [MOCKED!] MQTT_DROP active=%d queue=%u stall_ms=%lu\n", SIL_TEST_MQTT_DROP_OLDEST_ACTIVE != 0,
         unsigned(mqttSettings.txQueueBytes.get()), ulong(mqttSettings.txStallTimeoutMs.get()));
 #endif
     if (mqttSettings.server.get().isEmpty())
