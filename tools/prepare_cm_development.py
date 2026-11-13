@@ -148,13 +148,13 @@ def verify_development_package(package: Path, consumed: Path, version: str = VER
             raise RuntimeError(f"Consumed CM source is stale: {name}")
 
 
-def prepare(source: Path, destination: Path) -> tuple[int, int, str, str]:
+def prepare(source: Path, destination: Path, version: str = VERSION) -> tuple[int, int, str, str]:
     if is_reparse(source):
         raise RuntimeError("Refusing symbolic-link source checkout")
     selected = source_files(source)
     metadata = json.loads((source / "library.json").read_text(encoding="utf-8"))
-    if metadata.get("version") != VERSION:
-        raise RuntimeError(f"Expected CM development version {VERSION}")
+    if metadata.get("version") != version:
+        raise RuntimeError(f"Expected CM development version {version}")
     head = subprocess.check_output(
         ["git", "-c", f"safe.directory={source.as_posix()}", "-C", str(source), "rev-parse", "HEAD"],
         text=True,
@@ -163,7 +163,7 @@ def prepare(source: Path, destination: Path) -> tuple[int, int, str, str]:
     mqtt = [f"{value}  {name}\n" for name, value in hashes.items() if name.startswith("src/mqtt/") and name.endswith(".h")]
     if not mqtt:
         raise RuntimeError("CM MQTT headers missing")
-    manifest = f"# source_head={head}\n# source_version={VERSION}\n" + "".join(
+    manifest = f"# source_head={head}\n# source_version={version}\n" + "".join(
         f"{value}  {name}\n" for name, value in hashes.items()
     )
     mqtt_hash = hashlib.sha256("".join(mqtt).encode("utf-8")).hexdigest()

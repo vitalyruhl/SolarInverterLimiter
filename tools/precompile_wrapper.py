@@ -20,6 +20,7 @@ registry_requirement = "vitaly.ruhl/ESP32 Configuration Manager@4.9.0"
 development_requirements = {
     "file://.local/cm-wifi-recovery-4.10.3-final-package": "4.10.3",
     "file://.local/cm-mqtt-tx-4.12.0-package": "4.12.0",
+    "file://.local/cm-mqtt-drop-oldest-4.12.0-package": "4.12.0",
 }
 dependencies = env.GetProjectOption("lib_deps", [])
 if isinstance(dependencies, str):

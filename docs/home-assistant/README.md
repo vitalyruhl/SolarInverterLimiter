@@ -26,6 +26,11 @@ the `<...>` placeholders with local values.
 | `dashboard-overview-power.yaml` | `.storage/lovelace.lovelace`, view `preise` | Overview Power view |
 | `dashboard-power-home.yaml` | `.storage/lovelace.dashboard_power`, view 0 | Power dashboard Home view |
 
+The "PV-Prognose" series of the 36 h chart draws the live `ChargePlan`
+projection from now on. For the past part of the window it reads the recorder
+history of `sensor.solarlimiter_charge_plan` and shows, per 15-minute slot, the
+last recorded forecast for that slot. Gaps in the recorder stay empty.
+
 Background documents: `shed-migration.md` (PV forecast pipeline),
 `sil-planner-shadow-readme.md` (price adapter and comparison entities),
 `victron-display.md`.
@@ -39,6 +44,13 @@ Background documents: `shed-migration.md` (PV forecast pipeline),
 - Pyscript with `allow_all_imports` and `hass_is_global`.
 - HACS frontend cards: `apexcharts-card`, `mini-graph-card`,
   `sunsynk-power-flow-card`.
+
+The Shed producer follows the single PV plane configured in Forecast.Solar,
+including changes to inclination, azimuth or installed power. It validates these
+values rather than requiring historical constants. On a geometry change (or the
+first upgrade from an unbound ledger), it preserves the old ledger as
+`/config/data/shed_forecast/ledger.geometry-<previous-session>.json` and starts
+fresh calibration references. Unchanged geometry preserves existing references.
 
 ## Installing discovery entities
 

@@ -14,7 +14,7 @@ Executed against Home Assistant Core 2026.10.1 with the existing Pyscript 2.1.0 
 
 
 
-The sole surviving Forecast.Solar entry is **Shed**, ID `01M5D5VEHZR1GR88THXH8C8BFS`, with one plane: **14.8 degrees inclination, 180 degrees azimuth, 1840 Wp**. It uses the actual HA Home location; coordinates and credentials are deliberately absent here. Morning/evening damping are zero and no inverter power cap is configured.
+At the initial migration, the sole surviving Forecast.Solar entry was **Shed**, ID `01M5D5VEHZR1GR88THXH8C8BFS`, with one plane: **14.8 degrees inclination, 180 degrees azimuth, 1840 Wp**. The producer now follows the current HA plane configuration instead of enforcing these historical values; geometry changes restart calibration references after preserving the previous ledger. It uses the actual HA Home location; coordinates and credentials are deliberately absent here. Morning/evening damping were zero and no inverter power cap was configured.
 
 
 

@@ -80,24 +80,55 @@ cards:
       show:
         extremas: true
       data_generator: |-
-        const nowMs = Date.now(), windowStart = start.getTime(), windowEnd = end.getTime();
-        const a = entity?.attributes;
-        if (entity?.state !== 'ready' || !a || a.valid !== true || a.v !== 1 || a.kind !== 'intent_projection' ||
-            !Number.isInteger(a.g) || !Number.isInteger(a.t) || a.d !== 900 ||
-            !Number.isInteger(a.n) || a.n < 2 || a.n > 144 || !Array.isArray(a.s) || a.s.length !== a.n ||
-            a.t % 900 !== 0 || a.g < a.t || a.g >= a.t + a.d ||
-            a.s.some(v => v !== null && (!Number.isInteger(v) || v < 0 || v > 12000))) return [];
-        const generatedMs = a.g * 1000, coverageEnd = (a.t + a.n * a.d) * 1000;
-        if (nowMs - generatedMs > 180000 || generatedMs - nowMs > 120000 || nowMs >= coverageEnd) return [];
-        const points = [];
-        for (let i = 0; i < a.n; ++i) {
-          const intervalStart = (a.t + i * a.d) * 1000;
-          const at = Math.max(intervalStart, generatedMs, windowStart, nowMs);
-          const stop = Math.min(intervalStart + a.d * 1000, windowEnd);
-          if (stop <= at) continue;
-          points.push([at, a.s[i]], [stop, a.s[i]]);
-        }
-        return points;
+        const pvHistory = await (async () => {
+          const histStart = start.getTime(), histEnd = Math.min(Date.now(), end.getTime());
+          if (!entity?.entity_id || histEnd <= histStart) return [];
+          let rows;
+          try {
+            rows = (await hass.callWS({type: 'history/history_during_period', start_time: new Date(histStart - 900000).toISOString(),
+              end_time: new Date(histEnd).toISOString(), entity_ids: [entity.entity_id], minimal_response: false,
+              no_attributes: false, significant_changes_only: false}))?.[entity.entity_id] ?? [];
+          } catch (e) { return []; }
+          const slots = new Map();
+          for (const row of rows) {
+            const a = row.a;
+            if (row.s !== 'ready' || !a || a.valid !== true || a.v !== 1 || a.kind !== 'intent_projection' || a.d !== 900 ||
+                !Number.isInteger(a.t) || a.t % 900 !== 0 || !Array.isArray(a.s) ||
+                !Number.isInteger(a.s[0]) || a.s[0] < 0 || a.s[0] > 12000) continue;
+            slots.set(a.t, a.s[0]);
+          }
+          const points = [];
+          let lastStop = null;
+          for (const t of [...slots.keys()].sort((x, y) => x - y)) {
+            const at = Math.max(t * 1000, histStart), stop = Math.min((t + 900) * 1000, histEnd);
+            if (stop <= at) continue;
+            if (lastStop !== null && at > lastStop) points.push([lastStop, null]);
+            points.push([at, slots.get(t)], [stop, slots.get(t)]);
+            lastStop = stop;
+          }
+          return points;
+        })();
+        const pvLive = await (async () => {
+          const nowMs = Date.now(), windowStart = start.getTime(), windowEnd = end.getTime();
+          const a = entity?.attributes;
+          if (entity?.state !== 'ready' || !a || a.valid !== true || a.v !== 1 || a.kind !== 'intent_projection' ||
+              !Number.isInteger(a.g) || !Number.isInteger(a.t) || a.d !== 900 ||
+              !Number.isInteger(a.n) || a.n < 2 || a.n > 144 || !Array.isArray(a.s) || a.s.length !== a.n ||
+              a.t % 900 !== 0 || a.g < a.t || a.g >= a.t + a.d ||
+              a.s.some(v => v !== null && (!Number.isInteger(v) || v < 0 || v > 12000))) return [];
+          const generatedMs = a.g * 1000, coverageEnd = (a.t + a.n * a.d) * 1000;
+          if (nowMs - generatedMs > 180000 || generatedMs - nowMs > 120000 || nowMs >= coverageEnd) return [];
+          const points = [];
+          for (let i = 0; i < a.n; ++i) {
+            const intervalStart = (a.t + i * a.d) * 1000;
+            const at = Math.max(intervalStart, generatedMs, windowStart, nowMs);
+            const stop = Math.min(intervalStart + a.d * 1000, windowEnd);
+            if (stop <= at) continue;
+            points.push([at, a.s[i]], [stop, a.s[i]]);
+          }
+          return points;
+        })();
+        return pvHistory.concat(pvLive);
     - entity: sensor.solarlimiter_charge_plan
       name: PV Vorhalten
       yaxis_id: power_w

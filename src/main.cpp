@@ -6,6 +6,7 @@
 #include <WiFi.h>
 #include <time.h>
 #include <cmath>
+#include <cstring>
 
 #include <AsyncTCP.h>
 #include <ESPAsyncWebServer.h>
@@ -121,7 +122,7 @@ static constexpr uint32_t kI2cHz = 400000;
 #endif
 
 #ifndef VERSION
-#define VERSION "5.9.3"
+#define VERSION "5.9.4"
 #endif
 
 static sil::RuntimeDiagnostics runtimeDiagnostics;
@@ -152,6 +153,9 @@ static void setupLogging();
 static void setupMqtt();
 static void setupNetworkDefaults();
 static bool enforceShadowIsolation();
+#if defined(SIL_TEST_MQTT_DROP_OLDEST) && SIL_TEST_MQTT_DROP_OLDEST
+static void runMqttDropProbe();
+#endif
 #if defined(SIL_PLANNER_SHADOW) && SIL_PLANNER_SHADOW && defined(SIL_SHADOW_STAGE_TRACE) && SIL_SHADOW_STAGE_TRACE
 static uint32_t shadowRxCallbacks=0;
 static void shadowTraceStage(const char* stage,uint32_t previousFailures,uint32_t previousRx);
@@ -756,6 +760,9 @@ void loop()
     const uint32_t shadowmqttRx=shadowRxCallbacks;
 #endif
     mqtt.loop();
+#if defined(SIL_TEST_MQTT_DROP_OLDEST) && SIL_TEST_MQTT_DROP_OLDEST
+    runMqttDropProbe();
+#endif
 #if defined(SIL_PLANNER_SHADOW) && SIL_PLANNER_SHADOW && defined(SIL_SHADOW_STAGE_TRACE) && SIL_SHADOW_STAGE_TRACE
     shadowTraceStage("mqtt",shadowmqttFailures,shadowmqttRx);
 #endif
@@ -1597,6 +1604,45 @@ static bool mockMqttIsIsolated()
 }
 #endif
 
+#if defined(SIL_TEST_MQTT_DROP_OLDEST) && SIL_TEST_MQTT_DROP_OLDEST
+static_assert(CM_MQTT_BOUNDED_IO && kRs485MockTransport && !control::kPlannerShadowProfile &&
+              FEATURE_ANY_RELAY_OUTPUTS == 0, "MQTT drop trial requires the isolated mock fixture");
+static void runMqttDropProbe()
+{
+    static bool attempted = false;
+    static uint32_t connectedSince = 0;
+    if (attempted) return;
+    if (!mqtt.isConnected()) { connectedSince = 0; return; }
+    if (!connectedSince) { connectedSince = millis(); return; }
+    if (uint32_t(millis() - connectedSince) < 30000) return;
+    attempted = true;
+    if (!mockMqttIsIsolated()) {
+        Serial.println("[E] [MOCKED!] MQTT_PROBE routing invalid");
+        return;
+    }
+
+    // Exceed one loop's TX budget without stalling Wi-Fi or touching production topics.
+    const auto before = mqtt.getBoundedIoStats();
+    unsigned accepted = 0;
+    char payload[513];
+    for (unsigned i = 0; i < 96; ++i) {
+        const int prefix = snprintf(payload, sizeof(payload), "[MOCKED!] drop-probe %03u ", i);
+        if (prefix < 0 || size_t(prefix) >= sizeof(payload)) {
+            Serial.println("[E] [MOCKED!] MQTT_PROBE format failed");
+            return;
+        }
+        std::memset(payload + prefix, 'x', sizeof(payload) - 1 - prefix);
+        payload[sizeof(payload) - 1] = '\0';
+        if (mqtt.publishRaw("SILHardening/COM8/out/Diagnostics/DropProbe", payload, false)) ++accepted;
+    }
+    const auto &after = mqtt.getBoundedIoStats();
+    Serial.printf("[I] [MOCKED!] MQTT_PROBE sent=96 accepted=%u dropped=%lu bytes=%lu queued=%u fail_delta=%lu\n",
+        accepted, ulong(after.txDroppedPublishes - before.txDroppedPublishes),
+        ulong(after.txDroppedBytes - before.txDroppedBytes), unsigned(mqtt.getTxQueueUsed()),
+        ulong(after.txFailures - before.txFailures));
+}
+#endif
+
 static void setupNetworkDefaults()
 {
     const String currentSsid = wifiSettings.wifiSsid.get();
@@ -1653,6 +1699,17 @@ static void setupNetworkDefaults()
     // Weak Wi-Fi stalls exceed CM's 4.6 KB / 5 s defaults; stored higher UI values still win.
     if (mqttSettings.txQueueBytes.get() < 8192) mqttSettings.txQueueBytes.set(8192);
     if (mqttSettings.txStallTimeoutMs.get() < 30000) mqttSettings.txStallTimeoutMs.set(30000);
+#endif
+#if defined(SIL_TEST_MQTT_DROP_OLDEST) && SIL_TEST_MQTT_DROP_OLDEST
+    mqtt.setDropOldestQueuedPublishes(true);
+    mqtt.onDroppedMessage([](uint32_t messageCount, uint32_t byteCount) {
+        const auto &stats = mqtt.getBoundedIoStats();
+        Serial.printf("[W] [MOCKED!] MQTT_DROP ms=%lu messages=%lu bytes=%lu total_messages=%lu total_bytes=%lu\n",
+            ulong(millis()), ulong(messageCount), ulong(byteCount),
+            ulong(stats.txDroppedPublishes), ulong(stats.txDroppedBytes));
+    });
+    Serial.printf("[I] [MOCKED!] MQTT_DROP enabled queue=%u stall_ms=%lu\n",
+        unsigned(mqttSettings.txQueueBytes.get()), ulong(mqttSettings.txStallTimeoutMs.get()));
 #endif
     if (mqttSettings.server.get().isEmpty())
     {

@@ -5,10 +5,12 @@ limit to a grid-tie inverter over RS485. It follows household demand from MQTT
 meter data, plans battery discharge against electricity prices and PV forecasts,
 and consumes BMS/MPPT telemetry from SolarBatteryTelemetry (SBT).
 
-Current firmware version: **5.9.3** (`VERSION` in `src/main.cpp`).
+Current firmware version: **5.9.4** (`VERSION` in `src/main.cpp`).
 
 ## Recent changes
 
+- **5.9.4**: Adds an isolated, opt-in CM MQTT drop-oldest trial. Normal profiles
+  retain their previous CM package and queue policy; there is no production rollout.
 - **5.9.3**: Builds against the local ConfigurationsManager (CM) 4.12.0 package
   with `ESP32Async/ESPAsyncWebServer@3.12.1` and `ESP32Async/AsyncTCP@3.5.0`
   (replacing the esphome web server fork). After stored settings load, SIL
@@ -85,6 +87,7 @@ Build outputs use `.pio/operating-modes-5.6.0`; library dependencies use
 | `ota_no_oled_no_bme` | `ota` without BME280 (no temperature/humidity/dewpoint values or topics) |
 | `testesp` | Mock RS485 transport (`SIL_MOCK_TRANSPORT=1`) on COM8 |
 | `testesp_recovery` | `testesp` plus exactly one logged stack reset after healthy mock planning |
+| `testesp_mqtt_drop_oldest` | Temporary CM drop-oldest trial on COM7, with isolated fixture routing and no hardware TX |
 | `planner_shadow` | Isolated planner comparison: mocked transport, fan/heater disabled, guarded `SolarLimiterTest` routing |
 | `planner_shadow_trace` | `planner_shadow` plus numeric TX failure stage diagnostics |
 
@@ -114,6 +117,22 @@ branch until the dependency is switched to the released registry version.
 `tools/precompile_wrapper.py` accepts exactly one explicit CM dependency,
 verifies its version and builds the Settings-only WebUI inside the consumed
 copy. Node.js/npm are required when the UI asset must be regenerated.
+
+The temporary `testesp_mqtt_drop_oldest` profile instead consumes
+`file://.local/cm-mqtt-drop-oldest-4.12.0-package`, a separate current-worktree
+snapshot; neither earlier package is overwritten. It enables
+`setDropOldestQueuedPublishes(true)` and registers `onDroppedMessage` after
+settings load, retaining the 8192-byte queue / 30000-ms stall minimums.
+The callback logs dropped message/encoded-byte deltas and cumulative totals
+to serial, without publishing recursively.
+
+This trial requires the existing isolated fixture at `192.168.2.220:18884`
+and `SILHardening/COM8` routing. After 30 seconds connected, it sends one
+non-retained burst of 96 x 512-byte probe payloads to its own diagnostic topic
+to exercise queue pressure and deferred callbacks. It then resumes ordinary
+operation. Only completely unsent eligible publishes can be discarded,
+including retained ones; a successful publish is not a delivery guarantee.
+The option's retention and any production use remain undecided.
 
 ## First start
 
