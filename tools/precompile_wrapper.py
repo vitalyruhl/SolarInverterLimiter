@@ -16,7 +16,8 @@ Import("env")
 # Use the compiler-aware archiver for size-saving link-time optimization.
 env.Replace(AR="xtensa-esp32-elf-gcc-ar", RANLIB="xtensa-esp32-elf-gcc-ranlib")
 
-registry_requirement = "vitaly.ruhl/ESP32 Configuration Manager@4.9.0"
+registry_version = "4.12.0"
+registry_requirement = f"vitaly.ruhl/ESP32 Configuration Manager@{registry_version}"
 development_requirements = {
     "file://.local/cm-wifi-recovery-4.10.3-final-package": "4.10.3",
     "file://.local/cm-mqtt-tx-4.12.0-package": "4.12.0",
@@ -29,7 +30,7 @@ selected = [value.strip() for value in dependencies]
 development_matches = [item for item in development_requirements if selected.count(item) == 1]
 development = len(development_matches) == 1
 requirement = development_matches[0] if development else registry_requirement
-expected_version = development_requirements[requirement] if development else "4.9.0"
+expected_version = development_requirements[requirement] if development else registry_version
 if selected.count(requirement) != 1 or len(development_matches) > 1 or (development and registry_requirement in selected):
     raise RuntimeError(f"Select exactly one explicit CM dependency: {requirement}")
 
@@ -41,7 +42,7 @@ try:
     provenance = json.loads((library_dir / ".piopm").read_text(encoding="utf-8"))
 except (OSError, ValueError) as error:
     raise RuntimeError("ConfigManager registry provenance missing or invalid.") from error
-if not development and (provenance.get("version") != "4.9.0" or provenance.get("spec", {}).get("owner") != "vitaly.ruhl"):
+if not development and (provenance.get("version") != registry_version or provenance.get("spec", {}).get("owner") != "vitaly.ruhl"):
     raise RuntimeError("ConfigManager registry owner/version does not match the pinned requirement.")
 if development and (provenance.get("version") != expected_version or provenance.get("spec", {}).get("uri") != requirement):
     raise RuntimeError("ConfigManager development URI/version provenance mismatch.")

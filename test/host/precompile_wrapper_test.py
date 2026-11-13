@@ -31,7 +31,7 @@ class BuildEnvironment(dict):
 
     def GetProjectOption(self, key, default=None):
         if key == "lib_deps":
-            return [self.development_uri] if self.development else ["vitaly.ruhl/ESP32 Configuration Manager@4.9.0"]
+            return [self.development_uri] if self.development else ["vitaly.ruhl/ESP32 Configuration Manager@4.12.0"]
         return default
 
     def Replace(self, **kwargs):
@@ -51,10 +51,10 @@ class ConsumerPreparationTest(unittest.TestCase):
         self.library = self.root / ".pio/libdeps/usb/ESP32 Configuration Manager"
         for name in ("src", "tools", "webui"):
             (self.library / name).mkdir(parents=True)
-        (self.library / "library.json").write_text(json.dumps({"name": "ESP32 Configuration Manager", "version": "4.9.0"}))
-        (self.library / ".piopm").write_text(json.dumps({"version": "4.9.0", "spec": {"owner": "vitaly.ruhl"}}))
-        (self.library / "src/ConfigManager.h").write_text('#define CONFIGMANAGER_VERSION "4.9.0"')
-        (self.library / "webui/package.json").write_text(json.dumps({"version": "4.9.0"}))
+        (self.library / "library.json").write_text(json.dumps({"name": "ESP32 Configuration Manager", "version": "4.12.0"}))
+        (self.library / ".piopm").write_text(json.dumps({"version": "4.12.0", "spec": {"owner": "vitaly.ruhl"}}))
+        (self.library / "src/ConfigManager.h").write_text('#define CONFIGMANAGER_VERSION "4.12.0"')
+        (self.library / "webui/package.json").write_text(json.dumps({"version": "4.12.0"}))
         (self.library / "tools/preCompile_script.py").write_text("# [MOCKED!] External published builder boundary\n")
         # [MOCKED!] Published flag resolver interface; production build uses the real registry module.
         (self.library / "tools/webui_features.py").write_text("""def feature_values(env):
@@ -104,7 +104,7 @@ def source_fingerprint(root, features):
         self.assertEqual(options['env']['CM_ENABLE_LOGGING'], '0')
 
     def test_wrong_registry_owner_is_rejected_before_ui_build(self):
-        (self.library / '.piopm').write_text(json.dumps({'version':'4.9.0','spec':{'owner':'other'}}))
+        (self.library / '.piopm').write_text(json.dumps({'version':'4.12.0','spec':{'owner':'other'}}))
         with self.assertRaisesRegex(RuntimeError, 'registry'):
             self.run_hook()
         self.assertEqual(len(self.calls), 0)

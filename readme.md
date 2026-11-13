@@ -5,10 +5,13 @@ limit to a grid-tie inverter over RS485. It follows household demand from MQTT
 meter data, plans battery discharge against electricity prices and PV forecasts,
 and consumes BMS/MPPT telemetry from SolarBatteryTelemetry (SBT).
 
-Current firmware version: **5.9.5** (`VERSION` in `src/main.cpp`).
+Current firmware version: **5.9.6** (`VERSION` in `src/main.cpp`).
 
 ## Recent changes
 
+- **5.9.6**: Builds against the released ConfigurationsManager 4.12.0 from the
+  PlatformIO registry instead of the local test packages; all profiles,
+  including `testesp_mqtt_drop_oldest`, now use the registry package.
 - **5.9.5**: Without a planned battery budget, the relative policy trims direct
   PV passthrough on BMS feedback until the battery no longer discharges; fixed
   standby loads and low-load inverter losses are no longer covered by the
@@ -111,21 +114,15 @@ upload mock or shadow images to the production inverter.
 
 ### ConfigurationsManager dependency
 
-Published builds consume ConfigurationsManager (CM) from the PlatformIO
-registry (`vitaly.ruhl/ESP32 Configuration Manager`).
-
-[NOTE] The current feature branch temporarily builds against an unreleased
-local CM 4.12.0 test package (`file://.local/cm-mqtt-tx-4.12.0-package`). That
-package is not part of the repository; a clean checkout cannot build this
-branch until the dependency is switched to the released registry version.
+Published builds consume ConfigurationsManager (CM) 4.12.0 from the PlatformIO
+registry (`vitaly.ruhl/ESP32 Configuration Manager@4.12.0`).
 
 `tools/precompile_wrapper.py` accepts exactly one explicit CM dependency,
 verifies its version and builds the Settings-only WebUI inside the consumed
 copy. Node.js/npm are required when the UI asset must be regenerated.
 
-The temporary `testesp_mqtt_drop_oldest` profile instead consumes
-`file://.local/cm-mqtt-drop-oldest-4.12.0-package`, a separate current-worktree
-snapshot; neither earlier package is overwritten. It enables
+The temporary `testesp_mqtt_drop_oldest` profile uses the same registry
+package. It enables
 `setDropOldestQueuedPublishes(true)` and registers `onDroppedMessage` after
 settings load, retaining the 8192-byte queue / 30000-ms stall minimums.
 The callback logs dropped message/encoded-byte deltas and cumulative totals
