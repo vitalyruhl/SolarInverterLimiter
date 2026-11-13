@@ -121,7 +121,7 @@ static constexpr uint32_t kI2cHz = 400000;
 #endif
 
 #ifndef VERSION
-#define VERSION "5.9.2"
+#define VERSION "5.9.3"
 #endif
 
 static sil::RuntimeDiagnostics runtimeDiagnostics;
@@ -1649,6 +1649,11 @@ static void setupNetworkDefaults()
     }
 
     mqtt.attach(ConfigManager); // Re-attach to apply loaded values (attach() is idempotent)
+#if CM_MQTT_BOUNDED_IO
+    // Weak Wi-Fi stalls exceed CM's 4.6 KB / 5 s defaults; stored higher UI values still win.
+    if (mqttSettings.txQueueBytes.get() < 8192) mqttSettings.txQueueBytes.set(8192);
+    if (mqttSettings.txStallTimeoutMs.get() < 30000) mqttSettings.txStallTimeoutMs.set(30000);
+#endif
     if (mqttSettings.server.get().isEmpty())
     {
 #if CM_HAS_WIFI_SECRETS

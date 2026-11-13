@@ -74,12 +74,12 @@ def source_files(source: Path) -> list[Path]:
     return sorted(selected, key=lambda item: item.as_posix())
 
 
-def read_manifest(package: Path) -> dict[str, str]:
+def read_manifest(package: Path, version: str = VERSION) -> dict[str, str]:
     try:
         lines = (package / MANIFEST).read_text(encoding="utf-8").splitlines()
     except OSError as error:
         raise RuntimeError("CM package manifest missing") from error
-    if f"# source_version={VERSION}" not in lines:
+    if f"# source_version={version}" not in lines:
         raise RuntimeError("CM package manifest version mismatch")
     result = {}
     for line in lines:
@@ -127,11 +127,11 @@ def mutable_ui_input(name: str) -> bool:
     return name == "src/html_content.h" or name.startswith("webui/dist/")
 
 
-def verify_development_package(package: Path, consumed: Path) -> None:
+def verify_development_package(package: Path, consumed: Path, version: str = VERSION) -> None:
     """Frozen package is exact; consumer may regenerate only derived UI/cache files."""
     if is_reparse(package) or is_reparse(package.parent):
         raise RuntimeError("CM source package must not be a symbolic link")
-    expected = read_manifest(package)
+    expected = read_manifest(package, version)
     actual = {path.as_posix() for path in files_under(package, package_check=True)}
     if actual != set(expected) | {MANIFEST}:
         raise RuntimeError("CM source package differs from its manifest")
