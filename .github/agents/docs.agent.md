@@ -29,6 +29,9 @@ Markdown Rules:
 - Code blocks inside Markdown are not exempt. Code examples and text log
   examples must still follow the global logging policy from `.github/AGENTS.md`.
 - Keep documentation concise and factual.
+- Do not add plans, acceptance transcripts, session logs or raw evidence to
+  tracked documentation; keep them under `.Temp/` per the Local Development
+  Data rules in `.github/AGENTS.md`.
 - Documentation may refer to GitHub Issues or Pull Requests when useful.
 - Documentation must not assume that a GitHub Project exists.
 - If `.github/AGENTS.md` says `Current GitHub Project: none`, do not require

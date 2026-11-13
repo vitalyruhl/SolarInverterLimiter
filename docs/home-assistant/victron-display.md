@@ -73,7 +73,7 @@ SBT 1.4.0 retained topic had yet arrived. This is a rollout dependency, not a
 verified historical-value delivery or real outage test.
 
 Local ignored evidence is under
-`.superpowers/sdd/2026-10-20-sil-sbt-ha-integration/`:
+`.Temp/superpowers/sdd/2026-10-20-sil-sbt-ha-integration/`:
 `ha-victron-display.yaml`, `ha-victron-cards-after.json`, and
 `ha-victron-template-tests.txt`. No credentials or HA location are included.
 

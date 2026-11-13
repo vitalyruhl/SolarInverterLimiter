@@ -8,7 +8,7 @@ mode. Manual MOS control remains with SBT and the BMS retains its own protection
 | --- | --- |
 | `automatic` | Existing economic controller, PID, forecasts and output correction. Missing BMS feedback preserves only a previously approved, bounded battery grace; fresh qualified Victron power can supply PV-only demand after that grace expires. |
 | `household_follow` | `clamp(measured inverter AC + signed grid power + correction, 0, MAX)`, with correction applied once before clamping. Explicit selection permits missing BMS feedback and reports `manual_bms_unverified`. |
-| `charge_priority` | Holds output below the configured charge threshold (default 95%). Between the threshold and 100%, default inverter share is 0%. At 100%, household following latches until SOC drops below the threshold. |
+| `charge_priority` | Holds output below the configured charge threshold (default 80% since 5.8.1, previously 95%). Between the threshold and 100%, the default inverter share is 10% (previously 0%). At 100%, household following latches until SOC drops below the threshold. |
 | `pv_follow` | Uses only fresh measured PV: `min(charger DC W * 0.90, clamp(measured household W + correction, 0, MAX))`. Excess PV remains available for battery charging; night-time zero PV produces zero output. |
 
 With the automatic limiter enabled, a fresh, qualified 100% battery permits the
@@ -87,7 +87,7 @@ no ambiguous post-commit readback. Failed staging, readback or promotion keeps
 the old live, displayed and boot mode. A changed profile needs two bounded
 writes; duplicate selection needs none. No blind retry loop writes flash.
 
-The frozen CM 4.10.3 API's `Config<T>::save()` delegates to `updateSetting()`;
+CM's `Config<T>::save()` (4.10.3 and the current 4.12.0 package) delegates to `updateSetting()`;
 its synchronous setting save does not return the underlying NVS byte count.
 SIL therefore uses local presentation adapters and explicit profile readback,
 without changing that dependency. CM's immediate UI response acknowledges a
@@ -112,12 +112,14 @@ pending mode requests; configure HA's topic prefix consistently. Old retained
 commands cannot revive after their expiry. The MQTT library does not expose a
 retained-packet flag, so expiry is mandatory even for apparently live commands.
 
-[The additive HA select example](home-assistant-operating-modes.yaml) uses the
+The HA select is a retained MQTT discovery entity
+(`homeassistant/select/energy_review_20261031/solar_limiter_operating_mode/config`,
+payload in [mqtt-discovery.json](home-assistant/mqtt-discovery.json)). It uses the
 owner-requested German labels, `optimistic: false`, `retain: false`, and the
 existing `SolarLimiter/System-Info/status` availability. Availability requires
 both the online status and a valid confirmed mode enum, so the selector stays
-unavailable before firmware supporting this contract is active. Apply it by adding the entity to the
-existing MQTT list, preserving other HA entities.
+unavailable before firmware supporting this contract is active. Commands carry
+`expires_at = now + 30 s`.
 
 ## Verification and activation
 

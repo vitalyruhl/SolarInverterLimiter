@@ -1,6 +1,6 @@
 # Isolated SIL planner comparison in Home Assistant
 
-This example keeps production and hardware-mocked test price lifecycles separate. Existing tariffs, shared v1 price/PV automations and the Test-Vivil Home view remain unchanged. Device profile promotion and input-topic selection require their separate firmware gate. The HA adapter sends price input only, never inverter or BMS commands.
+This example keeps production and hardware-mocked test price lifecycles separate. Existing tariffs, shared v1 price/PV automations and the production dashboards remain unchanged. Device profile promotion and input-topic selection require their separate firmware gate. The HA adapter sends price input only, never inverter or BMS commands.
 
 ## Persistent adapter
 
@@ -42,7 +42,7 @@ Production Assessment is observed separately as `sensor.sil_comparison_productio
 
 The script observes an explicit diagnostic topic allowlist and creates only `sensor.sil_shadow_*` and `sensor.sil_comparison_production_*` states. Test budget, charge intent, config, state, assessment and runtime are read from the `SolarLimiterTest` namespace. Only production Planning/State and Planning/Config are observed. There are no actuator subscriptions or trigger publications.
 
-`sil-planner-shadow-view.yaml` is one view to append at index 1 of the existing Test-Vivil dashboard; it is not a replacement dashboard. Keep the existing first view exactly unchanged. The view shows 36 hours forward plus three hours of history and overlays production/test budgets on one W axis, anchored to their validated configured maximum values plus 100 W.
+The production entities (`sensor.sil_production_price_input`, `sensor.sil_comparison_production_*`) feed the Overview forecast card in `dashboard-overview-home.yaml` and `dashboard-overview-power.yaml`. The former test-dashboard comparison view is no longer tracked in the repository; the `sil_shadow_*` test entities remain available for ad-hoc views.
 
 The raw tariff remains distinct from the orange planning-assessment curve. The latter is shown only when the test input revision/start/count match the firmware's accepted Assessment summary and the shadow configuration is available. Forecast-only risk assessment uses `raw + abs(raw) * percentage / 100`, including for negative prices. The `horizon_steps_v1` model uses the reported projection time and separate 12-hour, 24-hour and later percentages; configuration and assessment values must match. Older firmware uses its reported uniform percentage. Legacy 5.7 applies `fcPriceF`; relative planning does not. Unknown origins receive no premium. The view never writes settings.
 
@@ -68,6 +68,6 @@ Run the focused pure-adapter checks with mocked fixtures before deployment. Veri
 
 Run the maintained offline energy regressions from the repository root with `python test/host/ha_forecast_integrals_test.py`. They import the curated core and execute the actual energy timer against synthetic states, without Home Assistant or network access. Coverage includes DC units, boundary overlaps, DST days, missing versus zero values, own-controller cohorts, soft price heartbeats and withdrawals.
 
-For rollback, remove only the added comparison view and the two newly installed files after preserving any desired test evidence. Stop the isolated shadow firmware separately. Do not remove or modify the production Shed forecast adapter, existing price/PV automations, source integration or original dashboard content.
+For rollback, remove only the two installed Pyscript files after preserving any desired test evidence. Stop the isolated shadow firmware separately. Do not remove or modify the production Shed forecast adapter, existing price/PV automations, source integration or original dashboard content.
 
 Official source semantics: [Energyforecast FAQ](https://energyforecast.de/faq?locale=de), [V1 schema](https://energyforecast.de/api-docs/v1/swagger.yaml), [V2 schema](https://energyforecast.de/api-docs/v2/swagger.yaml).

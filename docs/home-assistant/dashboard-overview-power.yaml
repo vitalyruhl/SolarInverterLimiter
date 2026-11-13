@@ -1,0 +1,373 @@
+# Overview dashboard, view "Power" (path: preise).
+# Source: live Home Assistant export (2026-11-13). Keep in sync with the live system.
+# Live location: .storage/lovelace.lovelace, views[3].
+# Install: dashboard edit mode -> three dots -> Raw configuration editor; paste as one item of `views:`.
+# Required custom cards (HACS): apexcharts-card.js, bubble-card.js, card-mod.js, ha-sankey-chart.js, landroid-card.js, lovelace-expander-card.js, mini-graph-card-bundle.js, mushroom.js, power-flow-card-plus.js, slider-button-card.js, sunsynk-power-flow-card.js, tabbed-card.js, timer-bar-card.js
+
+title: Power
+path: preise
+cards:
+- type: vertical-stack
+  cards:
+  - type: markdown
+    content: |-
+      {% set e = 'sensor.solarlimiter_discharge_budget' %}
+      {% set w = state_attr(e, 'w') or [] %}
+      {% set stamp = state_attr(e, 'g') | int(0) %}
+      {% if states(e) == 'ready' and stamp > 0 and as_timestamp(now()) - stamp < 180 %}
+      **Plan aktuell** · Stand {{ stamp | timestamp_custom('%d.%m. %H:%M:%S') }}
+      {% if (w | max if w else 0) == 0 %}      **keine Batterieentladung eingeplant**.{% else %}SIL Batterieenergie einlagert – bis zu **{{ w | max }} W**.
+      {% endif %}
+      {% else %}
+      **Noch kein aktueller, gültiger Entladeplan.**
+      {% endif %}
+  - type: custom:apexcharts-card
+    header:
+      show: true
+      title: Entladeplan mit Solarprognose (36 h)
+      show_states: false
+    graph_span: 39h
+    span:
+      start: minute
+      offset: -3h
+    now:
+      show: true
+      label: Now
+    series:
+    - entity: sensor.solarlimiter_discharge_budget
+      name: Entladebudget (Batterie)
+      yaxis_id: power_w
+      unit: W
+      float_precision: 0
+      type: line
+      curve: stepline
+      color: '#ef5350'
+      stroke_width: 2
+      extend_to: false
+      show:
+        extremas: false
+      data_generator: |-
+        const nowMs = Date.now(), windowStart = start.getTime(), windowEnd = end.getTime();
+        const a = entity?.attributes;
+        if (entity?.state !== 'ready' || !a || a.valid !== true || a.v !== 1 ||
+            !Number.isInteger(a.g) || !Number.isInteger(a.t) || a.d !== 900 ||
+            !Number.isInteger(a.n) || a.n < 2 || a.n > 144 || !Array.isArray(a.w) || a.w.length !== a.n ||
+            a.t % 900 !== 0 || a.g < a.t || a.g >= a.t + a.d ||
+            a.w.some(w => !Number.isInteger(w) || w < 0)) return [];
+        const generatedMs = a.g * 1000, coverageEnd = (a.t + a.n * a.d) * 1000;
+        if (nowMs - generatedMs > 180000 || generatedMs - nowMs > 120000 || nowMs >= coverageEnd) return [];
+        const points = [];
+        for (let i = 0; i < a.n; ++i) {
+          const intervalStart = (a.t + i * a.d) * 1000;
+          const at = Math.max(intervalStart, generatedMs, windowStart, nowMs);
+          const stop = Math.min(intervalStart + a.d * 1000, windowEnd);
+          if (stop <= at) continue;
+          points.push([at, a.w[i]], [stop, a.w[i]]);
+        }
+        return points;
+    - entity: sensor.solarlimiter_charge_plan
+      name: PV-Prognose
+      yaxis_id: power_w
+      unit: W
+      float_precision: 0
+      type: area
+      curve: stepline
+      color: '#ffca28'
+      opacity: 0.15
+      stroke_width: 1
+      stroke_dash: 6
+      extend_to: false
+      show:
+        extremas: true
+      data_generator: |-
+        const nowMs = Date.now(), windowStart = start.getTime(), windowEnd = end.getTime();
+        const a = entity?.attributes;
+        if (entity?.state !== 'ready' || !a || a.valid !== true || a.v !== 1 || a.kind !== 'intent_projection' ||
+            !Number.isInteger(a.g) || !Number.isInteger(a.t) || a.d !== 900 ||
+            !Number.isInteger(a.n) || a.n < 2 || a.n > 144 || !Array.isArray(a.s) || a.s.length !== a.n ||
+            a.t % 900 !== 0 || a.g < a.t || a.g >= a.t + a.d ||
+            a.s.some(v => v !== null && (!Number.isInteger(v) || v < 0 || v > 12000))) return [];
+        const generatedMs = a.g * 1000, coverageEnd = (a.t + a.n * a.d) * 1000;
+        if (nowMs - generatedMs > 180000 || generatedMs - nowMs > 120000 || nowMs >= coverageEnd) return [];
+        const points = [];
+        for (let i = 0; i < a.n; ++i) {
+          const intervalStart = (a.t + i * a.d) * 1000;
+          const at = Math.max(intervalStart, generatedMs, windowStart, nowMs);
+          const stop = Math.min(intervalStart + a.d * 1000, windowEnd);
+          if (stop <= at) continue;
+          points.push([at, a.s[i]], [stop, a.s[i]]);
+        }
+        return points;
+    - entity: sensor.solarlimiter_charge_plan
+      name: PV Vorhalten
+      yaxis_id: power_w
+      unit: W
+      float_precision: 0
+      type: area
+      curve: stepline
+      color: '#42a5f5'
+      opacity: 0.25
+      stroke_width: 1
+      extend_to: false
+      show:
+        extremas: false
+      data_generator: |-
+        const nowMs = Date.now(), windowStart = start.getTime(), windowEnd = end.getTime();
+        const a = entity?.attributes;
+        if (entity?.state !== 'ready' || !a || a.valid !== true || a.v !== 1 || a.kind !== 'intent_projection' ||
+            !Number.isInteger(a.g) || !Number.isInteger(a.t) || a.d !== 900 ||
+            !Number.isInteger(a.n) || a.n < 2 || a.n > 144 || !Array.isArray(a.w) || a.w.length !== a.n ||
+            a.t % 900 !== 0 || a.g < a.t || a.g >= a.t + a.d ||
+            a.w.some(w => w !== null && (!Number.isInteger(w) || w < 0 || w > 12000))) return [];
+        const generatedMs = a.g * 1000, coverageEnd = (a.t + a.n * a.d) * 1000;
+        if (nowMs - generatedMs > 180000 || generatedMs - nowMs > 120000 || nowMs >= coverageEnd) return [];
+        const points = [];
+        for (let i = 0; i < a.n; ++i) {
+          const intervalStart = (a.t + i * a.d) * 1000;
+          const at = Math.max(intervalStart, generatedMs, windowStart, nowMs);
+          const stop = Math.min(intervalStart + a.d * 1000, windowEnd);
+          if (stop <= at) continue;
+          points.push([at, a.w[i]], [stop, a.w[i]]);
+        }
+        return points;
+    - entity: sensor.epex_spot_data_total_price_2
+      name: Strompreis
+      yaxis_id: price
+      unit: €/kWh
+      float_precision: 3
+      type: line
+      curve: stepline
+      color_threshold:
+      - value: 0
+        color: '#186ddc'
+      - value: 0.155
+        color: '#04822e'
+      - value: 0.2
+        color: '#12A141'
+      - value: 0.25
+        color: '#79B92C'
+      - value: 0.3
+        color: '#C4D81D'
+      - value: 0.35
+        color: '#F3DC0C'
+      - value: 0.4
+        color: red
+      - value: 0.5
+        color: magenta
+      stroke_width: 1
+      extend_to: false
+      show:
+        extremas: true
+      data_generator: |-
+        const windowStart = start.getTime(), windowEnd = end.getTime();
+        return (entity.attributes.data ?? [])
+          .map(entry => [new Date(entry.start_time).getTime(), entry.price_per_kwh])
+          .filter(([at]) => at >= windowStart && at < windowEnd);
+    - entity: sensor.sil_production_price_input
+      name: Preisbewertung (mit Prognoseaufschlag)
+      yaxis_id: price
+      unit: €/kWh
+      float_precision: 3
+      type: line
+      curve: stepline
+      color: '#42a5f5'
+      stroke_width: 1
+      stroke_dash: 5
+      extend_to: false
+      show:
+        extremas: false
+      data_generator: |-
+        const a=entity?.attributes, s=hass.states['sensor.sil_comparison_production_assessment'], c=hass.states['sensor.sil_comparison_production_config'];
+        if(entity?.state!=='ready'||!a?.tariff_aligned||s?.state!=='ready'||c?.attributes?.valid!==true||Date.now()/1000-a.r>180) return [];
+        const x=s.attributes,q=c.attributes;
+        if(x.valid!==true||Date.now()/1000-x.g>180||x.priceRevision!==a.r||x.priceStart!==a.t||x.priceSlots!==a.n||!Array.isArray(a.o)||a.o.length!==a.n||!Array.isArray(a.p)||a.p.length!==a.n) return [];
+        if(q.allocationPolicy!=='relative_time_tiers_v1'||q.priceBasis!=='schedule_origin_assessed') return [];
+        const pct=Number(q.predictionPremiumPct);
+        if(!Number.isFinite(pct)||pct<0||pct>100) return [];
+        const steps=q.predictionPremiumModel==='horizon_steps_v1';
+        const p12=Number(q.predictionPremium12hPct),p24=Number(q.predictionPremium24hPct),at=Number(x.tierAt);
+        if(steps&&(!x.tiersValid||!Number.isFinite(at)||at<=0||x.predictionPremiumModel!==q.predictionPremiumModel||
+          x.predictionPremium12hPct!==q.predictionPremium12hPct||x.predictionPremium24hPct!==q.predictionPremium24hPct||
+          x.predictionPremiumPct!==q.predictionPremiumPct||![p12,p24].every(v=>Number.isFinite(v)&&v>=0&&v<=100))) return [];
+        return a.p.map((v,i)=>{const p=v/1e6,t=a.t+i*900,h=t-at,rate=steps?(h<=43200?p12:h<=86400?p24:pct):pct;return [t*1000,a.o[i]===2?p+Math.abs(p)*rate/100:p];}).filter(([t])=>t>=start.getTime()&&t<end.getTime());
+    - entity: sensor.sil_configured_maximum_output
+      name: SIL configured maximum output
+      yaxis_id: power_w
+      type: line
+      color: '#00000000'
+      opacity: 0
+      stroke_width: 0
+      extend_to: false
+      show:
+        in_chart: true
+        in_legend: false
+        in_header: false
+        extremas: false
+        datalabels: false
+      data_generator: |-
+        const limit = Number(entity?.state), a = entity?.attributes;
+        if (!a || a.v !== 1 || a.valid !== true || !Number.isInteger(limit) || limit <= 0 || limit !== a.maxOutputW) return [];
+        return [[start.getTime(), limit + 100], [end.getTime(), limit + 100]];
+    experimental:
+      color_threshold: true
+    yaxis:
+    - id: price
+      decimals: 3
+      min: 0
+      apex_config:
+        title:
+          text: €/kWh
+        tickAmount: 4
+    - id: power_w
+      opposite: true
+      decimals: 0
+      min: 0
+      max: auto
+      apex_config:
+        forceNiceScale: false
+        title:
+          text: W
+        tickAmount: 4
+    apex_config:
+      chart:
+        height: 420
+        animations:
+          enabled: false
+      stroke:
+        width:
+        - 2
+        - 1
+        - 1
+        - 1
+        - 1
+        - 0
+        curve: stepline
+      markers:
+        size: 0
+      legend:
+        show: true
+      tooltip:
+        enabledOnSeries:
+        - 0
+        - 1
+        - 2
+        - 3
+        - 4
+        x:
+          show: true
+          format: dd.MM. HH:mm
+      xaxis:
+        type: datetime
+        labels:
+          datetimeUTC: false
+  grid_options:
+    columns: full
+- type: vertical-stack
+  cards:
+  - type: custom:apexcharts-card
+    graph_span: 2h
+    header:
+      show: true
+      title: Power Usage (2h)
+      show_states: true
+      colorize_states: true
+    series:
+    - entity: sensor.power_usage
+      name: Bezug von EVU
+      stroke_width: 1
+      color: '#ff0000'
+    - entity: sensor.total_power_usage
+      name: Verbrauch
+      stroke_width: 1
+      color: '#ffff00'
+    - entity: sensor.sbt_victron_solar_power_display_w
+      name: PV aktuell (Victron)
+      stroke_width: 1
+      color: '#ff9800'
+    - entity: sensor.shed_inverter_corrected_power
+      name: PV + Batterie (AC)
+      stroke_width: 1
+      color: '#00ff00'
+    - entity: sensor.meter_giving_away
+      name: Einspeisung
+      stroke_width: 1
+      color: '#00ffff'
+    - entity: sensor.solarlimiter_setvalue
+      name: Setvalue Inverter
+      stroke_width: 1
+      color: '#aaaaaa'
+  grid_options:
+    columns: full
+- type: entities
+  entities:
+  - entity: sensor.powermeter_emh_power_curr
+    name: EMH Power_curr
+  - entity: sensor.powermeter_emh_total_in
+    name: EMH Total_in
+  - entity: sensor.powermeter_emh_total_out
+    name: EMH Total_out
+  title: Powermeter
+  grid_options:
+    columns: full
+- type: entities
+  title: Battery / BMS
+  show_header_toggle: false
+  state_color: true
+  entities:
+  - entity: binary_sensor.sbt_collector_availability
+    name: Collector connection
+  - entity: binary_sensor.sbt_bms_charging
+    name: Charging
+  - entity: binary_sensor.sbt_bms_discharging
+    name: Discharging
+  - entity: sensor.sbt_bms_state_of_charge_pct
+    name: State of charge
+  - entity: sensor.sbt_bms_voltage_v
+    name: Battery voltage
+  - entity: sensor.sbt_bms_current_a
+    name: Battery current
+  - entity: sensor.sbt_bms_power_w
+    name: Battery power
+  - entity: sensor.sbt_bms_remaining_capacity_ah
+    name: Remaining capacity
+  - entity: sensor.sbt_bms_full_capacity_ah
+    name: Full capacity
+  - entity: sensor.sbt_bms_temperature_max_c
+    name: Maximum temperature
+  - entity: sensor.sbt_bms_cell_voltage_min_v
+    name: Minimum cell voltage
+  - entity: sensor.sbt_bms_cell_voltage_max_v
+    name: Maximum cell voltage
+  - entity: sensor.sbt_bms_cell_voltage_delta_v
+    name: Cell voltage spread
+  - entity: sensor.sbt_bms_alarm_bits
+    name: Alarm bits
+  - entity: sensor.sbt_bms_temperature_min_c
+    name: Minimum temperature
+  - entity: sensor.sbt_bms_protection
+    name: Protection
+  - entity: sensor.sbt_bms_health
+    name: Source health
+  grid_options:
+    columns: full
+- type: horizontal-stack
+  cards:
+  - type: custom:mini-graph-card
+    name: Netzbezug / Netzeinspeisung (24h)
+    icon: mdi:transmission-tower-import
+    hours_to_show: 24
+    font_size: 90
+    points_per_hour: 3
+    hour24: true
+    line_width: 2
+    entities:
+    - entity: sensor.daily_energy_consumed
+      name: Netzbezug heute
+      color: red
+      show_state: true
+    - entity: sensor.helper_daily_daily_energy_gifted
+      name: Netzeinspeisung heute
+      color: green
+      show_state: true
+  grid_options:
+    columns: full

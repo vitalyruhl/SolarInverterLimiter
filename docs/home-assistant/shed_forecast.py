@@ -169,6 +169,15 @@ def shed_forecast_publish():
                           resolution='raw', blocking=True, return_response=True)
     if not isinstance(result, dict) or not isinstance(result.get('wh_period'), dict):
         raise ValueError('Shed forecast service did not return native period energy')
+    # HA 2026.11 exposes START-indexed service energy; the core requires native END periods.
+    coordinator = entry.runtime_data
+    if coordinator is None or not coordinator.last_update_success:
+        raise ValueError('Shed forecast coordinator has no successful current update')
+    estimate = coordinator.data
+    if estimate is None or not isinstance(estimate.wh_period, dict):
+        raise ValueError('Shed forecast native END snapshot is unavailable')
+    native_periods = dict(estimate.wh_period)
+    result = {'wh_period': {stamp.isoformat(): energy for stamp, energy in native_periods.items()}}
     generated = int(datetime.datetime.now(datetime.timezone.utc).timestamp())
     observed = {}
     for key, entity_id in (('yield_wh', 'sensor.sbt_victron_yield_today_wh'),

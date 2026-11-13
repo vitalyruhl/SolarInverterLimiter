@@ -1,0 +1,68 @@
+# SolarInverterLimiter MQTT entities (YAML-defined part).
+# Source: live Home Assistant export (2026-11-13). Keep in sync with the live system.
+# Live location: /config/mqttsensors.yaml (included as `mqtt:` in configuration.yaml).
+# Merge these entries into your existing mqtt sections; do not replace other entities.
+# Base topic `SolarLimiter` is configurable in the device settings.
+# Planning, operating-mode, configured-maximum and uptime entities are created via
+# retained MQTT discovery; see mqtt-discovery.json.
+
+mqtt:
+  sensor:
+  - name: SolarLimiter_Status
+    unique_id: SolarLimiter_Status
+    state_topic: SolarLimiter/System-Info/status
+    icon: mdi:lan-connect
+    availability_topic: SolarLimiter/System-Info/status
+    payload_available: online
+    payload_not_available: offline
+    value_template: '{% if value == ''online'' %}ok {% elif value == ''offline'' %}offline {% else %}{{ value }}{% endif %}'
+  - name: SolarLimiter_CalculatedValue
+    unique_id: SolarLimiter_CalculatedValue
+    state_topic: SolarLimiter/CalculatedValue
+    device_class: power
+    state_class: measurement
+    unit_of_measurement: W
+  - name: SolarLimiter_SetValue
+    unique_id: SolarLimiter_SetValue
+    state_topic: SolarLimiter/SetValue
+    device_class: power
+    state_class: measurement
+    unit_of_measurement: W
+  - name: SolarLimiter_GetValue
+    unique_id: SolarLimiter_GetValue
+    state_topic: SolarLimiter/GetValue
+    device_class: power
+    state_class: measurement
+    unit_of_measurement: W
+  - name: SolarLimiter_Temperature
+    unique_id: SolarLimiter_Temperature
+    state_topic: SolarLimiter/Temperature
+    device_class: temperature
+    state_class: measurement
+    unit_of_measurement: °C
+  - name: SolarLimiter_Humidity
+    unique_id: SolarLimiter_Humidity
+    state_topic: SolarLimiter/Humidity
+    device_class: humidity
+    state_class: measurement
+    unit_of_measurement: '%'
+  - name: SolarLimiter_Dewpoint
+    unique_id: SolarLimiter_Dewpoint
+    state_topic: SolarLimiter/Dewpoint
+    device_class: temperature
+    state_class: measurement
+    unit_of_measurement: °C
+  - name: SolarLimiter_ElectricityPrice
+    unique_id: SolarLimiter_ElectricityPrice
+    state_topic: SolarLimiter/Input/ElectricityPrice
+    unit_of_measurement: EUR/kWh
+    device_class: monetary
+    state_class: measurement
+    icon: mdi:currency-eur
+  binary_sensor:
+  - name: SolarLimiter_NegativePrice
+    unique_id: SolarLimiter_NegativePrice
+    state_topic: SolarLimiter/Input/NegativePrice
+    payload_on: '1'
+    payload_off: '0'
+    icon: mdi:cash-minus

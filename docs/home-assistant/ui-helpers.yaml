@@ -1,0 +1,90 @@
+# UI-managed helpers (Settings -> Devices & services -> Helpers), written as YAML equivalents.
+# Source: live Home Assistant export (2026-11-13). Keep in sync with the live system.
+# Live these are config entries, not YAML. Recreate them in the UI with the same options,
+# or use this YAML; do not define both, or the entity IDs get a _2 suffix.
+# The Shed integral helper (Shed inverter corrected delivery) is documented in shed-energy.yaml.
+# Forecast.Solar entry "Shed" uses damping_morning = damping_evening = 0.
+
+template:
+- sensor:
+  - name: SBT Battery Charging Power
+    unit_of_measurement: W
+    device_class: power
+    state_class: measurement
+    availability: '{{ is_number(states(''sensor.sbt_bms_power_w'')) and is_state(''binary_sensor.sbt_bms_availability'', ''on'') and is_state(''binary_sensor.sbt_collector_availability'', ''on'') }}'
+    state: |-
+      {% set p = states('sensor.sbt_bms_power_w') %}
+      {{ [p | float, 0] | max if is_number(p) else none }}
+  - name: SBT Battery Discharging Power
+    unit_of_measurement: W
+    device_class: power
+    state_class: measurement
+    availability: '{{ is_number(states(''sensor.sbt_bms_power_w'')) and is_state(''binary_sensor.sbt_bms_availability'', ''on'') and is_state(''binary_sensor.sbt_collector_availability'', ''on'') }}'
+    state: |-
+      {% set p = states('sensor.sbt_bms_power_w') %}
+      {{ [-(p | float), 0] | max if is_number(p) else none }}
+  - name: SIL Current Discharge Plan
+    unit_of_measurement: W
+    availability: |-
+      {% set e = 'sensor.solarlimiter_discharge_budget' %}
+      {% set t = state_attr(e, 't') %}
+      {% set g = state_attr(e, 'g') %}
+      {% set n = state_attr(e, 'n') %}
+      {% set w = state_attr(e, 'w') %}
+      {% set ts = as_timestamp(now()) %}
+      {% set i = ((ts - (t | int(0))) // 900) | int %}
+      {{ states(e) == 'ready' and state_attr(e, 'valid') == true
+        and state_attr(e, 'v') == 1 and state_attr(e, 'd') == 900
+        and t is integer and g is integer and n is integer
+        and n >= 2 and n <= 144 and t % 900 == 0
+        and g >= t and g < t + 900 and ts >= g and ts - g <= 180
+        and i >= 0 and i < n and w is sequence and w is not string
+        and w | count == n and w | select('integer') | list | count == n
+        and w | min >= 0 }}
+    state: |-
+      {% set e = 'sensor.solarlimiter_discharge_budget' %}
+      {% set t = state_attr(e, 't') %}
+      {% set g = state_attr(e, 'g') %}
+      {% set n = state_attr(e, 'n') %}
+      {% set w = state_attr(e, 'w') %}
+      {% set ts = as_timestamp(now()) %}
+      {% set i = ((ts - (t | int(0))) // 900) | int %}
+      {% if states(e) == 'ready' and state_attr(e, 'valid') == true
+        and state_attr(e, 'v') == 1 and state_attr(e, 'd') == 900
+        and t is integer and g is integer and n is integer
+        and n >= 2 and n <= 144 and t % 900 == 0
+        and g >= t and g < t + 900 and ts >= g and ts - g <= 180
+        and i >= 0 and i < n and w is sequence and w is not string
+        and w | count == n and w | select('integer') | list | count == n
+        and w | min >= 0 %}
+      {{ w[i] }}
+      {% else %}
+      {{ none }}
+      {% endif %}
+sensor:
+- platform: integration
+  name: SBT Battery Energy Charged
+  source: sensor.sbt_battery_charging_power
+  method: left
+  round: 6
+  unit_prefix: k
+  unit_time: h
+  max_sub_interval:
+    minutes: 1
+- platform: integration
+  name: SBT Battery Energy Discharged
+  source: sensor.sbt_battery_discharging_power
+  method: left
+  round: 6
+  unit_prefix: k
+  unit_time: h
+  max_sub_interval:
+    minutes: 1
+input_number:
+  sbt_battery_full_energy_wh:
+    name: SBT Battery Full Energy Wh
+    min: 0
+    max: 20000
+    step: 0.01
+    mode: box
+    unit_of_measurement: Wh

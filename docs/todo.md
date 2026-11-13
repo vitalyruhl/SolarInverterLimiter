@@ -1,10 +1,10 @@
 # SolarInverterLimiter TODO
 
-The [control-planning baseline](control-planning/README.md) owns battery-control decisions. This file tracks implementation work; it does not define a second strategy. [Implementation follow-ups](control-planning/implementation-follow-ups.md) retain details consolidated from the older strategy/TODO drafts. Firmware implementation and hardware acceptance are still separate.
+The former control-planning baseline and implementation follow-ups under `docs/control-planning/` were removed in commit `53537d0` and remain available in git history. Current implemented behavior is described in the [readme](../readme.md) and [operating modes](operating-modes.md). This file tracks implementation work; it does not define a second strategy. Firmware implementation and hardware acceptance are still separate.
 
 ## P1 - Complete the existing telemetry receiver increment
 
-- [CURRENT] Review and finish the existing uncommitted SBT receiver/UI work against its implementation and acceptance evidence. The 5.1.3 emergency-only path uses the shared SBT gate; physical acceptance remains pending.
+- [CURRENT] Review and finish the existing uncommitted SBT receiver/UI work against its implementation and acceptance evidence. Since 5.6.1 SIL sends no MOS commands, so the former 5.1.3 emergency-only path no longer applies; physical acceptance remains pending.
 - [NEXT] Reconcile the receiver's earlier 15-second freshness contract with the planned BMS/Victron policy; do not assume the planning constants are already deployed.
 
 ## P1 - Implement the approved battery control plan
@@ -13,7 +13,7 @@ The [control-planning baseline](control-planning/README.md) owns battery-control
 - [NEXT] Implement protection-first arbitration, shared startup/recovery, explicit inverter enable, existing limiter bypass and negative-price zero.
 - [NEXT] Implement the bounded energy/price planner, reserve OFF/ON 2%/10%, adjustable battery power band and charge-target/PV ceiling. Use the current baseline for price classes, source-loss precedence and ownership.
 - [NEXT] Add separate economic ceiling ramp constants, initially 50 W/s up and down, optionally exposed later if resources permit. Do not ramp every demand-PID response; restrictive PV/load/protection/stop changes bypass the economic ramp. Reuse RS485 publication timing and actuator-command anti-windup tracking.
-- [CURRENT] Validate the shared SBT gate and one-shot emergency both-off path. The earlier separate Hand/Auto proposal is superseded; retain `mosMan` only for stored-setting compatibility. No economic/reserve MOS switching or automatic ON.
+- [SUPERSEDED] Validate the shared SBT gate and one-shot emergency both-off path. Since 5.6.1 SIL publishes no MOS commands; manual MOS control stays in SBT. `mosMan` is retained only for stored-setting compatibility.
 - [NEXT] Use the qualified CM development revision and warning/main-alarm callbacks. Record exact test versions; publish a release only after actual agreed HITL acceptance.
 
 ## P1 - HA telemetry and cooling
@@ -27,7 +27,7 @@ The [control-planning baseline](control-planning/README.md) owns battery-control
 
 - [COMPLETED] The owner accepted manual HA charge/discharge Allow operation on 2026-10-16. This does not qualify automatic MOS recovery.
 - [NEXT] Keep manual access available while SIL automation is unfinished. Compare telemetry stability, source ages, heap, stack and cycle time after the separately qualified BMS/Victron UART migration. Existing readback fluctuation is accepted; its cause and resource gains remain unproven.
-- [NEXT] Execute the replay and hardware-acceptance scenarios in the [follow-ups](control-planning/implementation-follow-ups.md#implementation-acceptance-sequence), with hardware actions separately authorized.
+- [NEXT] Execute the replay and hardware-acceptance scenarios from the former implementation follow-ups (see git history before `53537d0`), with hardware actions separately authorized.
 
 ## P1 - Independent firmware-size work
 

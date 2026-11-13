@@ -75,6 +75,9 @@ If using ripgrep to inspect governance, the agent MUST use `--hidden`, for examp
 - Stage, commit, and push only on explicit user request or when a named workflow
   explicitly requires it.
 - If staging is requested, prefer `git add -A`.
+- Before `git add -A`, check `git status --short` against the Local Development
+  Data rules in `.github/AGENTS.md`. Stop and report if plans, evidence, logs,
+  tool state or dependency snapshots would be staged.
 - Do not prepend `Set-Location` to git commands. Use the configured working
   directory. For non-git commands that must change directory, use
   `Push-Location` / `Pop-Location`.
@@ -267,6 +270,9 @@ These names describe expected intent if the user invokes them:
     part of this explicitly requested workflow
   - run or report relevant validation before merge
   - perform the documentation impact check before merge
+  - block the merge while `platformio.ini` uses a `file://.local/` dependency
+    or development data is tracked (see Local Development Data in
+    `.github/AGENTS.md`)
   - report GitHub blockers before merge, including required reviews, failing
     checks, conflicts, and branch protection
   - use owner/admin bypass only when the user explicitly requested it for the

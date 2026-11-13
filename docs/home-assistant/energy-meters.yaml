@@ -1,0 +1,54 @@
+# Energy counters and SBT BMS control REST commands.
+# Source: live Home Assistant export (2026-11-13). Keep in sync with the live system.
+# Live locations:
+#   sensor:        /config/sensors.yaml     (integration money_saved_total)
+#   utility_meter: /config/meterconfig.yaml
+#   rest_command:  /config/configuration.yaml
+# Replace <sbt-collector-host> and <bms-control-key> with your SBT collector values.
+# The REST commands only toggle the BMS control permission; they do not switch MOS states.
+
+sensor:
+- platform: integration
+  source: sensor.money_saved_rate
+  name: money_saved_total
+  unique_id: money_saved_total
+  unit_time: h
+  method: left
+  round: 4
+  max_sub_interval:
+    minutes: 1
+utility_meter:
+  daily_energy_gifted:
+    source: sensor.meter_reading_out
+    cycle: daily
+  daily_energy_consumed:
+    source: sensor.meter_reading
+    cycle: daily
+  money_saved_daily:
+    source: sensor.money_saved_total
+    net_consumption: true
+    periodically_resetting: false
+    cycle: daily
+  money_saved_monthly:
+    source: sensor.money_saved_total
+    net_consumption: true
+    periodically_resetting: false
+    cycle: monthly
+  money_saved_yearly:
+    source: sensor.money_saved_total
+    net_consumption: true
+    periodically_resetting: false
+    cycle: yearly
+rest_command:
+  sbt_bms_control_on:
+    url: http://<sbt-collector-host>/config/save?category=BMS&key=<bms-control-key>
+    method: post
+    content_type: application/json
+    payload: '{"value":true}'
+    timeout: 8
+  sbt_bms_control_off:
+    url: http://<sbt-collector-host>/config/save?category=BMS&key=<bms-control-key>
+    method: post
+    content_type: application/json
+    payload: '{"value":false}'
+    timeout: 8

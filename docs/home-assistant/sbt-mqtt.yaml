@@ -1,0 +1,873 @@
+# SolarBatteryTelemetry (SBT) MQTT entities: JK BMS and Victron SmartSolar data used by
+# the Overview and Power dashboards.
+# Source: live Home Assistant export (2026-11-13). Keep in sync with the live system.
+# Live location: /config/mqttsensors.yaml (included as `mqtt:` in configuration.yaml).
+# Merge these entries into your existing mqtt sections; do not replace other entities.
+# Cell voltages, collector uptime and runtime diagnostics come from retained MQTT
+# discovery; see mqtt-discovery.json.
+
+mqtt:
+  sensor:
+  - name: SBT BMS State of charge
+    unique_id: sbt_bms_state_of_charge_pct
+    default_entity_id: sensor.sbt_bms_state_of_charge_pct
+    state_topic: SolarBatteryTelemetry/bms/state_of_charge_pct
+    availability_mode: all
+    availability:
+    - topic: SolarBatteryTelemetry/status
+      payload_available: online
+      payload_not_available: offline
+    - topic: SolarBatteryTelemetry/bms/availability
+      payload_available: available
+      payload_not_available: unavailable
+    device:
+      identifiers:
+      - sbt_8857218f664c_bms
+      name: SBT BMS
+      manufacturer: SolarBatteryTelemetry
+    value_template: '{{ value_json }}'
+    unit_of_measurement: '%'
+    state_class: measurement
+    device_class: battery
+  - name: SBT BMS Battery voltage
+    unique_id: sbt_bms_voltage_v
+    default_entity_id: sensor.sbt_bms_voltage_v
+    state_topic: SolarBatteryTelemetry/bms/voltage_v
+    availability_mode: all
+    availability:
+    - topic: SolarBatteryTelemetry/status
+      payload_available: online
+      payload_not_available: offline
+    - topic: SolarBatteryTelemetry/bms/availability
+      payload_available: available
+      payload_not_available: unavailable
+    device:
+      identifiers:
+      - sbt_8857218f664c_bms
+      name: SBT BMS
+      manufacturer: SolarBatteryTelemetry
+    value_template: '{{ value_json }}'
+    unit_of_measurement: V
+    state_class: measurement
+    device_class: voltage
+    suggested_display_precision: 2
+  - name: SBT BMS Battery current
+    unique_id: sbt_bms_current_a
+    default_entity_id: sensor.sbt_bms_current_a
+    state_topic: SolarBatteryTelemetry/bms/current_a
+    availability_mode: all
+    availability:
+    - topic: SolarBatteryTelemetry/status
+      payload_available: online
+      payload_not_available: offline
+    - topic: SolarBatteryTelemetry/bms/availability
+      payload_available: available
+      payload_not_available: unavailable
+    device:
+      identifiers:
+      - sbt_8857218f664c_bms
+      name: SBT BMS
+      manufacturer: SolarBatteryTelemetry
+    value_template: '{{ value_json }}'
+    unit_of_measurement: A
+    state_class: measurement
+    device_class: current
+  - name: SBT BMS Battery power
+    unique_id: sbt_bms_power_w
+    default_entity_id: sensor.sbt_bms_power_w
+    state_topic: SolarBatteryTelemetry/bms/power_w
+    availability_mode: all
+    availability:
+    - topic: SolarBatteryTelemetry/status
+      payload_available: online
+      payload_not_available: offline
+    - topic: SolarBatteryTelemetry/bms/availability
+      payload_available: available
+      payload_not_available: unavailable
+    device:
+      identifiers:
+      - sbt_8857218f664c_bms
+      name: SBT BMS
+      manufacturer: SolarBatteryTelemetry
+    value_template: '{{ value_json }}'
+    unit_of_measurement: W
+    state_class: measurement
+    device_class: power
+  - name: SBT BMS Remaining capacity
+    unique_id: sbt_bms_remaining_capacity_ah
+    default_entity_id: sensor.sbt_bms_remaining_capacity_ah
+    state_topic: SolarBatteryTelemetry/bms/remaining_capacity_ah
+    availability_mode: all
+    availability:
+    - topic: SolarBatteryTelemetry/status
+      payload_available: online
+      payload_not_available: offline
+    - topic: SolarBatteryTelemetry/bms/availability
+      payload_available: available
+      payload_not_available: unavailable
+    device:
+      identifiers:
+      - sbt_8857218f664c_bms
+      name: SBT BMS
+      manufacturer: SolarBatteryTelemetry
+    value_template: '{{ value_json }}'
+    unit_of_measurement: Ah
+    state_class: measurement
+  - name: SBT BMS Full capacity
+    unique_id: sbt_bms_full_capacity_ah
+    default_entity_id: sensor.sbt_bms_full_capacity_ah
+    state_topic: SolarBatteryTelemetry/bms/full_capacity_ah
+    availability_mode: all
+    availability:
+    - topic: SolarBatteryTelemetry/status
+      payload_available: online
+      payload_not_available: offline
+    - topic: SolarBatteryTelemetry/bms/availability
+      payload_available: available
+      payload_not_available: unavailable
+    device:
+      identifiers:
+      - sbt_8857218f664c_bms
+      name: SBT BMS
+      manufacturer: SolarBatteryTelemetry
+    value_template: '{{ value_json }}'
+    unit_of_measurement: Ah
+    state_class: measurement
+  - name: SBT BMS Maximum temperature
+    unique_id: sbt_bms_temperature_max_c
+    default_entity_id: sensor.sbt_bms_temperature_max_c
+    state_topic: SolarBatteryTelemetry/bms/temperature_max_c
+    availability_mode: all
+    availability:
+    - topic: SolarBatteryTelemetry/status
+      payload_available: online
+      payload_not_available: offline
+    - topic: SolarBatteryTelemetry/bms/availability
+      payload_available: available
+      payload_not_available: unavailable
+    device:
+      identifiers:
+      - sbt_8857218f664c_bms
+      name: SBT BMS
+      manufacturer: SolarBatteryTelemetry
+    value_template: '{{ value_json }}'
+    unit_of_measurement: °C
+    state_class: measurement
+    device_class: temperature
+  - name: SBT BMS Minimum cell voltage
+    unique_id: sbt_bms_cell_voltage_min_v
+    default_entity_id: sensor.sbt_bms_cell_voltage_min_v
+    state_topic: SolarBatteryTelemetry/bms/cell_voltage_min_v
+    availability_mode: all
+    availability:
+    - topic: SolarBatteryTelemetry/status
+      payload_available: online
+      payload_not_available: offline
+    - topic: SolarBatteryTelemetry/bms/availability
+      payload_available: available
+      payload_not_available: unavailable
+    device:
+      identifiers:
+      - sbt_8857218f664c_bms
+      name: SBT BMS
+      manufacturer: SolarBatteryTelemetry
+    value_template: '{{ value_json }}'
+    unit_of_measurement: V
+    state_class: measurement
+    device_class: voltage
+    suggested_display_precision: 2
+  - name: SBT BMS Maximum cell voltage
+    unique_id: sbt_bms_cell_voltage_max_v
+    default_entity_id: sensor.sbt_bms_cell_voltage_max_v
+    state_topic: SolarBatteryTelemetry/bms/cell_voltage_max_v
+    availability_mode: all
+    availability:
+    - topic: SolarBatteryTelemetry/status
+      payload_available: online
+      payload_not_available: offline
+    - topic: SolarBatteryTelemetry/bms/availability
+      payload_available: available
+      payload_not_available: unavailable
+    device:
+      identifiers:
+      - sbt_8857218f664c_bms
+      name: SBT BMS
+      manufacturer: SolarBatteryTelemetry
+    value_template: '{{ value_json }}'
+    unit_of_measurement: V
+    state_class: measurement
+    device_class: voltage
+    suggested_display_precision: 2
+  - name: SBT BMS Cell voltage spread
+    unique_id: sbt_bms_cell_voltage_delta_v
+    default_entity_id: sensor.sbt_bms_cell_voltage_delta_v
+    state_topic: SolarBatteryTelemetry/bms/cell_voltage_delta_v
+    availability_mode: all
+    availability:
+    - topic: SolarBatteryTelemetry/status
+      payload_available: online
+      payload_not_available: offline
+    - topic: SolarBatteryTelemetry/bms/availability
+      payload_available: available
+      payload_not_available: unavailable
+    device:
+      identifiers:
+      - sbt_8857218f664c_bms
+      name: SBT BMS
+      manufacturer: SolarBatteryTelemetry
+    value_template: '{{ value_json }}'
+    unit_of_measurement: V
+    state_class: measurement
+    device_class: voltage
+    suggested_display_precision: 2
+  - name: SBT BMS Alarm bits
+    unique_id: sbt_bms_alarm_bits
+    default_entity_id: sensor.sbt_bms_alarm_bits
+    state_topic: SolarBatteryTelemetry/bms/alarm_bits
+    availability_mode: all
+    availability:
+    - topic: SolarBatteryTelemetry/status
+      payload_available: online
+      payload_not_available: offline
+    - topic: SolarBatteryTelemetry/bms/availability
+      payload_available: available
+      payload_not_available: unavailable
+    device:
+      identifiers:
+      - sbt_8857218f664c_bms
+      name: SBT BMS
+      manufacturer: SolarBatteryTelemetry
+    value_template: '{{ value_json }}'
+    suggested_display_precision: 0
+  - name: SBT Victron Solar power
+    unique_id: sbt_victron_solar_power_w
+    default_entity_id: sensor.sbt_victron_solar_power_w
+    state_topic: SolarBatteryTelemetry/victron/solar_power_w
+    availability_mode: all
+    availability:
+    - topic: SolarBatteryTelemetry/status
+      payload_available: online
+      payload_not_available: offline
+    - topic: SolarBatteryTelemetry/victron/availability
+      payload_available: available
+      payload_not_available: unavailable
+    device:
+      identifiers:
+      - sbt_8857218f664c_victron
+      name: SBT Victron
+      manufacturer: SolarBatteryTelemetry
+    value_template: '{{ value_json }}'
+    unit_of_measurement: W
+    state_class: measurement
+    device_class: power
+  - name: SBT Victron Charger battery voltage
+    unique_id: sbt_victron_battery_voltage_v
+    default_entity_id: sensor.sbt_victron_battery_voltage_v
+    state_topic: SolarBatteryTelemetry/victron/battery_voltage_v
+    availability_mode: all
+    availability:
+    - topic: SolarBatteryTelemetry/status
+      payload_available: online
+      payload_not_available: offline
+    - topic: SolarBatteryTelemetry/victron/availability
+      payload_available: available
+      payload_not_available: unavailable
+    device:
+      identifiers:
+      - sbt_8857218f664c_victron
+      name: SBT Victron
+      manufacturer: SolarBatteryTelemetry
+    value_template: '{{ value_json }}'
+    unit_of_measurement: V
+    state_class: measurement
+    device_class: voltage
+    suggested_display_precision: 2
+  - name: SBT Victron Charger output current
+    unique_id: sbt_victron_charge_current_a
+    default_entity_id: sensor.sbt_victron_charge_current_a
+    state_topic: SolarBatteryTelemetry/victron/charge_current_a
+    availability_mode: all
+    availability:
+    - topic: SolarBatteryTelemetry/status
+      payload_available: online
+      payload_not_available: offline
+    - topic: SolarBatteryTelemetry/victron/availability
+      payload_available: available
+      payload_not_available: unavailable
+    device:
+      identifiers:
+      - sbt_8857218f664c_victron
+      name: SBT Victron
+      manufacturer: SolarBatteryTelemetry
+    value_template: '{{ value_json }}'
+    unit_of_measurement: A
+    state_class: measurement
+    device_class: current
+  - name: SBT Victron Load current
+    unique_id: sbt_victron_load_current_a
+    default_entity_id: sensor.sbt_victron_load_current_a
+    state_topic: SolarBatteryTelemetry/victron/load_current_a
+    availability_mode: all
+    availability:
+    - topic: SolarBatteryTelemetry/status
+      payload_available: online
+      payload_not_available: offline
+    - topic: SolarBatteryTelemetry/victron/availability
+      payload_available: available
+      payload_not_available: unavailable
+    device:
+      identifiers:
+      - sbt_8857218f664c_victron
+      name: SBT Victron
+      manufacturer: SolarBatteryTelemetry
+    value_template: '{{ value_json }}'
+    unit_of_measurement: A
+    state_class: measurement
+    device_class: current
+  - name: SBT Victron Charge state
+    unique_id: sbt_victron_charge_state
+    default_entity_id: sensor.sbt_victron_charge_state
+    state_topic: SolarBatteryTelemetry/victron/charge_state
+    availability_mode: all
+    availability:
+    - topic: SolarBatteryTelemetry/status
+      payload_available: online
+      payload_not_available: offline
+    - topic: SolarBatteryTelemetry/victron/availability
+      payload_available: available
+      payload_not_available: unavailable
+    device:
+      identifiers:
+      - sbt_8857218f664c_victron
+      name: SBT Victron
+      manufacturer: SolarBatteryTelemetry
+    value_template: '{{ value_json }}'
+  - name: SBT Victron Error code
+    unique_id: sbt_victron_error_code
+    default_entity_id: sensor.sbt_victron_error_code
+    state_topic: SolarBatteryTelemetry/victron/error_code
+    availability_mode: all
+    availability:
+    - topic: SolarBatteryTelemetry/status
+      payload_available: online
+      payload_not_available: offline
+    - topic: SolarBatteryTelemetry/victron/availability
+      payload_available: available
+      payload_not_available: unavailable
+    device:
+      identifiers:
+      - sbt_8857218f664c_victron
+      name: SBT Victron
+      manufacturer: SolarBatteryTelemetry
+    value_template: '{{ value_json }}'
+    suggested_display_precision: 0
+  - name: SBT Victron Yield today
+    unique_id: sbt_victron_yield_today_wh
+    default_entity_id: sensor.sbt_victron_yield_today_wh
+    state_topic: SolarBatteryTelemetry/victron/yield_today_wh
+    availability_mode: all
+    availability:
+    - topic: SolarBatteryTelemetry/status
+      payload_available: online
+      payload_not_available: offline
+    - topic: SolarBatteryTelemetry/victron/availability
+      payload_available: available
+      payload_not_available: unavailable
+    device:
+      identifiers:
+      - sbt_8857218f664c_victron
+      name: SBT Victron
+      manufacturer: SolarBatteryTelemetry
+    value_template: '{{ value_json }}'
+    unit_of_measurement: Wh
+    state_class: total_increasing
+    device_class: energy
+  - name: SBT BMS Minimum temperature
+    unique_id: sbt_bms_temperature_min_c
+    default_entity_id: sensor.sbt_bms_temperature_min_c
+    state_topic: SolarBatteryTelemetry/bms/temperature_min_c
+    availability_mode: all
+    availability:
+    - topic: SolarBatteryTelemetry/status
+      payload_available: online
+      payload_not_available: offline
+    - topic: SolarBatteryTelemetry/bms/availability
+      payload_available: available
+      payload_not_available: unavailable
+    device:
+      identifiers:
+      - sbt_8857218f664c_bms
+      name: SBT BMS
+      manufacturer: SolarBatteryTelemetry
+    value_template: '{{ value_json }}'
+    unit_of_measurement: °C
+    device_class: temperature
+    state_class: measurement
+    suggested_display_precision: 2
+  - name: SBT BMS Cell count
+    unique_id: sbt_bms_cell_count
+    default_entity_id: sensor.sbt_bms_cell_count
+    state_topic: SolarBatteryTelemetry/bms/cell_count
+    availability_mode: all
+    availability:
+    - topic: SolarBatteryTelemetry/status
+      payload_available: online
+      payload_not_available: offline
+    - topic: SolarBatteryTelemetry/bms/availability
+      payload_available: available
+      payload_not_available: unavailable
+    device:
+      identifiers:
+      - sbt_8857218f664c_bms
+      name: SBT BMS
+      manufacturer: SolarBatteryTelemetry
+    value_template: '{{ value_json }}'
+    suggested_display_precision: 0
+  - name: SBT BMS Temperature sensor count
+    unique_id: sbt_bms_temperature_sensor_count
+    default_entity_id: sensor.sbt_bms_temperature_sensor_count
+    state_topic: SolarBatteryTelemetry/bms/temperature_sensor_count
+    availability_mode: all
+    availability:
+    - topic: SolarBatteryTelemetry/status
+      payload_available: online
+      payload_not_available: offline
+    - topic: SolarBatteryTelemetry/bms/availability
+      payload_available: available
+      payload_not_available: unavailable
+    device:
+      identifiers:
+      - sbt_8857218f664c_bms
+      name: SBT BMS
+      manufacturer: SolarBatteryTelemetry
+    value_template: '{{ value_json }}'
+    suggested_display_precision: 0
+  - name: SBT BMS Protection
+    unique_id: sbt_bms_protection
+    default_entity_id: sensor.sbt_bms_protection
+    state_topic: SolarBatteryTelemetry/bms/protection
+    availability_mode: all
+    availability:
+    - topic: SolarBatteryTelemetry/status
+      payload_available: online
+      payload_not_available: offline
+    - topic: SolarBatteryTelemetry/bms/availability
+      payload_available: available
+      payload_not_available: unavailable
+    device:
+      identifiers:
+      - sbt_8857218f664c_bms
+      name: SBT BMS
+      manufacturer: SolarBatteryTelemetry
+    value_template: '{{ value[:255] }}'
+    json_attributes_topic: SolarBatteryTelemetry/bms/protection
+    json_attributes_template: '{{ {''protection_flags'': value.split('', '')} | to_json }}'
+  - name: SBT BMS Source health
+    unique_id: sbt_bms_health
+    default_entity_id: sensor.sbt_bms_health
+    state_topic: SolarBatteryTelemetry/bms/health
+    availability_mode: all
+    availability:
+    - topic: SolarBatteryTelemetry/status
+      payload_available: online
+      payload_not_available: offline
+    device:
+      identifiers:
+      - sbt_8857218f664c_bms
+      name: SBT BMS
+      manufacturer: SolarBatteryTelemetry
+    value_template: '{{ value_json.reason }}'
+    json_attributes_topic: SolarBatteryTelemetry/bms/health
+    expire_after: 15
+    entity_category: diagnostic
+  - name: SBT Victron Source health
+    unique_id: sbt_victron_health
+    default_entity_id: sensor.sbt_victron_health
+    state_topic: SolarBatteryTelemetry/victron/health
+    availability_mode: all
+    availability:
+    - topic: SolarBatteryTelemetry/status
+      payload_available: online
+      payload_not_available: offline
+    device:
+      identifiers:
+      - sbt_8857218f664c_victron
+      name: SBT Victron
+      manufacturer: SolarBatteryTelemetry
+    value_template: '{{ value_json.reason }}'
+    json_attributes_topic: SolarBatteryTelemetry/victron/health
+    expire_after: 15
+    entity_category: diagnostic
+  - name: SBT BMS Control status
+    unique_id: sbt_bms_control
+    default_entity_id: sensor.sbt_bms_control
+    state_topic: SolarBatteryTelemetry/bms/control
+    availability_mode: all
+    availability:
+    - topic: SolarBatteryTelemetry/status
+      payload_available: online
+      payload_not_available: offline
+    device:
+      identifiers:
+      - sbt_8857218f664c_bms
+      name: SBT BMS
+      manufacturer: SolarBatteryTelemetry
+    value_template: '{{ ''not_ready'' if value_json.reason == ''unavailable'' else value_json.reason }}'
+    json_attributes_topic: SolarBatteryTelemetry/bms/control
+    entity_category: diagnostic
+  - name: SBT BMS Command result
+    unique_id: sbt_bms_control_result
+    default_entity_id: sensor.sbt_bms_control_result
+    state_topic: SolarBatteryTelemetry/bms/control/result
+    availability_mode: all
+    availability:
+    - topic: SolarBatteryTelemetry/status
+      payload_available: online
+      payload_not_available: offline
+    device:
+      identifiers:
+      - sbt_8857218f664c_bms
+      name: SBT BMS
+      manufacturer: SolarBatteryTelemetry
+    value_template: '{{ (value_json.phase ~ '': '' ~ value_json.reason) if value_json.session | default('''') != '''' and value_json.session == state_attr(''sensor.sbt_bms_control'', ''session'') else ''idle: no_request'' }}'
+    json_attributes_topic: SolarBatteryTelemetry/bms/control/result
+    entity_category: diagnostic
+  - name: SBT Victron Error code last received
+    unique_id: sbt_victron_error_code_last_received
+    default_entity_id: sensor.sbt_victron_error_code_last_received
+    state_topic: SolarBatteryTelemetry/victron/last_valid/error_code
+    value_template: '{{ value_json.value if value_json.value is number and value_json.value >= 0 else ''unknown'' }}'
+    json_attributes_topic: SolarBatteryTelemetry/victron/last_valid/error_code
+    json_attributes_template: '{{ {''received_at'': value_json.received_at | default(none)} | to_json }}'
+  - name: SBT Victron Yield last received Wh
+    unique_id: sbt_victron_yield_last_received_wh
+    default_entity_id: sensor.sbt_victron_yield_last_received_wh
+    state_topic: SolarBatteryTelemetry/victron/last_valid/yield_today_wh
+    value_template: '{{ value_json.value if value_json.value is number and value_json.value >= 0 else ''unknown'' }}'
+    unit_of_measurement: Wh
+    json_attributes_topic: SolarBatteryTelemetry/victron/last_valid/yield_today_wh
+    json_attributes_template: '{{ {''received_at'': value_json.received_at | default(none)} | to_json }}'
+  binary_sensor:
+  - name: SBT BMS Charging
+    unique_id: sbt_bms_charging
+    default_entity_id: binary_sensor.sbt_bms_charging
+    state_topic: SolarBatteryTelemetry/bms/charging
+    availability_mode: all
+    availability:
+    - topic: SolarBatteryTelemetry/status
+      payload_available: online
+      payload_not_available: offline
+    - topic: SolarBatteryTelemetry/bms/availability
+      payload_available: available
+      payload_not_available: unavailable
+    - topic: SolarBatteryTelemetry/bms/charging
+      value_template: '{{ ''available'' if value in [''true'', ''false''] else ''unavailable'' }}'
+      payload_available: available
+      payload_not_available: unavailable
+    device:
+      identifiers:
+      - sbt_8857218f664c_bms
+      name: SBT BMS
+      manufacturer: SolarBatteryTelemetry
+    payload_on: 'true'
+    payload_off: 'false'
+  - name: SBT BMS Discharging
+    unique_id: sbt_bms_discharging
+    default_entity_id: binary_sensor.sbt_bms_discharging
+    state_topic: SolarBatteryTelemetry/bms/discharging
+    availability_mode: all
+    availability:
+    - topic: SolarBatteryTelemetry/status
+      payload_available: online
+      payload_not_available: offline
+    - topic: SolarBatteryTelemetry/bms/availability
+      payload_available: available
+      payload_not_available: unavailable
+    - topic: SolarBatteryTelemetry/bms/discharging
+      value_template: '{{ ''available'' if value in [''true'', ''false''] else ''unavailable'' }}'
+      payload_available: available
+      payload_not_available: unavailable
+    device:
+      identifiers:
+      - sbt_8857218f664c_bms
+      name: SBT BMS
+      manufacturer: SolarBatteryTelemetry
+    payload_on: 'true'
+    payload_off: 'false'
+  - name: SBT BMS Charge MOS enabled
+    unique_id: sbt_bms_charge_enabled
+    default_entity_id: binary_sensor.sbt_bms_charge_enabled
+    state_topic: SolarBatteryTelemetry/bms/charge_enabled
+    availability_mode: all
+    availability:
+    - topic: SolarBatteryTelemetry/status
+      payload_available: online
+      payload_not_available: offline
+    - topic: SolarBatteryTelemetry/bms/availability
+      payload_available: available
+      payload_not_available: unavailable
+    - topic: SolarBatteryTelemetry/bms/charge_enabled
+      value_template: '{{ ''available'' if value in [''true'', ''false''] else ''unavailable'' }}'
+      payload_available: available
+      payload_not_available: unavailable
+    device:
+      identifiers:
+      - sbt_8857218f664c_bms
+      name: SBT BMS
+      manufacturer: SolarBatteryTelemetry
+    payload_on: 'true'
+    payload_off: 'false'
+  - name: SBT BMS Discharge MOS enabled
+    unique_id: sbt_bms_discharge_enabled
+    default_entity_id: binary_sensor.sbt_bms_discharge_enabled
+    state_topic: SolarBatteryTelemetry/bms/discharge_enabled
+    availability_mode: all
+    availability:
+    - topic: SolarBatteryTelemetry/status
+      payload_available: online
+      payload_not_available: offline
+    - topic: SolarBatteryTelemetry/bms/availability
+      payload_available: available
+      payload_not_available: unavailable
+    - topic: SolarBatteryTelemetry/bms/discharge_enabled
+      value_template: '{{ ''available'' if value in [''true'', ''false''] else ''unavailable'' }}'
+      payload_available: available
+      payload_not_available: unavailable
+    device:
+      identifiers:
+      - sbt_8857218f664c_bms
+      name: SBT BMS
+      manufacturer: SolarBatteryTelemetry
+    payload_on: 'true'
+    payload_off: 'false'
+  - name: SBT Collector connected
+    unique_id: sbt_collector_availability
+    default_entity_id: binary_sensor.sbt_collector_availability
+    state_topic: SolarBatteryTelemetry/status
+    payload_on: online
+    payload_off: offline
+    device_class: connectivity
+    entity_category: diagnostic
+    device:
+      identifiers:
+      - sbt_8857218f664c_collector
+      name: SBT Collector
+      manufacturer: SolarBatteryTelemetry
+  - name: SBT BMS data available
+    unique_id: sbt_bms_availability
+    default_entity_id: binary_sensor.sbt_bms_availability
+    state_topic: SolarBatteryTelemetry/bms/availability
+    payload_on: available
+    payload_off: unavailable
+    device_class: connectivity
+    entity_category: diagnostic
+    device:
+      identifiers:
+      - sbt_8857218f664c_bms
+      name: SBT BMS
+      manufacturer: SolarBatteryTelemetry
+    availability:
+    - topic: SolarBatteryTelemetry/status
+      payload_available: online
+      payload_not_available: offline
+  - name: SBT Victron data available
+    unique_id: sbt_victron_availability
+    default_entity_id: binary_sensor.sbt_victron_availability
+    state_topic: SolarBatteryTelemetry/victron/availability
+    payload_on: available
+    payload_off: unavailable
+    device_class: connectivity
+    entity_category: diagnostic
+    device:
+      identifiers:
+      - sbt_8857218f664c_victron
+      name: SBT Victron
+      manufacturer: SolarBatteryTelemetry
+    availability:
+    - topic: SolarBatteryTelemetry/status
+      payload_available: online
+      payload_not_available: offline
+  switch:
+  - name: SBT BMS Charge MOS permission
+    unique_id: sbt_bms_charge_mos_control
+    default_entity_id: switch.sbt_bms_charge_mos_control
+    command_topic: SolarBatteryTelemetry/bms/charge_enabled/set
+    state_topic: SolarBatteryTelemetry/bms/charge_enabled
+    payload_on: 'true'
+    payload_off: 'false'
+    value_template: '{{ ''true'' if value_json else ''false'' }}'
+    command_template: |-
+      {{ {'state': value == 'true',
+          'request_id': 'ha_charge_' ~ ((as_timestamp(now()) * 1000000) | int),
+          'session': state_attr('sensor.sbt_bms_control', 'session') or '',
+          'expires_at': (as_timestamp(now()) | int) + 30} | to_json }}
+    optimistic: false
+    retain: false
+    qos: 0
+    availability_mode: all
+    availability:
+    - topic: SolarBatteryTelemetry/status
+      payload_available: online
+      payload_not_available: offline
+    - topic: SolarBatteryTelemetry/bms/availability
+      payload_available: available
+      payload_not_available: unavailable
+    - topic: SolarBatteryTelemetry/bms/control
+      value_template: '{{ ''available'' if value_json.permissions_known | default(false) and value_json.session | default('''') != '''' else ''unavailable'' }}'
+      payload_available: available
+      payload_not_available: unavailable
+    device:
+      identifiers:
+      - sbt_8857218f664c_bms
+      name: SBT BMS
+      manufacturer: SolarBatteryTelemetry
+  - name: SBT BMS Discharge MOS permission
+    unique_id: sbt_bms_discharge_mos_control
+    default_entity_id: switch.sbt_bms_discharge_mos_control
+    command_topic: SolarBatteryTelemetry/bms/discharge_enabled/set
+    state_topic: SolarBatteryTelemetry/bms/discharge_enabled
+    payload_on: 'true'
+    payload_off: 'false'
+    value_template: '{{ ''true'' if value_json else ''false'' }}'
+    command_template: |-
+      {{ {'state': value == 'true',
+          'request_id': 'ha_discharge_' ~ ((as_timestamp(now()) * 1000000) | int),
+          'session': state_attr('sensor.sbt_bms_control', 'session') or '',
+          'expires_at': (as_timestamp(now()) | int) + 30} | to_json }}
+    optimistic: false
+    retain: false
+    qos: 0
+    availability_mode: all
+    availability:
+    - topic: SolarBatteryTelemetry/status
+      payload_available: online
+      payload_not_available: offline
+    - topic: SolarBatteryTelemetry/bms/availability
+      payload_available: available
+      payload_not_available: unavailable
+    - topic: SolarBatteryTelemetry/bms/control
+      value_template: '{{ ''available'' if value_json.permissions_known | default(false) and value_json.session | default('''') != '''' else ''unavailable'' }}'
+      payload_available: available
+      payload_not_available: unavailable
+    device:
+      identifiers:
+      - sbt_8857218f664c_bms
+      name: SBT BMS
+      manufacturer: SolarBatteryTelemetry
+  button:
+  - name: SBT BMS Set permissions charge off / discharge off
+    unique_id: sbt_bms_permissions_0
+    default_entity_id: button.sbt_bms_permissions_0
+    command_topic: SolarBatteryTelemetry/bms/permissions/set
+    command_template: |-
+      {{ {'charge_enabled': false,
+          'discharge_enabled': false,
+          'request_id': 'ha_pair_' ~ ((as_timestamp(now()) * 1000000) | int),
+          'session': state_attr('sensor.sbt_bms_control', 'session') or '',
+          'expires_at': (as_timestamp(now()) | int) + 30} | to_json }}
+    retain: false
+    qos: 0
+    availability_mode: all
+    availability:
+    - topic: SolarBatteryTelemetry/status
+      payload_available: online
+      payload_not_available: offline
+    - topic: SolarBatteryTelemetry/bms/availability
+      payload_available: available
+      payload_not_available: unavailable
+    - topic: SolarBatteryTelemetry/bms/control/availability
+      value_template: '{{ ''available'' if value == ''available'' else ''unavailable'' }}'
+      payload_available: available
+      payload_not_available: unavailable
+    device:
+      identifiers:
+      - sbt_8857218f664c_bms
+      name: SBT BMS
+      manufacturer: SolarBatteryTelemetry
+  - name: SBT BMS Set permissions charge on / discharge off
+    unique_id: sbt_bms_permissions_1
+    default_entity_id: button.sbt_bms_permissions_1
+    command_topic: SolarBatteryTelemetry/bms/permissions/set
+    command_template: |-
+      {{ {'charge_enabled': true,
+          'discharge_enabled': false,
+          'request_id': 'ha_pair_' ~ ((as_timestamp(now()) * 1000000) | int),
+          'session': state_attr('sensor.sbt_bms_control', 'session') or '',
+          'expires_at': (as_timestamp(now()) | int) + 30} | to_json }}
+    retain: false
+    qos: 0
+    availability_mode: all
+    availability:
+    - topic: SolarBatteryTelemetry/status
+      payload_available: online
+      payload_not_available: offline
+    - topic: SolarBatteryTelemetry/bms/availability
+      payload_available: available
+      payload_not_available: unavailable
+    - topic: SolarBatteryTelemetry/bms/control/availability
+      value_template: '{{ ''available'' if value == ''available'' else ''unavailable'' }}'
+      payload_available: available
+      payload_not_available: unavailable
+    device:
+      identifiers:
+      - sbt_8857218f664c_bms
+      name: SBT BMS
+      manufacturer: SolarBatteryTelemetry
+  - name: SBT BMS Set permissions charge off / discharge on
+    unique_id: sbt_bms_permissions_2
+    default_entity_id: button.sbt_bms_permissions_2
+    command_topic: SolarBatteryTelemetry/bms/permissions/set
+    command_template: |-
+      {{ {'charge_enabled': false,
+          'discharge_enabled': true,
+          'request_id': 'ha_pair_' ~ ((as_timestamp(now()) * 1000000) | int),
+          'session': state_attr('sensor.sbt_bms_control', 'session') or '',
+          'expires_at': (as_timestamp(now()) | int) + 30} | to_json }}
+    retain: false
+    qos: 0
+    availability_mode: all
+    availability:
+    - topic: SolarBatteryTelemetry/status
+      payload_available: online
+      payload_not_available: offline
+    - topic: SolarBatteryTelemetry/bms/availability
+      payload_available: available
+      payload_not_available: unavailable
+    - topic: SolarBatteryTelemetry/bms/control/availability
+      value_template: '{{ ''available'' if value == ''available'' else ''unavailable'' }}'
+      payload_available: available
+      payload_not_available: unavailable
+    device:
+      identifiers:
+      - sbt_8857218f664c_bms
+      name: SBT BMS
+      manufacturer: SolarBatteryTelemetry
+  - name: SBT BMS Set permissions charge on / discharge on
+    unique_id: sbt_bms_permissions_3
+    default_entity_id: button.sbt_bms_permissions_3
+    command_topic: SolarBatteryTelemetry/bms/permissions/set
+    command_template: |-
+      {{ {'charge_enabled': true,
+          'discharge_enabled': true,
+          'request_id': 'ha_pair_' ~ ((as_timestamp(now()) * 1000000) | int),
+          'session': state_attr('sensor.sbt_bms_control', 'session') or '',
+          'expires_at': (as_timestamp(now()) | int) + 30} | to_json }}
+    retain: false
+    qos: 0
+    availability_mode: all
+    availability:
+    - topic: SolarBatteryTelemetry/status
+      payload_available: online
+      payload_not_available: offline
+    - topic: SolarBatteryTelemetry/bms/availability
+      payload_available: available
+      payload_not_available: unavailable
+    - topic: SolarBatteryTelemetry/bms/control/availability
+      value_template: '{{ ''available'' if value == ''available'' else ''unavailable'' }}'
+      payload_available: available
+      payload_not_available: unavailable
+    device:
+      identifiers:
+      - sbt_8857218f664c_bms
+      name: SBT BMS
+      manufacturer: SolarBatteryTelemetry

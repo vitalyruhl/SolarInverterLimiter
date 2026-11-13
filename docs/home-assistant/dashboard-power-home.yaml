@@ -1,0 +1,839 @@
+# Power dashboard (dashboard-power), view "Home".
+# Source: live Home Assistant export (2026-11-13). Keep in sync with the live system.
+# Live location: .storage/lovelace.dashboard_power, views[0].
+# Install: dashboard edit mode -> three dots -> Raw configuration editor; paste as one item of `views:`.
+# Required custom cards (HACS): apexcharts-card.js, bubble-card.js, card-mod.js, ha-sankey-chart.js, landroid-card.js, lovelace-expander-card.js, mini-graph-card-bundle.js, mushroom.js, power-flow-card-plus.js, slider-button-card.js, sunsynk-power-flow-card.js, tabbed-card.js, timer-bar-card.js
+
+title: Home
+cards:
+- type: custom:apexcharts-card
+  graph_span: 3h
+  header:
+    show: true
+    title: Power Usage (1h)
+    show_states: true
+    colorize_states: true
+  series:
+  - entity: sensor.power_usage
+    name: Bezug von EVU
+    stroke_width: 1
+    color: '#ff0000'
+  - entity: sensor.total_power_usage
+    name: Verbrauch
+    stroke_width: 1
+    color: '#ffff00'
+  - entity: sensor.sbt_victron_solar_power_w
+    name: PV aktuell (Victron)
+    stroke_width: 1
+    color: '#ff9800'
+  - entity: sensor.shed_inverter_corrected_power
+    name: PV + Batterie (AC)
+    stroke_width: 1
+    color: '#00ff00'
+  - entity: sensor.meter_giving_away
+    name: Einspeisung
+    stroke_width: 1
+    color: '#00ffff'
+  - entity: sensor.solarlimiter_setvalue
+    name: Setvalue Inverter
+    stroke_width: 1
+    color: '#aaaaaa'
+- type: entities
+  entities:
+  - entity: sensor.meter_reading
+    secondary_info: last-updated
+    name: ' '
+  title: Total consumed
+- type: entities
+  entities:
+  - entity: sensor.power_usage
+    name: Current consumption
+  - entity: sensor.meter_reading
+    name: Total consumed
+  - entity: sensor.tasmota_smartplug_12_energy_today
+  - entity: sensor.meter_reading_out
+    name: Gesamt verschenkt
+  title: Tasmota
+- type: custom:apexcharts-card
+  header:
+    show: true
+  graph_span: 96h
+  span:
+    start: day
+  now:
+    show: true
+    label: Now
+  color_list:
+  - var(--primary-color)
+  series:
+  - entity: sensor.epex_spot_data_total_price_2
+    yaxis_id: uurprijs
+    float_precision: 3
+    type: column
+    extend_to: false
+    show:
+      extremas: time
+    data_generator: |
+      const data = entity.attributes.data ?? [];
+      const startWindow = new Date();
+      startWindow.setHours(0, 0, 0, 0);
+
+      const endWindow = startWindow.getTime() + 96 * 60 * 60 * 1000;
+
+      return data
+        .filter(entry => {
+          const start = new Date(entry.start_time).getTime();
+          return start >= startWindow.getTime() && start < endWindow;
+        })
+        .map(entry => [
+          new Date(entry.start_time).getTime(),
+          Number(entry.price_per_kwh)
+        ]);
+    color_threshold:
+    - value: 0
+      color: '#186ddc'
+    - value: 0.155
+      color: '#04822e'
+    - value: 0.2
+      color: '#12A141'
+    - value: 0.25
+      color: '#79B92C'
+    - value: 0.3
+      color: '#C4D81D'
+    - value: 0.35
+      color: '#F3DC0C'
+    - value: 0.4
+      color: red
+    - value: 0.5
+      color: magenta
+  experimental:
+    color_threshold: true
+  yaxis:
+  - id: uurprijs
+    decimals: 3
+    apex_config:
+      title:
+        text: €/kWh
+      tickAmount: 4
+  apex_config:
+    legend:
+      show: false
+    tooltip:
+      x:
+        show: true
+        format: dd.MM. HH:mm
+    xaxis:
+      type: datetime
+      labels:
+        datetimeUTC: false
+- type: vertical-stack
+  cards:
+  - type: markdown
+    title: Strompreis · Gesamtpreis heute
+    content: |-
+      {% set day_start = today_at('00:00') %}
+      {% set day_end = day_start + timedelta(days=1) %}
+      {% set expected = ((as_timestamp(day_end) - as_timestamp(day_start)) / 900) | int %}
+      {% set ns = namespace(prices=[], starts=[], invalid=false) %}
+      {% for row in state_attr('sensor.epex_spot_data_total_price_2', 'data') or [] %}
+        {% set start = as_datetime(row.start_time, none) %}
+        {% set end = as_datetime(row.end_time, none) %}
+        {% if start is not none and as_local(start).date() == now().date() %}
+          {% if is_number(row.price_per_kwh) and end is not none and as_timestamp(end) - as_timestamp(start) == 900 %}
+            {% set ns.prices = ns.prices + [row.price_per_kwh | float] %}
+            {% set ns.starts = ns.starts + [as_timestamp(start)] %}
+          {% else %}
+            {% set ns.invalid = true %}
+          {% endif %}
+        {% endif %}
+      {% endfor %}
+      {% set prices = ns.prices | sort %}
+      {% set n = prices | count %}
+      **Heute · {{ now().strftime('%d.%m.%Y') }} · 00:00–24:00 (Europe/Berlin)**
+
+      {% if n == expected and ns.starts | unique | list | count == expected and not ns.invalid %}
+      | Gesamtpreis inkl. Aufschlägen und Steuer | €/kWh |
+      |:--|--:|
+      | Durchschnitt heute | {{ ('%.6f' | format((prices | sum) / n)).replace('.', ',') }} |
+      | Höchstpreis heute | {{ ('%.6f' | format(prices[-1])).replace('.', ',') }} |
+      | Tiefstpreis heute | {{ ('%.6f' | format(prices[0])).replace('.', ',') }} |
+      | Median heute | {{ ('%.6f' | format((prices[((n - 1) / 2) | int] + prices[(n / 2) | int]) / 2)).replace('.', ',') }} |
+
+      {{ n }}/{{ expected }} Viertelstunden · gleiche Preisgrundlage wie die Grafik.
+      {% else %}
+      **Nicht verfügbar:** vollständige Tagesdaten fehlen ({{ n }}/{{ expected }} gültige Viertelstunden).
+      {% endif %}
+  - type: entities
+    show_header_toggle: false
+    entities:
+    - entity: sensor.epex_spot_data_total_price_2
+      name: Aktueller Gesamtpreis
+    - entity: sensor.epex_spot_data_quantile_2
+      name: Marktpreis-Quantil heute
+    - entity: sensor.epex_spot_data_rank_2
+      name: Marktpreis-Rang heute
+- type: custom:apexcharts-card
+  header:
+    show: true
+    title: Nächste 4 Stunden
+  graph_span: 4h
+  span:
+    start: hour
+  now:
+    show: true
+    label: Jetzt
+  series:
+  - entity: sensor.epex_spot_data_total_price_2
+    yaxis_id: uurprijs
+    float_precision: 3
+    type: column
+    extend_to: false
+    data_generator: |
+      const now = Date.now();
+      const endWindow = now + 4 * 60 * 60 * 1000;
+      const data = entity.attributes.data ?? [];
+
+      const rows = data.filter(entry => {
+        const start = new Date(entry.start_time).getTime();
+        const end = new Date(entry.end_time).getTime();
+
+        return end > now && start < endWindow;
+      });
+
+      return rows.map(entry => [
+        new Date(entry.start_time).getTime(),
+        Number(entry.price_per_kwh)
+      ]);
+
+      return result;
+    color_threshold:
+    - value: 0
+      color: '#186ddc'
+    - value: 0.155
+      color: '#04822e'
+    - value: 0.2
+      color: '#12A141'
+    - value: 0.25
+      color: '#79B92C'
+    - value: 0.3
+      color: '#C4D81D'
+    - value: 0.35
+      color: '#F3DC0C'
+    - value: 0.4
+      color: red
+    - value: 0.5
+      color: magenta
+  experimental:
+    color_threshold: true
+  yaxis:
+  - id: uurprijs
+    decimals: 3
+    min: -0.2
+    max: 0.8
+    apex_config:
+      title:
+        text: €/kWh
+      tickAmount: 4
+  apex_config:
+    chart:
+      type: bar
+    plotOptions:
+      bar:
+        columnWidth: 90%
+    legend:
+      show: false
+    tooltip:
+      x:
+        show: true
+        format: HH:mm
+    xaxis:
+      type: datetime
+      labels:
+        datetimeUTC: false
+        format: HH:mm
+- type: entities
+  title: Battery / BMS
+  show_header_toggle: false
+  state_color: true
+  entities:
+  - entity: binary_sensor.sbt_collector_availability
+    name: Collector connection
+  - entity: binary_sensor.sbt_bms_charging
+    name: Charging
+  - entity: binary_sensor.sbt_bms_discharging
+    name: Discharging
+  - entity: sensor.sbt_bms_state_of_charge_pct
+    name: State of charge
+  - entity: sensor.sbt_bms_voltage_v
+    name: Battery voltage
+  - entity: sensor.sbt_bms_current_a
+    name: Battery current
+  - entity: sensor.sbt_bms_power_w
+    name: Battery power
+  - entity: sensor.sbt_bms_remaining_capacity_ah
+    name: Remaining capacity
+  - entity: sensor.sbt_bms_full_capacity_ah
+    name: Full capacity
+  - entity: sensor.sbt_bms_temperature_max_c
+    name: Maximum temperature
+  - entity: sensor.sbt_bms_cell_voltage_min_v
+    name: Minimum cell voltage
+  - entity: sensor.sbt_bms_cell_voltage_max_v
+    name: Maximum cell voltage
+  - entity: sensor.sbt_bms_cell_voltage_delta_v
+    name: Cell voltage spread
+  - entity: sensor.sbt_bms_alarm_bits
+    name: Alarm bits
+  - entity: sensor.sbt_bms_temperature_min_c
+    name: Minimum temperature
+  - entity: sensor.sbt_bms_protection
+    name: Protection
+  - entity: sensor.sbt_bms_health
+    name: Source health
+- type: entities
+  title: BMS MOS
+  show_header_toggle: false
+  entities:
+  - entity: switch.sbt_bms_control_enabled
+    name: MOS-Steuerung freigeben
+  - entity: sensor.sbt_bms_control_result
+    name: Last command result
+  - entity: switch.sbt_bms_charge_mos_control
+    name: Allow charging
+  - entity: binary_sensor.sbt_bms_charge_enabled
+    name: Charge MOS enabled
+  - entity: switch.sbt_bms_discharge_mos_control
+    name: Allow discharging
+  - entity: binary_sensor.sbt_bms_discharge_enabled
+    name: Discharge MOS enabled
+- type: vertical-stack
+  cards:
+  - type: entities
+    title: Victron SmartSolar
+    show_header_toggle: false
+    state_color: true
+    entities:
+    - entity: binary_sensor.sbt_collector_availability
+      name: Collector connection
+    - entity: binary_sensor.sbt_victron_availability
+      name: Data available
+    - entity: sensor.sbt_victron_solar_power_w
+      name: Solar power
+    - entity: sensor.sbt_victron_battery_voltage_v
+      name: Charger battery voltage
+    - entity: sensor.sbt_victron_charge_current_a
+      name: Charger output current
+    - entity: sensor.sbt_victron_load_current_a
+      name: Load current
+    - entity: sensor.sbt_victron_charge_state
+      name: Charge state
+    - entity: sensor.sbt_victron_error_code
+      name: Error code
+    - entity: sensor.sbt_victron_yield_today_wh
+      name: Yield today
+  - type: markdown
+    content: Passive Bluetooth readings from the SmartSolar MPPT 150/35. PV voltage/current and derived battery power are not provided by this readout.
+- type: entity
+  entity: sensor.rabot_energy_current_price
+  name: sensor.rabot_energy_current_price
+- type: entities
+  title: Solarlimiter
+  entities:
+  - entity: sensor.solarlimiter_status
+  - entity: sensor.solarlimiter_getvalue
+  - entity: sensor.solarlimiter_setvalue
+  - entity: sensor.solarlimiter_calculatedvalue
+  - entity: sensor.solarlimiter_temperature
+  - entity: sensor.solarlimiter_humidity
+  - entity: sensor.solarlimiter_dewpoint
+- type: entities
+  entities:
+  - entity: sensor.powermeter_emh_power_curr
+    name: EMH Power_curr
+  - entity: sensor.powermeter_emh_total_in
+    name: EMH Total_in
+  - entity: sensor.powermeter_emh_total_out
+    name: EMH Total_out
+  title: Powermeter
+- type: vertical-stack
+  cards:
+  - type: conditional
+    conditions:
+    - condition: state
+      entity: binary_sensor.sbt_bms_availability
+      state: 'on'
+    - condition: state
+      entity: sensor.sbt_bms_state_of_charge_pct
+      state_not:
+      - unknown
+      - unavailable
+    - condition: state
+      entity: sensor.sbt_bms_voltage_v
+      state_not:
+      - unknown
+      - unavailable
+    - condition: state
+      entity: sensor.sbt_bms_current_a
+      state_not:
+      - unknown
+      - unavailable
+    - condition: state
+      entity: sensor.sbt_bms_power_w
+      state_not:
+      - unknown
+      - unavailable
+    - condition: state
+      entity: sensor.sbt_bms_temperature_max_c
+      state_not:
+      - unknown
+      - unavailable
+    card:
+      type: custom:sunsynk-power-flow-card
+      cardstyle: compact
+      panel_mode: false
+      large_font: false
+      show_solar: true
+      show_battery: true
+      show_grid: true
+      decimal_places: 2
+      dynamic_line_width: true
+      min_line_width: 1
+      max_line_width: 4
+      inverter:
+        modern: false
+        colour: grey
+        autarky: 'no'
+        auto_scale: true
+        three_phase: false
+        model: azzurro
+      battery:
+        energy: input_number.sbt_battery_full_energy_wh
+        shutdown_soc: 10
+        invert_power: true
+        colour: pink
+        show_daily: false
+        animation_speed: 6
+        max_power: 4500
+        show_absolute: false
+        auto_scale: true
+        hide_soc: true
+        dynamic_colour: true
+        linear_gradient: true
+        animate: true
+        path_threshold: 100
+      solar:
+        colour: orange
+        show_daily: true
+        mppts: 1
+        animation_speed: 9
+        max_power: 1000
+        pv1_name: ''
+        pv1_max_power: 1000
+        auto_scale: true
+        display_mode: 1
+        dynamic_colour: true
+        efficiency: 3
+        off_threshold: 0
+      grid:
+        colour: '#5490c2'
+        export_colour: brown
+        grid_off_colour: red
+        show_daily_buy: true
+        show_daily_sell: true
+        no_grid_colour: green
+        show_nonessential: false
+        invert_grid: false
+        animation_speed: 8
+        max_power: 8000
+        auto_scale: true
+        off_threshold: 0
+        grid_name: EWE
+      entities:
+        use_timer_248: 'no'
+        priority_load_243: 'no'
+        pv1_power_186: sensor.sbt_victron_solar_power_w
+        pv1_voltage_109: none
+        pv1_current_110: none
+        day_pv_energy_108: sensor.sbt_solar_yield_today_kwh
+        total_pv_generation: none
+        essential_power: sensor.total_power_usage
+        inverter_voltage_154: sensor.tasmota_smartplug_12_energy_voltage
+        grid_power_169: sensor.powermeter_emh_power_curr
+        grid_ct_power_172: sensor.powermeter_emh_power_curr
+        day_grid_import_76: sensor.daily_energy_consumed
+        day_grid_export_77: sensor.helper_daily_daily_energy_gifted
+        environment_temp: null
+        inverter_power_175: sensor.tasmota_smartplug_12_energy_power
+        battery_soc_184: sensor.sbt_bms_state_of_charge_pct
+        battery_voltage_183: sensor.sbt_bms_voltage_v
+        battery_current_191: sensor.sbt_bms_current_a
+        battery_power_190: sensor.sbt_bms_power_w
+        battery_temp_182: sensor.sbt_bms_temperature_max_c
+        inverter_current_164: sensor.tasmota_smartplug_12_energy_current
+        nonessential_power: 'no'
+      decimal_places_energy: 2
+      load:
+        show_daily: false
+  - type: conditional
+    conditions:
+    - condition: or
+      conditions:
+      - condition: state
+        entity: binary_sensor.sbt_bms_availability
+        state_not: 'on'
+      - condition: state
+        entity: sensor.sbt_bms_state_of_charge_pct
+        state:
+        - unknown
+        - unavailable
+      - condition: state
+        entity: sensor.sbt_bms_voltage_v
+        state:
+        - unknown
+        - unavailable
+      - condition: state
+        entity: sensor.sbt_bms_current_a
+        state:
+        - unknown
+        - unavailable
+      - condition: state
+        entity: sensor.sbt_bms_power_w
+        state:
+        - unknown
+        - unavailable
+      - condition: state
+        entity: sensor.sbt_bms_temperature_max_c
+        state:
+        - unknown
+        - unavailable
+    card:
+      type: custom:sunsynk-power-flow-card
+      cardstyle: compact
+      panel_mode: false
+      large_font: false
+      show_solar: true
+      show_battery: false
+      show_grid: true
+      decimal_places: 2
+      dynamic_line_width: true
+      min_line_width: 1
+      max_line_width: 4
+      inverter:
+        modern: false
+        colour: grey
+        autarky: 'no'
+        auto_scale: true
+        three_phase: false
+        model: azzurro
+      battery:
+        energy: input_number.sbt_battery_full_energy_wh
+        shutdown_soc: 10
+        invert_power: true
+        colour: pink
+        show_daily: true
+        animation_speed: 6
+        max_power: 4500
+        show_absolute: false
+        auto_scale: true
+        hide_soc: true
+        dynamic_colour: true
+        linear_gradient: true
+        animate: true
+        path_threshold: 100
+      solar:
+        colour: orange
+        show_daily: true
+        mppts: 1
+        animation_speed: 9
+        max_power: 1000
+        pv1_name: ''
+        pv1_max_power: 1000
+        auto_scale: true
+        display_mode: 1
+        dynamic_colour: true
+        efficiency: 3
+        off_threshold: 0
+      grid:
+        colour: '#5490c2'
+        export_colour: brown
+        grid_off_colour: red
+        show_daily_buy: true
+        show_daily_sell: true
+        no_grid_colour: green
+        show_nonessential: false
+        invert_grid: false
+        animation_speed: 8
+        max_power: 8000
+        auto_scale: true
+        off_threshold: 0
+        grid_name: EWE
+      entities:
+        use_timer_248: 'no'
+        priority_load_243: 'no'
+        pv1_power_186: sensor.sbt_victron_solar_power_w
+        pv1_voltage_109: none
+        pv1_current_110: none
+        day_pv_energy_108: sensor.sbt_solar_yield_today_kwh
+        total_pv_generation: none
+        essential_power: sensor.total_power_usage
+        inverter_voltage_154: sensor.tasmota_smartplug_12_energy_voltage
+        grid_power_169: sensor.powermeter_emh_power_curr
+        grid_ct_power_172: sensor.powermeter_emh_power_curr
+        day_grid_import_76: sensor.daily_energy_consumed
+        day_grid_export_77: sensor.helper_daily_daily_energy_gifted
+        environment_temp: null
+        inverter_power_175: sensor.tasmota_smartplug_12_energy_power
+        inverter_current_164: sensor.tasmota_smartplug_12_energy_current
+        nonessential_power: 'no'
+      decimal_places_energy: 2
+      load:
+        show_daily: false
+- type: entities
+  title: Energie Heute
+  entities:
+  - entity: sensor.daily_energy_consumed
+    name: Bezogen von EVU heute
+  - entity: sensor.meter_reading
+    name: Bezogen von EVU gesamt
+  - entity: sensor.sbt_solar_yield_today_kwh
+    name: PV-Erzeugung heute (Victron)
+  - entity: sensor.tasmota_smartplug_12_energy_today
+    name: 'PV + Batterie: AC-Abgabe heute'
+  - entity: sensor.solar_self_consumption_power
+    name: Eigenverbrauch aus PV + Batterie
+  - entity: sensor.money_saved_rate
+    name: Vermiedene Bezugskosten aktuell
+  - entity: sensor.money_saved_daily
+    name: Vermiedene Bezugskosten heute
+  - entity: sensor.money_saved_monthly
+    name: Vermiedene Bezugskosten Monat
+  - entity: sensor.helper_daily_daily_energy_gifted
+    name: Netzeinspeisung heute
+  - entity: sensor.meter_reading_out
+    name: Netzeinspeisung gesamt
+- type: vertical-stack
+  cards:
+  - type: markdown
+    content: |-
+      ## Batterie · 14S40P
+      LG M29 Li-Ion · 560 physische Zellen · 114 Ah · 50,4 V · ca. 5,75 kWh Nennenergie.
+
+      Die 14 Spannungskanäle messen jeweils eine parallele **40P-Gruppe**, keine einzelnen physischen Zellen. Unbekannte oder nicht verfügbare Werte bleiben offen.
+  - type: entities
+    title: BMS · 14 Gruppenspannungen
+    show_header_toggle: false
+    entities:
+    - entity: sensor.sbt_bms_cell_01_voltage
+      name: Gruppe 01 (40P)
+    - entity: sensor.sbt_bms_cell_02_voltage
+      name: Gruppe 02 (40P)
+    - entity: sensor.sbt_bms_cell_03_voltage
+      name: Gruppe 03 (40P)
+    - entity: sensor.sbt_bms_cell_04_voltage
+      name: Gruppe 04 (40P)
+    - entity: sensor.sbt_bms_cell_05_voltage
+      name: Gruppe 05 (40P)
+    - entity: sensor.sbt_bms_cell_06_voltage
+      name: Gruppe 06 (40P)
+    - entity: sensor.sbt_bms_cell_07_voltage
+      name: Gruppe 07 (40P)
+    - entity: sensor.sbt_bms_cell_08_voltage
+      name: Gruppe 08 (40P)
+    - entity: sensor.sbt_bms_cell_09_voltage
+      name: Gruppe 09 (40P)
+    - entity: sensor.sbt_bms_cell_10_voltage
+      name: Gruppe 10 (40P)
+    - entity: sensor.sbt_bms_cell_11_voltage
+      name: Gruppe 11 (40P)
+    - entity: sensor.sbt_bms_cell_12_voltage
+      name: Gruppe 12 (40P)
+    - entity: sensor.sbt_bms_cell_13_voltage
+      name: Gruppe 13 (40P)
+    - entity: sensor.sbt_bms_cell_14_voltage
+      name: Gruppe 14 (40P)
+- type: history-graph
+  title: BMS · Gruppenspannungen · 24 Stunden
+  hours_to_show: 24
+  entities:
+  - entity: sensor.sbt_bms_cell_01_voltage
+    name: Gruppe 01 (40P)
+  - entity: sensor.sbt_bms_cell_02_voltage
+    name: Gruppe 02 (40P)
+  - entity: sensor.sbt_bms_cell_03_voltage
+    name: Gruppe 03 (40P)
+  - entity: sensor.sbt_bms_cell_04_voltage
+    name: Gruppe 04 (40P)
+  - entity: sensor.sbt_bms_cell_05_voltage
+    name: Gruppe 05 (40P)
+  - entity: sensor.sbt_bms_cell_06_voltage
+    name: Gruppe 06 (40P)
+  - entity: sensor.sbt_bms_cell_07_voltage
+    name: Gruppe 07 (40P)
+  - entity: sensor.sbt_bms_cell_08_voltage
+    name: Gruppe 08 (40P)
+  - entity: sensor.sbt_bms_cell_09_voltage
+    name: Gruppe 09 (40P)
+  - entity: sensor.sbt_bms_cell_10_voltage
+    name: Gruppe 10 (40P)
+  - entity: sensor.sbt_bms_cell_11_voltage
+    name: Gruppe 11 (40P)
+  - entity: sensor.sbt_bms_cell_12_voltage
+    name: Gruppe 12 (40P)
+  - entity: sensor.sbt_bms_cell_13_voltage
+    name: Gruppe 13 (40P)
+  - entity: sensor.sbt_bms_cell_14_voltage
+    name: Gruppe 14 (40P)
+- type: vertical-stack
+  cards:
+  - type: history-graph
+    title: Batterie / MPPT · Spannungen · 24 Stunden
+    hours_to_show: 24
+    entities:
+    - entity: sensor.sbt_bms_voltage_v
+      name: Batterie (BMS)
+    - entity: sensor.sbt_victron_battery_voltage_v
+      name: MPPT-Ausgang
+  - type: history-graph
+    title: Batterie / MPPT · Ströme · 24 Stunden
+    hours_to_show: 24
+    entities:
+    - entity: sensor.sbt_bms_current_a
+      name: Batteriestrom
+    - entity: sensor.sbt_victron_charge_current_a
+      name: MPPT-Ladestrom
+  - type: history-graph
+    title: Batterie / Solar · Leistung · 24 Stunden
+    hours_to_show: 24
+    entities:
+    - entity: sensor.sbt_bms_power_w
+      name: Batterieleistung
+    - entity: sensor.sbt_victron_solar_power_w
+      name: Solarleistung
+- type: entities
+  title: Batterie · Energie und Ladebilanz
+  show_header_toggle: false
+  entities:
+  - entity: sensor.sbt_battery_charging_power
+    name: Ladeleistung
+  - entity: sensor.sbt_battery_discharging_power
+    name: Entladeleistung
+  - entity: sensor.sbt_battery_energy_charged
+    name: Geladene Energie (Zähler)
+  - entity: sensor.sbt_battery_energy_discharged
+    name: Entladene Energie (Zähler)
+  - type: simple-entity
+    entity: input_number.sbt_battery_full_energy_wh
+    name: Gespeicherte Vollenergie-Schätzung
+    tap_action:
+      action: none
+    hold_action:
+      action: none
+- type: entities
+  title: BMS · Daten und Rückmeldungen
+  show_header_toggle: false
+  entities:
+  - entity: binary_sensor.sbt_bms_availability
+    name: BMS-Daten verfügbar
+  - entity: sensor.sbt_bms_cell_count
+    name: Gemeldete Gruppenanzahl
+  - entity: sensor.sbt_bms_temperature_sensor_count
+    name: Temperatursensoren
+  - entity: sensor.sbt_bms_cells_sequence
+    name: Gruppentelegramm-Sequenz
+  - type: attribute
+    entity: sensor.sbt_bms_health
+    attribute: sample_sequence
+    name: BMS-Messwertsequenz
+  - type: attribute
+    entity: sensor.sbt_bms_health
+    attribute: sample_age_ms
+    name: BMS-Messwertalter
+    suffix: ms
+  - entity: sensor.sbt_bms_control
+    name: MOS-Rückmeldestatus
+  - type: attribute
+    entity: sensor.sbt_bms_control
+    attribute: ready
+    name: Rückmeldung bereit
+  - type: attribute
+    entity: sensor.sbt_bms_control
+    attribute: pending
+    name: Befehl ausstehend
+  - type: attribute
+    entity: sensor.sbt_bms_control
+    attribute: mos_readback
+    name: MOS-Lesequelle
+  - entity: sensor.sbt_bms_acknowledged_permissions
+    name: Ältere Berechtigungsquittierung
+- type: vertical-stack
+  cards:
+  - type: entities
+    title: SBT · Laufzeit und Speicher
+    show_header_toggle: false
+    entities:
+    - entity: sensor.sbt_collector_uptime
+      name: Collector-Laufzeit
+    - type: attribute
+      entity: sensor.sbt_collector_uptime
+      attribute: resetReason
+      name: Letzter Reset-Grund (Code)
+    - type: attribute
+      entity: sensor.sbt_collector_uptime
+      attribute: freeHeap
+      name: Laufzeitmeldung · Heap frei
+      suffix: B
+    - type: attribute
+      entity: sensor.sbt_collector_uptime
+      attribute: minFreeHeap
+      name: Laufzeitmeldung · Heap-Minimum
+      suffix: B
+    - type: attribute
+      entity: sensor.sbt_collector_uptime
+      attribute: maxAllocHeap
+      name: Laufzeitmeldung · größter Block
+      suffix: B
+    - entity: sensor.sbt_loop_stack_min_free_bytes
+      name: Loop-Stack · Minimum frei
+    - entity: sensor.sbt_heap_free_bytes
+      name: Heap · frei
+    - entity: sensor.sbt_heap_min_free_bytes
+      name: Heap · Minimum frei
+    - entity: sensor.sbt_heap_largest_free_block_bytes
+      name: Heap · größter freier Block
+    - type: simple-entity
+      entity: select.solar_limiter_operating_mode
+      name: Solarregler-Betriebsart (Anzeige)
+      tap_action:
+        action: none
+      hold_action:
+        action: none
+  - type: markdown
+    content: Stack-/Heap-Sensoren und Betriebsart sind vorbereitet. Solange die jeweilige Firmware sie nicht liefert, zeigt Home Assistant „Nicht verfügbar“. Die Betriebsart wird hier nur angezeigt.
+- type: entities
+  title: Victron · Datenfrische und Empfang
+  show_header_toggle: false
+  entities:
+  - entity: sensor.sbt_victron_health
+    name: Quellenstatus
+  - type: attribute
+    entity: sensor.sbt_victron_health
+    attribute: sample_sequence
+    name: BLE-Messwertsequenz
+  - type: attribute
+    entity: sensor.sbt_victron_health
+    attribute: sample_age_ms
+    name: BLE-Messwertalter
+    suffix: ms
+  - entity: sensor.sbt_victron_error_code_display
+    name: Fehlercode mit Empfangszeit
+  - entity: sensor.sbt_victron_yield_last_received_display
+    name: Zuletzt empfangener Tagesertrag
+  - type: attribute
+    entity: sensor.sbt_victron_solar_power_display_w
+    attribute: source_status
+    name: Leistungsquelle
+  - type: attribute
+    entity: sensor.sbt_victron_yield_today_display_kwh
+    attribute: source_status
+    name: Tagesertragsquelle
+badges: []

@@ -1,4 +1,4 @@
-# ESP32 Connection overwiew (ESP32-WROOM-32 - development board)
+# ESP32 Connection overview (ESP32-WROOM-32 - development board)
 
 This document is a **project-specific** GPIO reference for an ESP32-WROOM-32 board.
 
@@ -28,6 +28,16 @@ Legend:
 - (RO) = read-only input (no output, no pullups)
 - [current usage description] = what is connected in this project
 
+Pins as configured in `src/main.cpp` and `src/RS485Module/RS485Module.h`:
+
+- RS485 TX/RX/DE default to GPIO19/18/4 and are editable settings (`RS485Tx`,
+  `RS485Rx`, `RS485DE`). The firmware only transmits; received data is unused.
+- I2C uses fixed SDA GPIO21 / SCL GPIO22 at 400 kHz (BME280).
+- Reset button GPIO14 and AP mode button GPIO13 are inputs.
+- Cooling-fan relay GPIO23 and heater relay GPIO27 exist only with
+  `FEATURE_FAN_ENABLED=1` / `FEATURE_HEATER_ENABLED=1`; both are disabled by
+  default and in all PlatformIO profiles.
+
 ## Pin map (ASCII)
 
 ```text
@@ -39,25 +49,25 @@ Legend:
                                                                | .   ~~~~~~~~~~~~~~~~~~~~~   .  |
                                                            EN  | [x]                        [x] | GPIO23 (DO/PWM)                                [Cooling-Fan-Relay]
                                                                |                                |
-[free]         {RO/no-Pull!}       (DI/ADC1)          PIO36/VP | [ ]                        [x] | GGPIO22 (DI/DO)                                [SCL for I2C]
+[free]         {RO/no-Pull!}       (DI/ADC1)          PIO36/VP | [ ]                        [x] | GPIO22 (DI/DO)                                 [SCL for I2C]
                                                                |                                |
-[free]         {RO/no-Pull!}       (DI/ADC1)         GPIO39/VN | [ ]                        [ ] | GPIO1  (DO)               {UART1 TX only}      [free]
+[free]         {RO/no-Pull!}       (DI/ADC1)         GPIO39/VN | [ ]                        [ ] | GPIO1  (DO)               {UART0 TX/Serial}    [serial monitor]
                                                                |                                |
-[Heater-Relay] {RO/no-Pull!}       (DI/ADC1)            GPIO34 | [x]                        [ ] | GPIO3  (DI)               {UART1 RX only}      [free]
+[free]         {RO/no-Pull!}       (DI/ADC1)            GPIO34 | [ ]                        [ ] | GPIO3  (DI)               {UART0 RX/Serial}    [serial monitor]
                                                                |                                |
 [free]         {RO/no-Pull!}       (DI/ADC1)            GPIO35 | [ ]                        [x] | GPIO21 (DI/DO)                                 [SDA for I2C]
                                                                |                                |
 [free]                             (DI/DO/ADC1)         GPIO32 | [ ]                        [x] | GPIO19 (DI/DO/PWM)                             [TX to RS485-Module]
                                                                |                                |
-[free]                             (DI/DO/ADC1)         GPIO33 | [ ]                        [x] | GPIO18 (DI/DO/PWM)         {ADC2!}             [RX from RS485-Module - not used in code!]
+[free]                             (DI/DO/ADC1)         GPIO33 | [ ]                        [x] | GPIO18 (DI/DO/PWM)         {ADC2!}             [RX from RS485-Module - received data unused]
                                                                |                                |
 [free]         {ADC2!}             (DI/DO/DAC1/PWM)     GPIO25 | [ ]                        [ ] | GPIO5  (DI/DO/PWM)         {ADC2!}{BOOT}       [free]
                                                                |                                |
 [free]         {ADC2!}             (DI/DO/DAC2/PWM)     GPIO26 | [ ]                        [ ] | GPIO17 (DO/PWM)            {ADC2!}             [free]
                                                                |                                |
-[free]         {ADC2!}             (DO/PWM)             GPIO27 | [ ]                        [ ] | GPIO16 (DI/DO/PWM)         {ADC2!}             [free]
+[Heater-Relay] {ADC2!}             (DO/PWM)             GPIO27 | [x]                        [ ] | GPIO16 (DI/DO/PWM)         {ADC2!}             [free]
                                                                |                                |
-[Reset-Button] {ADC2!}             (DO/PWM)             GPIO14 | [x]                        [ ] | GPIO4  (DO/PWM)            {BOOT}              [free]
+[Reset-Button] {ADC2!}             (DO/PWM)             GPIO14 | [x]                        [x] | GPIO4  (DO/PWM)            {BOOT}              [RS485 DE/RE direction]
                                                                |                                |
 [free]         {BOOT/ADC2!}        (DI/DO/ADC2!/PWM)    GPIO12 | [ ]                        [ ] | GPIO2  (DO)                {Build-In LED only} [free]
                                                                |                                |
