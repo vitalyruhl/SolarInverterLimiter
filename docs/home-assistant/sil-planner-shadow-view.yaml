@@ -547,7 +547,8 @@ cards:
         **Stand Test:** {% if test_current and input_current %}{{ state_attr(a,''g'') | timestamp_custom(''%d.%m. %H:%M:%S'')
         }}{% else %}wartet auf aktuelle Testdaten{% endif %}.
 
-        **Preisvergleich:** {% if input_current %}gleiche Tarifwerte{% elif state_attr(i,''reason'')==''tariff_alignment_mismatch''
+        **Preisvergleich:** {% if input_current and state_attr(i,''held'') %}letzte gültige Preise von {{ state_attr(i,''heldSince'')
+        | timestamp_custom(''%H:%M'') }} weiter aktiv ({{ state_attr(i,''heldReason'') }}){% elif input_current %}gleiche Tarifwerte{% elif state_attr(i,''reason'')==''tariff_alignment_mismatch''
         %}pausiert: Anbieter und HA haben noch unterschiedliche Preisstände{% else %}wartet auf gültige Preise{% endif %}.
 
         **Preisquelle in den nächsten 36 Stunden:** Börse {{ state_attr(i,''originMarket36h'') or 0 }} · Prognose {{ state_attr(i,''originForecast36h'')
@@ -1041,6 +1042,270 @@ cards:
         - 0
         - 1
         - 2
+        x:
+          show: true
+          format: dd.MM. HH:mm
+      xaxis:
+        type: datetime
+        labels:
+          datetimeUTC: false
+  - type: custom:apexcharts-card
+    header:
+      show: true
+      title: SIL Prod/Test - Entladeplan mit Solarprognose (36 h)
+      show_states: false
+    graph_span: 39h
+    span:
+      start: minute
+      offset: -3h
+    now:
+      show: true
+      label: Now
+    series:
+    - entity: sensor.solarlimiter_discharge_budget
+      name: Production budget
+      yaxis_id: power_w
+      unit: W
+      float_precision: 0
+      type: line
+      curve: stepline
+      color: '#ef5350'
+      stroke_width: 2
+      extend_to: false
+      show:
+        extremas: false
+      data_generator: |-
+        const nowMs = Date.now(), windowStart = start.getTime(), windowEnd = end.getTime();
+        const a = entity?.attributes;
+        if (entity?.state !== 'ready' || !a || a.valid !== true || a.v !== 1 ||
+            !Number.isInteger(a.g) || !Number.isInteger(a.t) || a.d !== 900 ||
+            !Number.isInteger(a.n) || a.n < 2 || a.n > 144 || !Array.isArray(a.w) || a.w.length !== a.n ||
+            a.t % 900 !== 0 || a.g < a.t || a.g >= a.t + a.d ||
+            a.w.some(w => !Number.isInteger(w) || w < 0)) return [];
+        const generatedMs = a.g * 1000, coverageEnd = (a.t + a.n * a.d) * 1000;
+        if (nowMs - generatedMs > 180000 || generatedMs - nowMs > 120000 || nowMs >= coverageEnd) return [];
+        const points = [];
+        for (let i = 0; i < a.n; ++i) {
+          const intervalStart = (a.t + i * a.d) * 1000;
+          const at = Math.max(intervalStart, generatedMs, windowStart, nowMs);
+          const stop = Math.min(intervalStart + a.d * 1000, windowEnd);
+          if (stop <= at) continue;
+          points.push([at, a.w[i]], [stop, a.w[i]]);
+        }
+        return points;
+    - entity: sensor.sil_shadow_discharge_budget
+      name: Shadow budget - TEST
+      yaxis_id: power_w
+      unit: W
+      float_precision: 0
+      type: line
+      curve: stepline
+      color: '#ab47bc'
+      stroke_width: 2
+      extend_to: false
+      show:
+        extremas: false
+      data_generator: |-
+        const nowMs = Date.now(), windowStart = start.getTime(), windowEnd = end.getTime();
+        const a = entity?.attributes;
+        if (entity?.state !== 'ready' || !a || a.valid !== true || a.v !== 1 ||
+            !Number.isInteger(a.g) || !Number.isInteger(a.t) || a.d !== 900 ||
+            !Number.isInteger(a.n) || a.n < 2 || a.n > 144 || !Array.isArray(a.w) || a.w.length !== a.n ||
+            a.t % 900 !== 0 || a.g < a.t || a.g >= a.t + a.d ||
+            a.w.some(w => !Number.isInteger(w) || w < 0)) return [];
+        const generatedMs = a.g * 1000, coverageEnd = (a.t + a.n * a.d) * 1000;
+        if (nowMs - generatedMs > 180000 || generatedMs - nowMs > 120000 || nowMs >= coverageEnd) return [];
+        const points = [];
+        for (let i = 0; i < a.n; ++i) {
+          const intervalStart = (a.t + i * a.d) * 1000;
+          const at = Math.max(intervalStart, generatedMs, windowStart, nowMs);
+          const stop = Math.min(intervalStart + a.d * 1000, windowEnd);
+          if (stop <= at) continue;
+          points.push([at, a.w[i]], [stop, a.w[i]]);
+        }
+        return points;
+    - entity: sensor.solarlimiter_charge_plan
+      name: PV-Prognose
+      yaxis_id: power_w
+      unit: W
+      float_precision: 0
+      type: area
+      curve: stepline
+      color: '#ffca28'
+      opacity: 0.15
+      stroke_width: 1
+      stroke_dash: 6
+      extend_to: false
+      show:
+        extremas: true
+      # The forecast is shared; fall back to the test plan when production has no current plan.
+      data_generator: |-
+        const nowMs = Date.now(), windowStart = start.getTime(), windowEnd = end.getTime();
+        const current = e => {
+          const a = e?.attributes;
+          return e?.state === 'ready' && a?.valid === true && a.v === 1 && a.kind === 'intent_projection' &&
+            Number.isInteger(a.g) && Number.isInteger(a.t) && a.d === 900 && Number.isInteger(a.n) &&
+            a.n >= 2 && a.n <= 144 && Array.isArray(a.s) && a.s.length === a.n &&
+            nowMs - a.g * 1000 <= 180000 && a.g * 1000 - nowMs <= 120000 && nowMs < (a.t + a.n * a.d) * 1000;
+        };
+        const source = [entity, hass.states['sensor.sil_shadow_charge_plan']].find(current);
+        if (!source) return [];
+        const a = source.attributes, generatedMs = a.g * 1000, points = [];
+        for (let i = 0; i < a.n; ++i) {
+          const v = a.s[i];
+          if (v !== null && (!Number.isInteger(v) || v < 0 || v > 12000)) return [];
+          const intervalStart = (a.t + i * a.d) * 1000;
+          const at = Math.max(intervalStart, generatedMs, windowStart, nowMs);
+          const stop = Math.min(intervalStart + a.d * 1000, windowEnd);
+          if (stop <= at) continue;
+          points.push([at, v], [stop, v]);
+        }
+        return points;
+    - entity: sensor.solarlimiter_charge_plan
+      name: Production charge intent
+      yaxis_id: power_w
+      unit: W
+      float_precision: 0
+      type: area
+      curve: stepline
+      color: '#42a5f5'
+      opacity: 0.25
+      stroke_width: 1
+      extend_to: false
+      show:
+        extremas: false
+      data_generator: |-
+        const nowMs = Date.now(), windowStart = start.getTime(), windowEnd = end.getTime();
+        const a = entity?.attributes;
+        if (entity?.state !== 'ready' || !a || a.valid !== true || a.v !== 1 || a.kind !== 'intent_projection' ||
+            !Number.isInteger(a.g) || !Number.isInteger(a.t) || a.d !== 900 ||
+            !Number.isInteger(a.n) || a.n < 2 || a.n > 144 || !Array.isArray(a.w) || a.w.length !== a.n ||
+            a.t % 900 !== 0 || a.g < a.t || a.g >= a.t + a.d ||
+            a.w.some(w => w !== null && (!Number.isInteger(w) || w < 0 || w > 12000))) return [];
+        const generatedMs = a.g * 1000, coverageEnd = (a.t + a.n * a.d) * 1000;
+        if (nowMs - generatedMs > 180000 || generatedMs - nowMs > 120000 || nowMs >= coverageEnd) return [];
+        const points = [];
+        for (let i = 0; i < a.n; ++i) {
+          const intervalStart = (a.t + i * a.d) * 1000;
+          const at = Math.max(intervalStart, generatedMs, windowStart, nowMs);
+          const stop = Math.min(intervalStart + a.d * 1000, windowEnd);
+          if (stop <= at) continue;
+          points.push([at, a.w[i]], [stop, a.w[i]]);
+        }
+        return points;
+    - entity: sensor.sil_shadow_charge_plan
+      name: Shadow charge intent - TEST
+      yaxis_id: power_w
+      unit: W
+      float_precision: 0
+      type: area
+      curve: stepline
+      color: '#ab47bc'
+      opacity: 0.25
+      stroke_width: 1
+      extend_to: false
+      show:
+        extremas: false
+      data_generator: |-
+        const nowMs = Date.now(), windowStart = start.getTime(), windowEnd = end.getTime();
+        const a = entity?.attributes;
+        if (entity?.state !== 'ready' || !a || a.valid !== true || a.v !== 1 || a.kind !== 'intent_projection' ||
+            !Number.isInteger(a.g) || !Number.isInteger(a.t) || a.d !== 900 ||
+            !Number.isInteger(a.n) || a.n < 2 || a.n > 144 || !Array.isArray(a.w) || a.w.length !== a.n ||
+            a.t % 900 !== 0 || a.g < a.t || a.g >= a.t + a.d ||
+            a.w.some(w => w !== null && (!Number.isInteger(w) || w < 0 || w > 12000))) return [];
+        const generatedMs = a.g * 1000, coverageEnd = (a.t + a.n * a.d) * 1000;
+        if (nowMs - generatedMs > 180000 || generatedMs - nowMs > 120000 || nowMs >= coverageEnd) return [];
+        const points = [];
+        for (let i = 0; i < a.n; ++i) {
+          const intervalStart = (a.t + i * a.d) * 1000;
+          const at = Math.max(intervalStart, generatedMs, windowStart, nowMs);
+          const stop = Math.min(intervalStart + a.d * 1000, windowEnd);
+          if (stop <= at) continue;
+          points.push([at, a.w[i]], [stop, a.w[i]]);
+        }
+        return points;
+    - entity: sensor.epex_spot_data_total_price_2
+      name: Strompreis
+      yaxis_id: price
+      unit: €/kWh
+      float_precision: 3
+      type: line
+      curve: stepline
+      color: '#26a69a'
+      stroke_width: 1
+      extend_to: false
+      show:
+        extremas: true
+      data_generator: |-
+        const windowStart = start.getTime(), windowEnd = end.getTime();
+        return (entity.attributes.data ?? [])
+          .map(entry => [new Date(entry.start_time).getTime(), entry.price_per_kwh])
+          .filter(([at]) => at >= windowStart && at < windowEnd);
+    - entity: sensor.sil_configured_maximum_output
+      name: SIL configured maximum output
+      yaxis_id: power_w
+      type: line
+      color: '#00000000'
+      opacity: 0
+      stroke_width: 0
+      extend_to: false
+      show:
+        in_chart: true
+        in_legend: false
+        in_header: false
+        extremas: false
+        datalabels: false
+      data_generator: |-
+        const limit = Number(entity?.state), a = entity?.attributes;
+        if (!a || a.v !== 1 || a.valid !== true || !Number.isInteger(limit) || limit <= 0 || limit !== a.maxOutputW) return [];
+        return [[start.getTime(), limit + 100], [end.getTime(), limit + 100]];
+    experimental: {}
+    yaxis:
+    - id: price
+      decimals: 3
+      min: auto
+      apex_config:
+        title:
+          text: €/kWh
+        tickAmount: 4
+    - id: power_w
+      opposite: true
+      decimals: 0
+      min: 0
+      max: auto
+      apex_config:
+        forceNiceScale: false
+        title:
+          text: W
+        tickAmount: 4
+    apex_config:
+      chart:
+        height: 420
+        animations:
+          enabled: false
+      stroke:
+        width:
+        - 2
+        - 2
+        - 1
+        - 1
+        - 1
+        - 1
+        - 0
+        curve: stepline
+      markers:
+        size: 0
+      legend:
+        show: true
+      tooltip:
+        enabledOnSeries:
+        - 0
+        - 1
+        - 2
+        - 3
+        - 4
+        - 5
         x:
           show: true
           format: dd.MM. HH:mm

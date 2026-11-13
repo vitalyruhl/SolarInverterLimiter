@@ -151,7 +151,7 @@ class ProductionLifecycleTests(unittest.TestCase):
     def namespace(self,blocked=False,overlap=False):
         root=Path(__file__).resolve().parents[2]
         tree=ast.parse((root/'docs/home-assistant/sil-planner-shadow-pyscript.py').read_text(encoding='utf-8'))
-        functions=[node for node in tree.body if isinstance(node,ast.FunctionDef) and node.name in ('_production_withdraw','sil_production_publish_prices','_shadow_withdraw','sil_shadow_publish_prices')]
+        functions=[node for node in tree.body if isinstance(node,ast.FunctionDef) and node.name in ('_production_withdraw','_held_attributes','sil_production_publish_prices','_shadow_withdraw','sil_shadow_publish_prices')]
         for node in functions:node.decorator_list=[]
         now=1793997000;calls=[]
         entity=lambda value,attributes:SimpleNamespace(state=value,attributes=attributes)
@@ -214,5 +214,55 @@ class ProductionLifecycleTests(unittest.TestCase):
         self.assertEqual(result['published_chunks'],1)
         self.assertEqual(store['sensor.sil_shadow_price_input'].state,'ready')
         self.assertEqual(calls[0]['topic'],'SolarLimiterTest/Input/PriceSchedule')
+
+class LastGoodHoldTests(unittest.TestCase):
+    def setUp(self):
+        directory=tempfile.TemporaryDirectory();self.addCleanup(directory.cleanup)
+        self.path=Path(directory.name)/'last-good.json'
+        self.start=1793997000
+        self.good=lambda:core._snapshot(list(range(200)),[1]*200,self.start,self.start+10)
+
+    def mismatch(self):
+        raise ValueError(f'tariff_alignment_mismatch:{self.start}:0.416683:0.408998')
+
+    def test_mismatch_reissues_last_good_prices_trimmed_with_fresh_revision(self):
+        core.with_last_good(self.good,self.start+10,self.path)
+        now=self.start+3600+5
+        held=core.with_last_good(self.mismatch,now,self.path)
+        self.assertTrue(held['held'])
+        self.assertEqual(held['heldSince'],self.start+10)
+        self.assertTrue(held['heldError'].startswith('tariff_alignment_mismatch'))
+        self.assertEqual((held['r'],held['t'],held['n'],held['p'][0]),(now,self.start+3600,196,4))
+        first=json.loads(held['frames'][0])
+        self.assertEqual((first['r'],first['t'],first['n'],first['p'][0]),(now,self.start+3600,196,4))
+
+    def test_hold_expires_and_original_error_is_raised(self):
+        core.with_last_good(self.good,self.start+10,self.path)
+        with self.assertRaisesRegex(ValueError,'tariff_alignment_mismatch'):
+            core.with_last_good(self.mismatch,self.start+10+core.HOLD_MAX_AGE+1,self.path)
+
+    def test_without_last_good_the_error_is_raised(self):
+        with self.assertRaisesRegex(ValueError,'tariff_alignment_mismatch'):
+            core.with_last_good(self.mismatch,self.start,self.path)
+
+    def test_fresh_success_replaces_held_state(self):
+        core.with_last_good(self.good,self.start+10,self.path)
+        fresh=core.with_last_good(lambda:core._snapshot([7,8],[2,2],self.start+900,self.start+900),self.start+900,self.path)
+        self.assertFalse(fresh['held'])
+        held=core.with_last_good(self.mismatch,self.start+905,self.path)
+        self.assertEqual((held['p'],held['heldSince']),([7,8],self.start+900))
+
+    def test_held_production_exposes_only_fixed_reason(self):
+        ns,store,calls=ProductionLifecycleTests().namespace()
+        held=core._snapshot([1,2],[1,1],1793997000,1793997000)
+        held.update(held=True,heldSince=1793996000,heldAgeS=1000,heldError='tariff_alignment_mismatch:1:0.4:0.5')
+        ns['_production_prepare']=lambda *args:dict(held)
+        result=ns['sil_production_publish_prices']()
+        attributes=store['sensor.sil_production_price_input'].attributes
+        self.assertTrue(result['held'])
+        self.assertEqual(store['sensor.sil_production_price_input'].state,'ready')
+        self.assertEqual(attributes['heldReason'],'tariff_alignment_mismatch')
+        self.assertNotIn('heldError',attributes)
+        self.assertEqual(json.loads(calls[0]['payload'])['n'],2)
 
 if __name__=='__main__':unittest.main()
