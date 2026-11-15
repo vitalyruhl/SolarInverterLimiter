@@ -1,8 +1,10 @@
-# Explicit operating modes (5.6.3)
+# Explicit operating modes
 
 The persisted default is `automatic`. Existing reserve, price, controller and
 transport settings remain unchanged. SIL does not publish BMS MOS commands in any
 mode. Manual MOS control remains with SBT and the BMS retains its own protection.
+
+With `Limiter Enabled` on, the modes operate as follows:
 
 | Mode | Behavior |
 | --- | --- |
@@ -10,6 +12,46 @@ mode. Manual MOS control remains with SBT and the BMS retains its own protection
 | `household_follow` | `clamp(measured inverter AC + signed grid power + correction, 0, MAX)`, with correction applied once before clamping. Explicit selection permits missing BMS feedback and reports `manual_bms_unverified`. |
 | `charge_priority` | Holds output below the configured charge threshold (default 80% since 5.8.1, previously 95%). Between the threshold and 100%, the default inverter share is 10% (previously 0%). At 100%, household following latches until SOC drops below the threshold. |
 | `pv_follow` | Uses only fresh measured PV: `min(charger DC W * 0.90, clamp(measured household W + correction, 0, MAX))`. Excess PV remains available for battery charging; night-time zero PV produces zero output. |
+
+With valid planning inputs, economic planning continues in every mode. The
+additive `Planning/State` fields `autoStrategy`, `autoLimitW` and `autoReason`
+describe that economic recommendation independently of the selected mode.
+`autoLimitKind=battery_ac` identifies `autoLimitW` as the planned AC battery
+discharge limit, not a complete inverter or PID target; unavailable plans
+report a null strategy and limit. `configuredMode`, `manualOverride`,
+`effectiveStrategy` and `commandedW` distinguish the selected mode and current
+output path. `manualOverride` identifies a selected manual mode even when a
+separate stop or limiter-disabled path takes precedence. `commandedW` is a
+requested value and does not confirm delivery or physical output.
+
+`diagnosticPlansAvailable` reports whether both diagnostic snapshots exist;
+`diagnosticPlansRetained` reports whether either snapshot is being kept after
+its inputs or context became unsuitable. `diagnosticRetentionAgeS` is the age
+of the longest current retention period, or null when neither is retained. The
+original plan timestamps remain unchanged. These fields do not grant economic
+or inverter execution permission. Historical valid snapshots are not replayed
+until the status and consumer behavior can be coordinated safely.
+
+## Limiter disabled
+
+When `Limiter Enabled` is off, SIL requests the configured MAX on every
+scheduled RS485 control tick in all four modes. Household PID, output
+correction, prices, forecasts and missing MQTT measurements do not limit this
+request. This setting explicitly permits grid export; it does not establish
+physical battery isolation.
+
+The inverter enable and RS485 enable settings, known genuine discharge faults
+and confirmed charger faults retain their stop behavior. A confirmed charger
+fault remains a stop when its telemetry becomes unavailable until a fresh clear
+is received. An invalid MAX outside the 16-bit command range requests zero;
+the actual inverter's safe power range must still be configured separately.
+The selected operating mode is unchanged.
+
+`Planning/State.transportWriteStatus` and the serial diagnostic `rs485_tx`
+report `unknown`, `mock`, `disabled`, `accepted` or `write_failed`. `accepted`
+means that the local serial interface accepted all eight bytes, not that the
+inverter received or applied the request. MQTT transport error counters are
+separate from this RS485 status.
 
 With the automatic limiter enabled, a fresh, qualified 100% battery permits the
 household PID to request the measured household demand up to MAX. A full battery
@@ -21,7 +63,7 @@ reserve, enable and negative-price gates remain authoritative. The physical
 battery may briefly supply power while the charger responds or until SOC falls
 below 100%. The explicit Limiter-OFF maximum-output bypass is unchanged.
 
-Fresh grid and actual inverter measurements, enabled inverter, enabled transport
+With the limiter enabled, fresh grid and actual inverter measurements, enabled inverter, enabled transport
 and valid settings are required. Configured MIN and negative-price overrides do
 not lift a manual-mode STOP. Genuine discharge protection and charger faults
 stop every mode. Household following and charge priority also retain fresh
@@ -37,7 +79,7 @@ PV-only path can qualify from advancing Victron samples alone. During recovery
 output remains zero. After qualification, it uses the same corrected household
 demand and 90% measured-PV cap as explicit PV following, while the selected mode
 remains automatic. Fault and output gates retain precedence; configured MIN
-and Limiter OFF cannot grant battery discharge. Without fresh Victron voltage
+cannot grant battery discharge. Without fresh Victron voltage
 and charging current, automatic output remains zero. BMS and Victron freshness
 are checked independently, even when SBT collects both sources. A collector
 outage that removes both sources cannot use remembered PV as a substitute.
@@ -67,8 +109,9 @@ CM exposes `opMode`, `opChargeSoc` and `opPvShare` in the Limiter settings. The
 mode text must be exactly one of the enum values above. UI requests and MQTT
 requests enter the same loop-owned change path. The displayed settings remain
 confirmed values while a request is pending. Changing mode or its parameters
-resets controller dynamics and requests fresh plan capture without changing
-`resOff` or `resOn`.
+resets controller dynamics without changing `resOff` or `resOn`. A mode-only
+change keeps the existing economic plan; changes to the economic threshold or
+share request an updated plan through the planning context.
 
 The three values are stored atomically in a separate `SILModes` NVS namespace,
 under the seven-character `profile` key, as a 16-byte versioned/checksummed record.

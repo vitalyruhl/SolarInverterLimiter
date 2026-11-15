@@ -3,7 +3,7 @@ $ErrorActionPreference = 'Stop'
 $repo = (Resolve-Path (Join-Path $PSScriptRoot '../..')).Path
 $output = Join-Path $repo '.pio/sbt_receiver_test.exe'
 $compiler = 'C:/Program Files/LLVM/bin/clang++.exe'
-$common = @('-std=c++17', '-Wall', '-Wextra', '-Werror', '-I', (Join-Path $repo 'src'), '-I', (Join-Path $repo '.pio/libdeps/usb/ArduinoJson/src'))
+$common = @('-std=c++17', '-Wall', '-Wextra', '-Werror', '-I', (Join-Path $repo 'src'), '-I', (Join-Path $repo '.pio/plan-retention-5.4.7-final/libdeps/usb/ArduinoJson/src'))
 & $compiler @common (Join-Path $repo 'test/host/sbt_receiver_test.cpp') -o $output
 if ($LASTEXITCODE -ne 0) { throw 'Host compilation failed' }
 & $output

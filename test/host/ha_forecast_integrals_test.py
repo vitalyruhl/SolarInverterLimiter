@@ -5,7 +5,8 @@ import unittest
 import ast
 import sys
 import json
-import tempfile
+from contextlib import contextmanager
+from uuid import uuid4
 from unittest.mock import patch
 from types import SimpleNamespace
 from datetime import datetime
@@ -14,6 +15,18 @@ from zoneinfo import ZoneInfo
 sys.dont_write_bytecode=True
 spec=importlib.util.spec_from_file_location('core',Path(__file__).resolve().parents[2]/'docs'/'home-assistant'/'sil-planner-shadow-core.py')
 core=importlib.util.module_from_spec(spec);spec.loader.exec_module(core)
+
+def make_fixture_directory():
+    root=Path(__file__).resolve().parents[2]/'.Temp'/'test'
+    root.mkdir(parents=True,exist_ok=True)
+    directory=root/('ha-forecast-'+uuid4().hex)
+    directory.mkdir()
+    return directory
+
+@contextmanager
+def fixture_directory():
+    # The unique workspace is retained as test evidence; unrelated data is never removed.
+    yield make_fixture_directory()
 
 class IntegralTests(unittest.TestCase):
     def test_partial_edges_and_energy(self):
@@ -120,7 +133,7 @@ class EnergyLifecycleTests(unittest.TestCase):
 
 class ProductionCacheTests(unittest.TestCase):
     def test_production_reader_never_fetches_or_changes_request_gate(self):
-        with tempfile.TemporaryDirectory() as directory:
+        with fixture_directory() as directory:
             path=Path(directory)/'cache.json'
             cache={'response':{},'fetched_at':1000,'next_request_at':4600,'refresh_failed':False}
             path.write_text(json.dumps(cache));before=path.read_bytes()
@@ -131,7 +144,7 @@ class ProductionCacheTests(unittest.TestCase):
             self.assertEqual(path.read_bytes(),before)
 
     def test_production_reader_rejects_expired_and_failed_cache(self):
-        with tempfile.TemporaryDirectory() as directory:
+        with fixture_directory() as directory:
             path=Path(directory)/'cache.json'
             with self.assertRaises(ValueError):core.production_from_cache([],{},5501,path)
             for cache in ({'response':{},'fetched_at':1000},{'response':{},'fetched_at':5500,'refresh_failed':True},
@@ -140,7 +153,7 @@ class ProductionCacheTests(unittest.TestCase):
                 with self.assertRaises(ValueError):core.production_from_cache([],{},5501,path)
 
     def test_production_reader_keeps_exact_tariff_alignment_requirement(self):
-        with tempfile.TemporaryDirectory() as directory:
+        with fixture_directory() as directory:
             path=Path(directory)/'cache.json'
             path.write_text(json.dumps({'response':{},'fetched_at':1000,'next_request_at':4600}))
             with patch.object(core,'prepare',side_effect=ValueError('tariff_alignment_mismatch')):
@@ -217,8 +230,7 @@ class ProductionLifecycleTests(unittest.TestCase):
 
 class LastGoodHoldTests(unittest.TestCase):
     def setUp(self):
-        directory=tempfile.TemporaryDirectory();self.addCleanup(directory.cleanup)
-        self.path=Path(directory.name)/'last-good.json'
+        self.path=make_fixture_directory()/'last-good.json'
         self.start=1793997000
         self.good=lambda:core._snapshot(list(range(200)),[1]*200,self.start,self.start+10)
 

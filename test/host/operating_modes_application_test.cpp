@@ -15,9 +15,10 @@ static control::CurrentDecision currentDecision;
 static bool currentDecisionAvailable=false,kRs485MockTransport=false,lastIssuedCommandKnown=false;
 static int inverterCalculatedValue=0,inverterSetValue=0,configuredMax=900;
 static int lastMockBaseCommandW=0,lastMockCommandW=0,lastIssuedBaseCommandW=0,lastIssuedCommandW=0;
+static const char *lastTransportWriteStatus="unknown";
 static int wire=-1,resets=0;
 static void resetPidController() {++resets;}
-static void sendToRS485(uint16_t value) {wire=value;}
+static bool sendToRS485(uint16_t value) {wire=value;return true;}
 static struct {struct {bool get() const {return true;}} enableRS485;} rs485settings;
 struct SourceFlags {bool genuineBmsFault=false,alarmRestricted=false,softwareMosLockOnly=false;};
 #include "operating_modes_application.h"

@@ -11,6 +11,18 @@ class PvForecast {
 public:
     static constexpr unsigned kSlots = 144, kChunk = 24;
     void clear() { if (active_.count) ++contentRevision_; active_ = Snapshot{}; pending_ = Snapshot{}; parts_ = 0; poisoned_ = false; }
+    // Only observe the actual clock here, never the future slot times used by valid().
+    void observeClock(uint32_t utc) {
+        if (utc < 1704067200UL) return;
+        if (clockHighWater_ && uint64_t(utc) + 5 < clockHighWater_) {
+            rollbackUntil_ = std::max(rollbackUntil_, clockHighWater_);
+            clear();
+            clockHighWater_ = utc;
+        } else if (utc > clockHighWater_) {
+            clockHighWater_ = utc;
+        }
+        if (rollbackUntil_ && utc >= rollbackUntil_) rollbackUntil_ = 0;
+    }
     bool valid(uint32_t utc) const {
         return utc >= 1704067200UL && active_.count && utc >= active_.start &&
             utc < active_.expires && utc < active_.start + active_.count * 900UL;
@@ -46,6 +58,7 @@ public:
     }
     const char *receive(const uint8_t *payload, unsigned length, uint32_t utc, uint32_t ms) {
         if (utc < 1704067200UL) return "clock_invalid";
+        observeClock(utc);
         if (!payload || !length || length > 768) return "packet_size";
         if (std::memchr(payload, 0, length)) return "packet_json";
         arena_.reset();
@@ -69,6 +82,9 @@ public:
             expires <= generated || expires <= utc || expires > start + count * 900UL ||
             factor < 500 || factor > 1200 || days > 30 || age > 65535 ||
             (uncalibrated && (factor != 1000 || days >= 14)) || (calibrated && days < 14)) return "packet_range";
+        // After a rollback, an older retained snapshot can otherwise look like a
+        // permitted publisher clock lead and reactivate the invalidated data.
+        if (rollbackUntil_ && generated > utc) return "clock_recovery";
         const JsonArrayConst values = d["p"], flags = d["x"];
         const unsigned offset = part * kChunk, size = std::min(kChunk, count - offset);
         if (values.size() != size || flags.size() != size) return "packet_count";
@@ -133,7 +149,7 @@ private:
         s.quality[i / 4] = uint8_t((s.quality[i / 4] & ~(3u << shift)) | (q << shift));
     }
     Snapshot active_, pending_;
-    uint32_t pendingAt_ = 0, contentRevision_ = 0;
+    uint32_t pendingAt_ = 0, contentRevision_ = 0, clockHighWater_ = 0, rollbackUntil_ = 0;
     uint8_t parts_ = 0;
     bool poisoned_ = false;
     // Independent MQTT parsing arena. No unproven sharing with price/telemetry callbacks.

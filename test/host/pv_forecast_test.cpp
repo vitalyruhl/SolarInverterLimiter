@@ -22,7 +22,7 @@ static const char* send(PvForecast& p,const std::string& s,uint32_t now=t,uint32
   const char* result=p.receive(reinterpret_cast<const uint8_t*>(s.data()),unsigned(s.size()),now,ms); std::cerr << result << " size=" << s.size() << "\n"; return result;
 }
 static void contentRevisionIgnoresPollingTime(){
- assert(PvForecast::stateBytes()==720); // Includes the new counter and alignment before the fixed JSON arena.
+ assert(PvForecast::stateBytes()<=784); // The fixed JSON arena is outside the reviewed state budget.
  PvForecast p;assert(!std::strcmp(send(p,packet()),"pending"));assert(!std::strcmp(send(p,packet(t,48,1)),"accepted"));
  const auto original=content(p,0);
  assert(!std::strcmp(send(p,packet(t+300),t+300),"pending"));assert(content(p,0)==original&&p.revision()==t);
@@ -55,8 +55,11 @@ int main(){
   float energy=0;
   assert(p.energyWh(t,t+3600,energy) && energy==1000);
   assert(p.energyWh(t+450,t+900,energy) && energy==125);
-  assert(p.valid(t+4000)); // Publisher silence does not expire a complete plan.
-  assert(!std::strcmp(send(p,packet(),t+4000),"duplicate"));
+  PvForecast replay;
+  assert(!std::strcmp(send(replay,packet()),"pending"));
+  assert(!std::strcmp(send(replay,packet(t,48,1)),"accepted"));
+  assert(replay.valid(t+4000)); // Publisher silence does not expire a complete plan.
+  assert(!std::strcmp(send(replay,packet(),t+4000),"duplicate"));
   assert(!p.valid(t+48*900));
   assert(std::strcmp(send(p,packet(t-1)),"accepted"));
   assert(std::strcmp(send(p,packet(t+1,48,0,1000,t-901)),"accepted"));

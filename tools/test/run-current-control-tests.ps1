@@ -10,9 +10,9 @@ if ($LASTEXITCODE -ne 0) { throw 'Current control host tests failed' }
 $source = [IO.File]::ReadAllText((Join-Path $repo 'src/main.cpp'))
 $pidSource = [regex]::Match($source, '(?s)static void resetPidController\(\)\r?\n\{.*?(?=//----------------------------------------)')
 if (!$pidSource.Success) { throw 'Production PID extraction boundary missing' }
-$decisionStart = $source.IndexOf('    currentDecisionAvailable = true;')
-if ($decisionStart -lt 0) { throw 'Production decision anchor missing' }
-$decisionStart += '    currentDecisionAvailable = true;'.Length
+$decisionMarkers = [regex]::Matches($source, '(?m)^    currentDecisionAvailable = true;\r?$')
+if ($decisionMarkers.Count -ne 1) { throw 'Production decision anchor missing or ambiguous' }
+$decisionStart = $decisionMarkers[0].Index + $decisionMarkers[0].Length
 $decisionEnd = $source.IndexOf('#if CM_ENABLE_LOGGING && CM_ENABLE_VERBOSE_LOGGING', $decisionStart)
 if ($decisionStart -lt 0 -or $decisionEnd -le $decisionStart) { throw 'Production command extraction boundary missing' }
 $command = $source.Substring($decisionStart, $decisionEnd - $decisionStart)

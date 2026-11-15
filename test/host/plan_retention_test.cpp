@@ -48,24 +48,25 @@ template<class S> static void continuity(const S& original){
  assert(!p.publishDue(5100));
  for(unsigned sec=10;sec<=124;sec+=6)step(p,missing,100+sec*1000,t+sec);
  assert(p.snapshot.valid&&p.snapshot.serialize(after,sizeof(after))>0&&!std::strcmp(before,after));
- p.connection(false);p.connection(true);step(p,missing,125100,t+125);assert(p.snapshot.valid&&p.publishDue(125100));
- p.published(false,125100);step(p,missing,126100,t+126);assert(!p.publishDue(129999)&&p.publishDue(130100));
- assert(!p.publishDue(180100)); // A queued valid retry cannot escape the original deadline between control ticks.
- step(p,missing,180100,t+180);assert(!p.snapshot.valid&&p.publishDue(180100));
+ p.connection(false);p.connection(true);step(p,missing,125100,t+125);
+ assert(p.snapshot.valid&&p.retained()&&!p.publishDue(125100));
+ step(p,missing,126100,t+126);assert(!p.publishDue(130100));
+ step(p,missing,180100,t+180);assert(p.snapshot.valid&&p.retained()&&!p.publishDue(180100));
+ assert(p.snapshot.generatedAt==t&&p.degradedSince()==5100);
  PlanPublication<S> changed;changed.connection(true);step(changed,original,100,t);changed.published(true,100);
- step(changed,missing,5100,t+5,2);assert(!changed.snapshot.valid);
- step(changed,missing,6100,t+6,1);assert(!changed.snapshot.valid);
+ step(changed,missing,5100,t+5,2);assert(changed.snapshot.valid&&changed.retained());
+ step(changed,missing,6100,t+6,1);assert(changed.snapshot.valid&&changed.retained());
  PlanPublication<S> stopped;stopped.connection(true);step(stopped,original,100,t);stopped.published(true,100);
- step(stopped,missing,5100,t+5,1,true,true);assert(!stopped.snapshot.valid);
+ step(stopped,missing,5100,t+5,1,true,true);assert(stopped.snapshot.valid&&stopped.retained()&&!stopped.publishDue(5100));
  PlanPublication<S> grace;grace.connection(true);step(grace,original,100,t);grace.published(true,100);
- step(grace,missing,5100,t+5,1,false);assert(!grace.snapshot.valid);
+ step(grace,missing,5100,t+5,1,false);assert(grace.snapshot.valid&&grace.retained());
  PlanPublication<S> clock;clock.connection(true);step(clock,original,100,t);clock.published(true,100);
- step(clock,missing,5100,t-6);assert(!clock.snapshot.valid);
+ step(clock,missing,5100,t-6);assert(clock.snapshot.valid&&clock.retained());
  PlanPublication<S> wrapped;wrapped.connection(true);step(wrapped,original,UINT32_MAX-20000,t);wrapped.published(true,UINT32_MAX-20000);
  step(wrapped,missing,7999,t+28);assert(wrapped.snapshot.valid);
- step(wrapped,missing,159999,t+180);assert(!wrapped.snapshot.valid);
+ step(wrapped,missing,159999,t+180);assert(wrapped.snapshot.valid&&wrapped.retained()&&wrapped.degradedSince()==7999);
  PlanPublication<S> coverage;coverage.connection(true);step(coverage,original,100,t);coverage.published(true,100);
- step(coverage,missing,5100,t+5,1,true,false,false);assert(!coverage.snapshot.valid);
+ step(coverage,missing,5100,t+5,1,true,false,false);assert(coverage.snapshot.valid&&coverage.retained());
  PlanPublication<S> first;first.connection(true);step(first,missing,100,t);assert(!first.snapshot.valid);
  PlanPublication<S> recovery;recovery.connection(true);step(recovery,original,100,t);recovery.published(true,100);
  recovery.qualification(false);step(recovery,missing,124100,t+124);assert(recovery.snapshot.valid);
@@ -73,7 +74,7 @@ template<class S> static void continuity(const S& original){
  S fresh=original;fresh.generatedAt=t+125;
  step(recovery,fresh,125100,t+125);assert(recovery.snapshot.generatedAt==t+125&&recovery.publishDue(125100));
  PlanPublication<S> topic;topic.connection(true);step(topic,original,100,t);topic.published(true,100);topic.topicChanged();
- step(topic,missing,5100,t+5);assert(!topic.snapshot.valid);
+ step(topic,missing,5100,t+5);assert(topic.snapshot.valid&&topic.retained()&&!topic.publishDue(5100));
 }
 static void receive(sbt::Receiver& r,const char* topic,const char* value,uint32_t now){assert(r.receive(topic,value,std::strlen(value),now));}
 static void sourceGraceAndFault(){
@@ -116,12 +117,12 @@ static void knownChargerFaultSurvivesPartialRecovery(){
  PlanCaptureFaults faults;DischargeBudgetPublication p;p.connection(true);auto frame=red();
  step(p,frame,100,t);p.published(true,100);
  faults.observe(true,true);frame.generatedAt=t+5;step(p,frame,5100,t+5,1,true,faults.blocked(false));
- assert(!p.snapshot.valid);p.qualification(false);
+ assert(p.snapshot.valid&&p.retained()&&p.snapshot.generatedAt==t&&!p.publishDue(5100));p.qualification(false);
  faults.observe(false,false);assert(faults.blocked(false));
  frame.generatedAt=t+10;step(p,frame,10100,t+10,1,true,faults.blocked(false));
- assert(!p.snapshot.valid); // New valid energy alone cannot clear an unknown charger error state.
+ assert(p.snapshot.valid&&p.retained()&&p.snapshot.generatedAt==t); // Unknown charger error cannot accept a replacement.
  frame.generatedAt=t+20;step(p,frame,20100,t+20,2,false,faults.blocked(false));
- assert(!p.snapshot.valid&&faults.blocked(false)); // Context/root change is not a known error clear.
+ assert(p.snapshot.valid&&p.retained()&&p.snapshot.generatedAt==t&&faults.blocked(false)); // Context/root change is not an error clear.
  faults.observe(true,false);assert(!faults.blocked(false)&&faults.blocked(true));
  p.qualification(true);assert(p.captureDue(20101));
  frame.generatedAt=t+30;step(p,frame,30100,t+30,2,true,faults.blocked(false));
@@ -189,7 +190,7 @@ template<class S> static void fiveMinutePollDuringSourceGap(const S& originalFra
  polled.currentPrice=.43f;changedContext(pub,original,polled,hardEpoch);
  step(pub,missing,424100,t+424,hardEpoch);assert(pub.snapshot.valid&&pub.snapshot.generatedAt==t+245);
  assert(pub.snapshot.serialize(after,sizeof(after))>0&&!std::strcmp(before,after));
- step(pub,missing,425100,t+425,hardEpoch);assert(!pub.snapshot.valid);
+  step(pub,missing,425100,t+425,hardEpoch);assert(pub.snapshot.valid&&pub.retained()&&pub.snapshot.generatedAt==t+245);
  // Recovery replaces the held generation promptly, rather than waiting for a minute tick.
  PlanPublication<S> recovered;recovered.connection(true);step(recovered,frame,245100,t+245);recovered.published(true,245100);
  recovered.qualification(false);hardEpoch=1;auto prior=original;polled.currentPrice=.44f;
@@ -200,7 +201,7 @@ template<class S> static void fiveMinutePollDuringSourceGap(const S& originalFra
  assert(recovered.publishDue(304100)&&recovered.snapshot.generatedAt==t+304&&recovered.snapshot.priceRevision==prices.revision());
  }
 }
-template<class S> static void hardContextStillInvalidates(const S& originalFrame){
+template<class S> static void hardContextRetainsHistory(const S& originalFrame){
  for(unsigned change=0;change<8;++change){
   PlanCaptureContext original;original.settings.valid=true;original.maximumW=900;original.pvValid=true;
   auto next=original;
@@ -217,7 +218,7 @@ template<class S> static void hardContextStillInvalidates(const S& originalFrame
   PlanPublication<S> pub;pub.connection(true);step(pub,originalFrame,100,t);pub.published(true,100);
   S missing;missing.reset(t+5,t,t);missing.finish(false,"energy_missing");
   uint32_t hardEpoch=1;changedContext(pub,original,next,hardEpoch);step(pub,missing,5100,t+5,hardEpoch);
-  assert(!pub.snapshot.valid&&pub.snapshot.count==0&&pub.publishDue(5100));
+  assert(pub.snapshot.valid&&pub.retained()&&pub.snapshot.count==originalFrame.count&&!pub.publishDue(5100));
  }
 }
 static void configuredSourceChangeBeforeControl(){
@@ -248,9 +249,10 @@ static void configuredSourceChangeBeforeControl(){
   auto missingRed=red();missingRed.reset(t+5,prices.revision(),pv.revision());missingRed.finish(false,"energy_missing");
   auto missingBlue=blue();missingBlue.reset(t+5,prices.revision(),pv.revision());missingBlue.finish(false,"source_missing");
   step(r,missingRed,5100,t+5);step(b,missingBlue,5100,t+5);
-  assert(!r.snapshot.valid&&!b.snapshot.valid&&r.snapshot.count==0&&b.snapshot.count==0);
+  assert(r.snapshot.valid&&b.snapshot.valid&&r.retained()&&b.retained());
+  assert(r.snapshot.generatedAt==t&&b.snapshot.generatedAt==t&&!r.publishDue(5100)&&!b.publishDue(5100));
  }
 }
-int main(){configuredSourceChangeBeforeControl();fiveMinutePollDuringSourceGap(red());fiveMinutePollDuringSourceGap(blue());ownReconnectPreservesDisplayWithoutControlPrice();hardContextStillInvalidates(red());hardContextStillInvalidates(blue());continuity(red());continuity(blue());sourceGraceAndFault();exactContext();knownChargerFaultSurvivesPartialRecovery();std::cout<<"[MOCKED!] Original-age plan retention, changing price/PV during source gaps, hard invalidation and independent control guards passed\n";
+int main(){configuredSourceChangeBeforeControl();fiveMinutePollDuringSourceGap(red());fiveMinutePollDuringSourceGap(blue());ownReconnectPreservesDisplayWithoutControlPrice();hardContextRetainsHistory(red());hardContextRetainsHistory(blue());continuity(red());continuity(blue());sourceGraceAndFault();exactContext();knownChargerFaultSurvivesPartialRecovery();std::cout<<"[MOCKED!] Original-age diagnostic retention, changing price/PV during source gaps and independent control guards passed\n";
  std::cout<<"Retention publication bytes: red="<<sizeof(DischargeBudgetPublication)<<", blue="<<sizeof(ChargePlanPublication)<<", context="<<sizeof(PlanCaptureContext)<<"\n";
 }

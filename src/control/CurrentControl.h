@@ -1,6 +1,7 @@
 #pragma once
 
 #include "PreparedControl.h"
+#include "PriceBand.h"
 #include <cmath>
 #include <algorithm>
 
@@ -69,11 +70,9 @@ public:
         reserveAllowed_ = allowed;
     }
     bool expensivePrice(const PreparedSettings &cfg, bool valid, float price) {
-        if (!cfg.valid) return false;
-        classify(cfg, valid, price);
-        return band_ == Expensive;
+        return priceBand_.expensivePrice(cfg, valid, price);
     }
-    bool cheapPrice() const { return band_ == Cheap; }
+    bool cheapPrice() const { return priceBand_.cheapPrice(); }
     // heldCommandW is the last issued command before output correction, not a new demand.
     // The caller retains responsibility for transport and higher-priority protection.
     CurrentDecision update(const PreparedSettings &cfg, const CurrentInputs &in,
@@ -95,9 +94,10 @@ public:
         out.reserveKnown = reserveKnown_;
         out.reserveAllowed = reserveKnown_ && reserveAllowed_;
         if(cfg.relativeTimePolicy&&(!price||!in.relativePricePositive))return stop(out,"relative_nonpositive_price");
-        classify(cfg, price, in.price);
-        out.priceBand = band_ == Expensive ? "expensive" :
-            (band_ == Cheap ? "cheap" : (band_ == Comfort ? "comfort" : "unknown"));
+        priceBand_.classify(cfg, price, in.price);
+        out.priceBand = priceBand_.value() == PriceBandState::Expensive ? "expensive" :
+            (priceBand_.value() == PriceBandState::Cheap ? "cheap" :
+             (priceBand_.value() == PriceBandState::Comfort ? "comfort" : "unknown"));
         const bool chargeAvailable = bms && in.batteryChargeAvailable;
         const bool dischargeAvailable = bms && in.batteryDischargeIntentAvailable;
         // These gates also precede held permission and partial source recovery.
@@ -204,14 +204,14 @@ public:
         const float chargerW = charger ? in.chargerW : 0.0f;
         out.minimumOverrideAllowed = dischargeAvailable && out.reserveAllowed;
         const bool reserveOffCharging = chargeAvailable && price &&
-            in.soc <= cfg.reserveOffSocPercent && band_ != Expensive;
+            in.soc <= cfg.reserveOffSocPercent && priceBand_.value() != PriceBandState::Expensive;
         const bool reserveOnCharging = chargeAvailable && price &&
-            in.soc > cfg.reserveOffSocPercent && in.soc < cfg.reserveOnSocPercent && band_ == Cheap;
+            in.soc > cfg.reserveOffSocPercent && in.soc < cfg.reserveOnSocPercent && priceBand_.value() == PriceBandState::Cheap;
         const bool reserveCharging = reserveOffCharging || reserveOnCharging;
         const float reserveChargeW = reserveOffCharging ? chargerW :
             (reserveOnCharging ? chargerW * 0.5f : 0.0f);
         if (!reserveCharging && dischargeAvailable && out.reserveAllowed &&
-            (in.futureValid ? in.futureBatteryCeilingW > 0 : band_ == Expensive)) {
+            (in.futureValid ? in.futureBatteryCeilingW > 0 : priceBand_.value() == PriceBandState::Expensive)) {
             const float economicTarget = in.futureValid
                 ? clamp(float(in.futureBatteryCeilingW) +
                     clamp(chargerW, 0, maximum) * kDischargeEfficiency, 0, maximum)
@@ -248,7 +248,8 @@ public:
         out.reason = reserveOffCharging ? "reserve_off_charge" :
             (reserveOnCharging ? "reserve_on_charge" : (!out.reserveAllowed ? "reserve" :
             (in.futureValid ? in.futureReason :
-             (band_ == Unknown ? "price_missing" : (band_ == Cheap ? "cheap" : "comfort")))));
+             (priceBand_.value() == PriceBandState::Unknown ? "price_missing" :
+              (priceBand_.value() == PriceBandState::Cheap ? "cheap" : "comfort")))));
         out.chargeTargetValid = true;
         // Reserve and economic charging share one target; neither counts the same energy twice.
         out.chargeTargetW = std::max(reserveChargeW,
@@ -312,8 +313,7 @@ private:
         if (!batteryGraceApproved_) batteryGraceBudgetW_ = 0;
         lastApproved_ = out; approved_ = true; return out;
     }
-    enum Band { Unknown, Cheap, Comfort, Expensive };
-    Band band_ = Unknown;
+    PriceBandState priceBand_;
     bool reserveKnown_ = false, reserveAllowed_ = false;
     bool qualifying_ = false, qualified_ = false, piActive_ = false;
     uint8_t pairs_ = 0;
@@ -342,15 +342,6 @@ private:
 
     static float clamp(float value, float low, float high) {
         return value < low ? low : (value > high ? high : value);
-    }
-    void classify(const PreparedSettings &cfg, bool valid, float price) {
-        if (!valid) { band_ = Unknown; return; }
-        const float high = cfg.priceComfortEurPerKwh + cfg.priceDeadbandEurPerKwh;
-        const float low = cfg.priceComfortEurPerKwh - cfg.priceDeadbandEurPerKwh;
-        const float hysteresis = cfg.priceDeadbandEurPerKwh / 3.0f;
-        if (band_ == Expensive && price > high - hysteresis) return;
-        if (band_ == Cheap && price < low + hysteresis) return;
-        band_ = price >= high ? Expensive : (price <= low ? Cheap : Comfort);
     }
     bool qualify(const CurrentInputs &in, uint32_t now, bool chargerOnly = false, bool batteryOnly = false) {
         if (qualified_) return true;

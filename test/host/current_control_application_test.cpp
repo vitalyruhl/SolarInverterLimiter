@@ -34,17 +34,37 @@ static bool kRs485MockTransport=false,lastIssuedCommandKnown=false;
 static int lastMockCommandW=0,lastIssuedCommandW=0;
 static int lastMockBaseCommandW=0,lastIssuedBaseCommandW=0;
 static struct {Setting<bool> enableRS485{true};} rs485settings;
+static const char *lastTransportWriteStatus="unknown";
+static bool localWriteSucceeds=true;
 static control::OperatingModePolicy modePolicy;
 static control::ModeDecision modeDecision;
 static bool modePublishDirty=false,currentDecisionAvailable=false;
 static struct {control::ModeSettings confirmed() const {return {};}} operatingModes;
-static void sendToRS485(uint16_t watts){
+static bool sendToRS485(uint16_t watts){
+ if (!rs485settings.enableRS485.get()) return false;
  // Observe the signed command before its wire cast as well as the actual wire value.
  assert(inverterSetValue>=0&&inverterSetValue<=configuredMax);
  assert(int(watts)==inverterSetValue);
  issued=watts;
+ return localWriteSucceeds;
 }
 #include "current_control_application.h"
+
+static void localTransportWriteStatusIsSeparateFromCommands(){
+ // [MOCKED!] Serial acceptance is local only; it does not confirm inverter reception.
+ kRs485MockTransport=false;rs485settings.enableRS485.value=true;localWriteSucceeds=true;
+ lastTransportWriteStatus="unknown";
+ issueInverterCommand(800,900,0);
+ assert(!std::strcmp(lastTransportWriteStatus,"accepted"));
+ localWriteSucceeds=false;issueInverterCommand(900,900,0);
+ assert(!std::strcmp(lastTransportWriteStatus,"write_failed"));
+ kRs485MockTransport=true;issueInverterCommand(900,900,0);
+ assert(!std::strcmp(lastTransportWriteStatus,"mock"));
+ kRs485MockTransport=false;rs485settings.enableRS485.value=false;
+ issueInverterCommand(900,900,0);
+ assert(!std::strcmp(lastTransportWriteStatus,"disabled"));
+ rs485settings.enableRS485.value=true;localWriteSucceeds=true;
+}
 
 static void exactOutputBoundaries(){
  using control::correctOutputCommand;
@@ -550,6 +570,7 @@ static void reserveSurvivesTransientModeStop() {
 }
 
 int main(){
+ localTransportWriteStatusIsSeparateFromCommands();
  reserveSurvivesTransientModeStop();
  batteryPlanIsLimitedByCorrectedHouseholdDemand();
  automaticPvFallbackSurvivesMissingBms();

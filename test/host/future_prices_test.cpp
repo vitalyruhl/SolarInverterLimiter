@@ -297,7 +297,7 @@ static void dischargeBudgetTrace(){
  auto off=charging.plan(t,100,cfg,true,5,0,100,1,true,.1f,false,1,900,&pv,0,&trace);
  assert(off.usablePvWh==0&&trace.watts[2]==554&&trace.watts[3]==0);
  DischargeBudgetPublication publication;
- assert(!publication.captureDue(0));publication.connection(true);assert(publication.captureDue(0));
+ assert(publication.captureDue(0));publication.connection(true);assert(publication.captureDue(0));
  publication.snapshot.finish(true,"forecast_release");publication.captured(10);assert(publication.publishDue(10));
  publication.published(false,10);assert(!publication.publishDue(5009)&&publication.publishDue(5010));
  publication.published(true,5010);assert(!publication.publishDue(6000));
@@ -306,7 +306,7 @@ static void dischargeBudgetTrace(){
  publication.snapshot.finish(false,"energy_missing");publication.captured(6020);
  assert(!publication.invalidationDue(false));publication.published(true,6020);
  assert(!publication.invalidationDue(false));
- publication.connection(false);assert(!publication.captureDue(90000)&&!publication.publishDue(90000));
+ publication.connection(false);assert(publication.captureDue(90000)&&!publication.publishDue(90000));
  publication.connection(true);assert(publication.captureDue(90000));
  publication.captured(UINT32_MAX-10000);assert(!publication.captureDue(49998)&&publication.captureDue(49999));
  publication.topicChanged();assert(publication.captureDue(0)&&!publication.publishDue(0));

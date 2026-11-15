@@ -83,16 +83,16 @@ void sendToRS485Packet(uint16_t demand)
                    packet.header, packet.command, packet.power, packet.checksum);
 }
 
-void sendToRS485(uint16_t demand)
+bool sendToRS485(uint16_t demand)
 {
     // [MOCKED!] Never initialize, write or read the hardware transport.
-    if (kRs485MockTransport) return;
+    if (kRs485MockTransport) return false;
     // sl->Printf("RS485Module::sendToRS485: %d", demand).Info();
 
     if (!rs485settings.enableRS485.get())
     {
         CM_LOG_VERBOSE("[RS485] sendToRS485: RS485 communication disabled");
-        return;
+        return false;
     }
 
     // -- Compute serial packet to inverter (just the 3 bytes that change) --
@@ -118,7 +118,7 @@ void sendToRS485(uint16_t demand)
 
     digitalWrite(rs485settings.dePin.get(), HIGH); // Activate send mode
     delayMicroseconds(100);
-    RS485serial->write(serialpacket, 8);
+    const size_t bytesWritten = RS485serial->write(serialpacket, 8);
     RS485serial->flush(); // wait for send to finish
     delayMicroseconds(100);
     digitalWrite(rs485settings.dePin.get(), LOW); // Activate receive mode
@@ -138,6 +138,7 @@ void sendToRS485(uint16_t demand)
     //            serialpacket[6],
     //            serialpacket[7])
     //     .Info();
+    return bytesWritten == sizeof(serialpacket);
 }
 
 String reciveFromRS485()

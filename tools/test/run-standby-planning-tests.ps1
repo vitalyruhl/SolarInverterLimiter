@@ -21,11 +21,11 @@ static control::ChargePlanInputs productionProjection(const StandbySource &sourc
     const control::CurrentInputs &inputs, const control::CurrentDecision &currentDecision, bool knownSourceFault = false) {
     control::PreparedSettings preparedSettings; preparedSettings.valid = true;
     control::ChargePlanInputs projection; projection.controlEnabled = true;
-'@ + [Environment]::NewLine + ($statements -join [Environment]::NewLine) + [Environment]::NewLine + '(void)planSourceGrace; (void)knownSourceFault; return projection; }'
+'@ + [Environment]::NewLine + ($statements -join [Environment]::NewLine) + [Environment]::NewLine + '(void)planSourceGrace; (void)knownSourceFault; (void)currentDecision; return projection; }'
 $header += [Environment]::NewLine + 'static bool productionPlanGrace(const StandbySource &source) {' + $statements[0] + 'return planSourceGrace; }'
 [IO.File]::WriteAllText((Join-Path $repo '.pio/standby_planning_application.h'), $header)
 $output = Join-Path $repo '.pio/standby_planning_application_test.exe'
-& 'C:/Program Files/LLVM/bin/clang++.exe' -std=c++17 -DARDUINOJSON_POOL_CAPACITY=128 -Wall -Wextra -Werror -I (Join-Path $repo 'src') -I (Join-Path $repo '.pio') -I (Join-Path $repo '.pio/libdeps/usb/ArduinoJson/src') (Join-Path $repo 'test/host/standby_planning_application_test.cpp') -o $output
+& 'C:/Program Files/LLVM/bin/clang++.exe' -std=c++17 -DARDUINOJSON_POOL_CAPACITY=128 -Wall -Wextra -Werror -I (Join-Path $repo 'src') -I (Join-Path $repo '.pio') -I (Join-Path $repo '.pio/plan-retention-5.4.7-final/libdeps/usb/ArduinoJson/src') (Join-Path $repo 'test/host/standby_planning_application_test.cpp') -o $output
 if ($LASTEXITCODE -ne 0) { throw 'Standby planning application compilation failed' }
 & $output
 if ($LASTEXITCODE -ne 0) { throw 'Standby planning application tests failed' }

@@ -316,7 +316,8 @@ private:
         float debt=std::max(0.0f,(cfg.reserveOffSocPercent-lastSoc_)*.01f*fullWh);
         const bool continuous=relativeWasCheap_&&utc>=relativeLiveAt_&&utc-relativeLiveAt_<=180;
         bool cheapFull=continuous&&relativeCheapFull_,previousCheap=continuous;
-        out.offeredPvWh=0;out.pvQualified=pv&&pv->valid(utc)&&chargeCap>0;
+        const bool pvCurrentValid=pv&&pv->valid(utc);
+        out.offeredPvWh=0;out.pvQualified=pvCurrentValid&&chargeCap>0;
         if(trace){trace->start=projectionStart_;trace->count=kPlanSlots;}
         for(unsigned k=0;k<kPlanSlots;++k){
             const uint32_t start=projectionStart_+k*900UL;
@@ -326,7 +327,7 @@ private:
             if(!cheap||!previousCheap)cheapFull=false;
             previousCheap=cheap;
             float forecast=0;
-            const bool known=pv&&pv->valid(start+899)&&pv->wattsAt(start,forecast);
+            const bool known=pvCurrentValid&&pv->valid(start+899)&&pv->wattsAt(start,forecast);
             if(known)out.offeredPvWh+=forecast*hours;
             const bool measured=!k&&std::isfinite(currentSolarW)&&currentSolarW>=0;
             const float solar=measured?std::min(currentSolarW,12000.0f):(k&&known?std::min(forecast,chargeCap/float(kRelativeChargeEfficiency)):0);
@@ -354,7 +355,7 @@ private:
                     const double valuation=relative_.assessed(j);
                     float targetPv=0;
                     const uint32_t targetAt=projectionStart_+j*900UL;
-                    const bool targetKnown=pv&&pv->valid(targetAt+899)&&pv->wattsAt(targetAt,targetPv);
+                    const bool targetKnown=pvCurrentValid&&pv->valid(targetAt+899)&&pv->wattsAt(targetAt,targetPv);
                     const float targetSolar=targetKnown?std::min(targetPv,chargeCap/float(kRelativeChargeEfficiency)):0;
                     const float possibleBattery=std::max(0.0f,maximum-targetSolar*kDischargeEfficiency);
                     if(targetTier==PriceTier::VeryExpensive){
@@ -519,7 +520,7 @@ private:
         for (unsigned j = 0; j < count; ++j) {
             const uint32_t at = activeStart_ + (first + j) * 900UL;
             float watts = 0;
-            const bool known = pv && pv->wattsAt(at, watts) && pv->valid(at + 899UL);
+            const bool known = cachePvValid_ && pv->wattsAt(at, watts) && pv->valid(at + 899UL);
             storageKnown_[j] = known;
             solarW_[j] = known ? watts : 0;
             if (known) cacheOfferWh_ += watts * .25f;

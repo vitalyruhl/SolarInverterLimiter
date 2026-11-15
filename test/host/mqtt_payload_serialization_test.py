@@ -3,8 +3,8 @@ import json
 from pathlib import Path
 import re
 import subprocess
-import tempfile
 import unittest
+import uuid
 
 
 REPO = Path(__file__).resolve().parents[2]
@@ -20,23 +20,93 @@ using String = std::string;
 
 
 def compile_run(source, extra_flags=()):
-    # Keep generated executables within the consumer's existing local build tree.
-    with tempfile.TemporaryDirectory(prefix="payload-", dir=REPO / ".pio") as tmp:
-        source_path, executable = Path(tmp) / "test.cpp", Path(tmp) / "test.exe"
-        source_path.write_text(BASE + source, encoding="utf-8")
-        result = subprocess.run(
-            [str(CLANG), "-std=c++17", "-Wall", "-Wextra", "-Werror",
-             *extra_flags,
-             str(source_path), "-o", str(executable)],
-            text=True, capture_output=True, timeout=30)
-        if result.returncode:
-            raise AssertionError(result.stderr)
-        result = subprocess.run([str(executable)], text=True, capture_output=True,
-                                timeout=10, check=True)
-        return [json.loads(line) for line in result.stdout.splitlines()]
+    # Keep unique generated files as local test evidence in the approved workspace.
+    output_dir = REPO / ".Temp" / "test" / "mqtt-payload" / uuid.uuid4().hex
+    output_dir.mkdir(parents=True)
+    source_path, executable = output_dir / "test.cpp", output_dir / "test.exe"
+    source_path.write_text(BASE + source, encoding="utf-8")
+    result = subprocess.run(
+        [str(CLANG), "-std=c++17", "-Wall", "-Wextra", "-Werror",
+         *extra_flags,
+         str(source_path), "-o", str(executable)],
+        text=True, capture_output=True, timeout=30)
+    if result.returncode:
+        raise AssertionError(result.stderr)
+    result = subprocess.run([str(executable)], text=True, capture_output=True,
+                            timeout=10, check=True)
+    return [json.loads(line) for line in result.stdout.splitlines()]
 
 
 class PayloadSerialization(unittest.TestCase):
+    def test_planning_state_reports_local_rs485_write_status(self):
+        source = (REPO / "src/main.cpp").read_text(encoding="utf-8")
+        number_start = source.index("struct JsonNumberText\n")
+        number_end = source.index("\n};", number_start) + len("\n};")
+        state_start = source.index("static String buildPlanningStatePayload()")
+        state_end = source.index("static void publishMqttNow()", state_start)
+        rows = compile_run(r'''
+struct Decision {
+ const char *strategy="automatic", *reason="forecast_hold";
+ int ceilingW=900;
+ bool chargeTargetValid=false, reserveKnown=false, reserveAllowed=false;
+ float chargeTargetW=0;
+} currentDecision;
+struct Plan {
+ bool valid=true; const char *reason="forecast_hold";
+ float reservedWh=500, availableWh=900, shortfallWh=0, chargeTargetW=0;
+ int batteryCeilingW=900; uint32_t targetAt=1700000000;
+} futurePlan;
+struct { uint32_t revision() const { return 1700000000; } } futurePrices;
+namespace control {
+ enum class OperatingMode { Automatic, ChargePriority };
+ const char *operatingModeName(OperatingMode mode) {
+  return mode == OperatingMode::Automatic ? "automatic" : "charge_priority";
+ }
+}
+struct { struct Mode { control::OperatingMode mode=control::OperatingMode::Automatic; };
+ Mode confirmed() const { return {}; }
+} operatingModes;
+struct Publication {
+ bool available=false, held=false;
+ uint32_t since=0;
+ bool planAvailable() const { return available; }
+ bool retained() const { return held; }
+ uint32_t degradedSince() const { return since; }
+} dischargeBudget, chargePlan;
+uint32_t millis() { return 300000; }
+int inverterSetValue=0;
+bool currentDecisionAvailable=false;
+const bool kRs485MockTransport=false;
+const char *lastTransportWriteStatus="unknown";
+''' + source[number_start:number_end] + source[state_start:state_end] + r'''
+int main() {
+ std::cout << buildPlanningStatePayload() << '\n';
+ currentDecisionAvailable=true;
+ for (const char *status : {"accepted", "write_failed", "disabled", "mock"}) {
+  lastTransportWriteStatus=status;
+  dischargeBudget.available=chargePlan.available=true;
+  dischargeBudget.held=chargePlan.held=std::string(status)=="write_failed";
+  std::cout << buildPlanningStatePayload() << '\n';
+ }
+ std::string longReason(900, 'x'); currentDecision.reason=longReason.c_str();
+ std::cout << buildPlanningStatePayload() << '\n';
+}
+''')
+        self.assertEqual([row.get("transportWriteStatus") for row in rows[:5]],
+                         ["unknown", "accepted", "write_failed", "disabled", "mock"])
+        self.assertIsNone(rows[0]["strategy"])
+        self.assertFalse(rows[0].get("diagnosticPlansAvailable"))
+        self.assertTrue(rows[2].get("diagnosticPlansAvailable"))
+        self.assertTrue(rows[2].get("diagnosticPlansRetained"))
+        self.assertEqual(rows[2].get("diagnosticRetentionAgeS"), 300)
+        self.assertFalse(rows[1].get("diagnosticPlansRetained"))
+        capacity = int(re.search(r"char payload\[(\d+)\]", source[state_start:state_end])[1])
+        for row in rows[1:5]:
+            self.assertEqual(row["strategy"], "automatic")
+            self.assertEqual(row["limitW"], 900)
+            self.assertLess(len(json.dumps(row, separators=(",", ":"))), capacity)
+        self.assertEqual(rows[5], {"v": 1, "diagnosticError": "format"})
+
     def test_runtime_counters_preserve_existing_fields_and_fit_uint32(self):
         source = (REPO / "src/runtime/RuntimeDiagnostics.h").read_text(encoding="utf-8")
         match = re.search(r"(?m)^    (?:template<class Stats> )?String mqttPayload", source)
@@ -156,7 +226,7 @@ struct Diagnostics {
  static unsigned long ulong(uint32_t value) { return static_cast<unsigned long>(value); }
 ''' + source[start:end] + r'''
 };
-int main() { Diagnostics d; d.report(Stats{}, 12, 13); }
+int main() { Diagnostics d; d.report(Stats{}, 12, 13, "write_failed"); }
 ''')
         values = dict(token.split("=", 1) for token in rows[0].split() if "=" in token)
         for key, expected in {"rx_to": 1, "rx_bad": 2, "rx_big": 3, "tx_fail": 4,
@@ -167,6 +237,7 @@ int main() { Diagnostics d; d.report(Stats{}, 12, 13); }
                               "slow_stage_at": 104, "slow_loop_ms": 105, "slow_loop_at": 106}.items():
             self.assertEqual(int(values[key]), expected)
         self.assertEqual(values["slow_stage"], "control")
+        self.assertEqual(values.get("rs485_tx"), "write_failed")
 
     def test_runtime_serializer_reports_truncation_instead_of_partial_json(self):
         source = (REPO / "src/runtime/RuntimeDiagnostics.h").read_text(encoding="utf-8")
@@ -206,15 +277,20 @@ int main() { Diagnostics d; std::cout << d.mqttPayload(Stats{}) << '\n'; }
 
     def test_planning_config_uses_current_physical_output_setting(self):
         source = (REPO / "src/main.cpp").read_text(encoding="utf-8")
-        start = source.index("struct JsonNumberText\n")
-        end = source.index("static String buildPlanningStatePayload()", start)
-        serializer = source[start:end]
+        number_start = source.index("struct JsonNumberText\n")
+        number_end = source.index("\n};", number_start) + len("\n};")
+        config_start = source.index("static String buildPlanningConfigPayload()")
+        config_end = source.index("static String buildPlanningAssessmentPayload()", config_start)
+        config_serializer = source[config_start:config_end]
+        serializer = source[number_start:number_end] + config_serializer
         rows = compile_run(r'''
 struct Settings {
  bool valid=true, mosManualMode=true, inverterEnabled=true;
  float reserveOffSocPercent=2, reserveOnSocPercent=10;
  float priceComfortEurPerKwh=.21f, priceDeadbandEurPerKwh=.2f, priceHysteresisEurPerKwh=.0667f;
+ float deferralToleranceEurKwh=0, predictionPremium12hPct=0, predictionPremium24hPct=0, predictionPremiumPct=0;
 } preparedSettings;
+namespace control { constexpr bool kPlannerShadowProfile=false; constexpr unsigned kPriceInputVersion=2; }
 float forecastPriceFactor=.95f;
 struct Setting { int value=1100; int get() const { return value; } };
 struct { Setting maxOutput; } limiterSettings;
@@ -231,7 +307,8 @@ int main() {
             self.assertTrue(row["valid"])
             self.assertEqual(row["v"], 1)
             self.assertAlmostEqual(row["fcPriceF"], .95)
-            self.assertLess(len(json.dumps(row, separators=(",", ":"))), 256)
+            capacity = int(re.search(r"char payload\[(\d+)\]", config_serializer)[1])
+            self.assertLess(len(json.dumps(row, separators=(",", ":"))), capacity)
 
 
 if __name__ == "__main__":

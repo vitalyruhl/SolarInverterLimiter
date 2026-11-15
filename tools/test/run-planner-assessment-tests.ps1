@@ -1,7 +1,7 @@
 $ErrorActionPreference = 'Stop'
 $repo = (Resolve-Path (Join-Path $PSScriptRoot '../..')).Path
 $out = Join-Path $repo '.pio/planner_assessment_test.exe'
-& 'C:/Program Files/LLVM/bin/clang++.exe' -std=c++17 -DARDUINOJSON_POOL_CAPACITY=128 -Wall -Wextra -Werror -I (Join-Path $repo 'src') -I (Join-Path $repo '.pio/libdeps/usb/ArduinoJson/src') (Join-Path $repo 'test/host/planner_assessment_test.cpp') -o $out
+& 'C:/Program Files/LLVM/bin/clang++.exe' -std=c++17 -DARDUINOJSON_POOL_CAPACITY=128 -Wall -Wextra -Werror -I (Join-Path $repo 'src') -I (Join-Path $repo '.pio/plan-retention-5.4.7-final/libdeps/usb/ArduinoJson/src') (Join-Path $repo 'test/host/planner_assessment_test.cpp') -o $out
 if ($LASTEXITCODE -ne 0) { throw 'Planner assessment host compilation failed' }
 & $out
 if ($LASTEXITCODE -ne 0) { throw 'Planner assessment host tests failed' }
@@ -18,7 +18,7 @@ $common = @('-std=c++17','-Wall','-Wextra','-Werror','-I',(Join-Path $repo 'src'
 if ($LASTEXITCODE -ne 0) { throw 'Shadow routing compilation failed' }
 & (Join-Path $repo '.pio/shadow_isolation_test.exe')
 if ($LASTEXITCODE -ne 0) { throw 'Shadow routing tests failed' }
-& 'C:/Program Files/LLVM/bin/clang++.exe' @common -DARDUINOJSON_POOL_CAPACITY=128 -DSIL_PLANNER_SHADOW=1 -DSIL_MOCK_TRANSPORT=1 -I (Join-Path $repo '.pio') -I (Join-Path $repo '.pio/libdeps/usb/ArduinoJson/src') (Join-Path $repo 'test/host/shadow_http_gate_test.cpp') -o (Join-Path $repo '.pio/shadow_http_gate_test.exe')
+& 'C:/Program Files/LLVM/bin/clang++.exe' @common -DARDUINOJSON_POOL_CAPACITY=128 -DSIL_PLANNER_SHADOW=1 -DSIL_MOCK_TRANSPORT=1 -I (Join-Path $repo '.pio') -I (Join-Path $repo '.pio/plan-retention-5.4.7-final/libdeps/usb/ArduinoJson/src') (Join-Path $repo 'test/host/shadow_http_gate_test.cpp') -o (Join-Path $repo '.pio/shadow_http_gate_test.exe')
 if ($LASTEXITCODE -ne 0) { throw 'Shadow production gate compilation failed' }
 & (Join-Path $repo '.pio/shadow_http_gate_test.exe')
 if ($LASTEXITCODE -ne 0) { throw 'Shadow production gate tests failed' }

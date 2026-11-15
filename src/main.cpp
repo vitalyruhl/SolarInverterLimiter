@@ -122,7 +122,7 @@ static constexpr uint32_t kI2cHz = 400000;
 #endif
 
 #ifndef VERSION
-#define VERSION "5.9.6"
+#define VERSION "5.10.0"
 #endif
 
 static sil::RuntimeDiagnostics runtimeDiagnostics;
@@ -542,6 +542,7 @@ static control::PreparedSettings preparedSettings=control::applicationDefaultSet
 static control::RuntimeState preparedState;
 static bool preparedSettingsLoaded = false;
 static control::CurrentControl currentControl;
+static control::PriceBandState plannerPriceBand;
 static control::ModeSettingsRuntime operatingModes;
 static control::OperatingModePolicy modePolicy;
 static control::ModeDecision modeDecision;
@@ -562,6 +563,8 @@ static String priceScheduleTopic;
 static bool priceScheduleSubscribed = false;
 static float forecastPriceFactor = 0.93f;
 static bool currentDecisionAvailable = false;
+// Local write acceptance is not confirmation that the inverter received a frame.
+static const char *lastTransportWriteStatus = "unknown";
 static int lastIssuedCommandW = 0;
 static int lastMockCommandW = 0;
 // Regulator state stays in the pre-correction domain; wire/log values stay corrected.
@@ -775,9 +778,8 @@ void loop()
         resetPidController();
         currentControl.resetTransient();
         modePolicy.resetTransient();
-        planCaptureContextKnown = false;
-        ++planContextEpoch;
-        dischargeBudget.requestCapture(); chargePlan.requestCapture();
+        // A mode-only override does not invalidate the economic plan. Changes
+        // to economic settings are detected by the planning context on the next tick.
         modePublishDirty = true;
         rs485TickDue = true;
     }
@@ -828,7 +830,7 @@ void loop()
 #endif
     }
 #endif
-    runtimeDiagnostics.report(mqtt.getBoundedIoStats(), futurePrices.revision(), pvForecast.revision());
+    runtimeDiagnostics.report(mqtt.getBoundedIoStats(), futurePrices.revision(), pvForecast.revision(), lastTransportWriteStatus);
     runtimeDiagnostics.enter(sil::RuntimeStage::Idle);
     delay(10);
 }
@@ -2108,13 +2110,45 @@ template<class Publish>static void publishAppExtrasFair(unsigned& next,unsigned 
 
 static String buildPlanningStatePayload()
 {
+    const char *autoStrategy = !futurePlan.valid ? "null" :
+        (futurePlan.batteryCeilingW > 0 ? "\"discharge\"" :
+        (futurePlan.chargeTargetW > 0 ? "\"charge\"" : "\"hold\""));
+    char autoLimit[16];
+    if (futurePlan.valid) snprintf(autoLimit, sizeof(autoLimit), "%d", futurePlan.batteryCeilingW);
+    else snprintf(autoLimit, sizeof(autoLimit), "null");
+    const auto configuredMode = operatingModes.confirmed().mode;
+    const char *configuredName = control::operatingModeName(configuredMode);
+    const char *manualOverride = configuredMode == control::OperatingMode::Automatic ? "false" : "true";
+    const bool plansAvailable = dischargeBudget.planAvailable() && chargePlan.planAvailable();
+    const bool plansRetained = dischargeBudget.retained() || chargePlan.retained();
+    char outageAge[16];
+    if (plansRetained) {
+        const uint32_t now = millis();
+        const uint32_t redAge = dischargeBudget.retained() ? uint32_t(now - dischargeBudget.degradedSince()) : 0;
+        const uint32_t blueAge = chargePlan.retained() ? uint32_t(now - chargePlan.degradedSince()) : 0;
+        snprintf(outageAge, sizeof(outageAge), "%lu", static_cast<unsigned long>(std::max(redAge, blueAge) / 1000UL));
+    } else snprintf(outageAge, sizeof(outageAge), "null");
     if (!currentDecisionAvailable)
-        return "{\"v\":1,\"strategy\":null,\"reason\":null,\"limitW\":null,\"chargeW\":null,\"reserveOk\":null,\"allocWh\":null}";
-    char payload[512];
-    snprintf(payload, sizeof(payload),
+    {
+        char startup[512];
+        const int written = snprintf(startup, sizeof(startup),
+            "{\"v\":1,\"strategy\":null,\"reason\":null,\"limitW\":null,\"chargeW\":null,\"reserveOk\":null,\"allocWh\":null,"
+            "\"transportWriteStatus\":\"%s\",\"autoStrategy\":%s,\"autoLimitW\":%s,\"autoLimitKind\":\"battery_ac\",\"autoReason\":\"%s\","
+            "\"configuredMode\":\"%s\",\"effectiveStrategy\":null,\"manualOverride\":%s,\"commandedW\":null,"
+            "\"diagnosticPlansAvailable\":%s,\"diagnosticPlansRetained\":%s,\"diagnosticRetentionAgeS\":%s}",
+            lastTransportWriteStatus, autoStrategy, autoLimit, futurePlan.reason, configuredName, manualOverride,
+            plansAvailable ? "true" : "false", plansRetained ? "true" : "false", outageAge);
+        if (written < 0 || static_cast<size_t>(written) >= sizeof(startup)) return "{\"v\":1,\"diagnosticError\":\"format\"}";
+        return String(startup);
+    }
+    char payload[768];
+    const int written = snprintf(payload, sizeof(payload),
              "{\"v\":1,\"strategy\":\"%s\",\"reason\":\"%s\",\"limitW\":%d,\"chargeW\":%s,\"reserveOk\":%s%s,"
              "\"forecast\":%s,\"forecastReason\":\"%s\",\"revision\":%lu,\"allocWh\":%s,\"availableWh\":%s,"
-             "\"shortfallWh\":%s,\"batteryMaxW\":%d,\"targetUTC\":%lu}",
+             "\"shortfallWh\":%s,\"batteryMaxW\":%d,\"targetUTC\":%lu,\"transportWriteStatus\":\"%s\","
+             "\"autoStrategy\":%s,\"autoLimitW\":%s,\"autoLimitKind\":\"battery_ac\",\"autoReason\":\"%s\","
+             "\"configuredMode\":\"%s\",\"effectiveStrategy\":\"%s\",\"manualOverride\":%s,\"commandedW\":%d,"
+             "\"diagnosticPlansAvailable\":%s,\"diagnosticPlansRetained\":%s,\"diagnosticRetentionAgeS\":%s}",
              currentDecision.strategy, currentDecision.reason, currentDecision.ceilingW,
              currentDecision.chargeTargetValid ? JsonNumberText(currentDecision.chargeTargetW, 1).text : "null",
              currentDecision.reserveKnown ? (currentDecision.reserveAllowed ? "true" : "false") : "null",
@@ -2124,7 +2158,10 @@ static String buildPlanningStatePayload()
              futurePlan.valid ? JsonNumberText(futurePlan.reservedWh, 1).text : "null",
              futurePlan.valid ? JsonNumberText(futurePlan.availableWh, 1).text : "null",
              futurePlan.valid ? JsonNumberText(futurePlan.shortfallWh, 1).text : "null",
-             futurePlan.batteryCeilingW, static_cast<unsigned long>(futurePlan.targetAt));
+             futurePlan.batteryCeilingW, static_cast<unsigned long>(futurePlan.targetAt), lastTransportWriteStatus,
+             autoStrategy, autoLimit, futurePlan.reason, configuredName, currentDecision.strategy, manualOverride, inverterSetValue,
+             plansAvailable ? "true" : "false", plansRetained ? "true" : "false", outageAge);
+    if (written < 0 || static_cast<size_t>(written) >= sizeof(payload)) return "{\"v\":1,\"diagnosticError\":\"format\"}";
     return String(payload);
 }
 
@@ -2457,14 +2494,18 @@ static void issueInverterCommand(int watts, int maximumW, int outputOffsetW, int
     inverterSetValue = watts;
     if (kRs485MockTransport)
     {
+        lastTransportWriteStatus = "mock";
         lastMockBaseCommandW = baseWatts;
         lastMockCommandW = watts;
         lmg.logTag(LL::Info, "MOCK", "[MOCKED!] demand=%dW reason=%s band=%s limit=%dW; no hardware TX",
             watts, currentDecision.reason, currentDecision.priceBand, currentDecision.ceilingW);
         return;
     }
-    sendToRS485(static_cast<uint16_t>(watts));
-    if (rs485settings.enableRS485.get())
+    const bool transportEnabled = rs485settings.enableRS485.get();
+    const bool locallyAccepted = sendToRS485(static_cast<uint16_t>(watts));
+    lastTransportWriteStatus = !transportEnabled ? "disabled" :
+        (locallyAccepted ? "accepted" : "write_failed");
+    if (transportEnabled)
     {
         lastIssuedBaseCommandW = baseWatts;
         lastIssuedCommandW = watts;
@@ -2474,8 +2515,14 @@ static void issueInverterCommand(int watts, int maximumW, int outputOffsetW, int
 
 static void processRS485Tick()
 {
+    const bool pendingModePublish = modePublishDirty;
+    const char *previousEffective = !modeDecision.handled && currentDecisionAvailable &&
+        currentDecision.direct && currentDecision.ceilingW == 0 ? "hold" : modeDecision.effective;
+    const char *previousReason = !modeDecision.handled && currentDecisionAvailable ?
+        currentDecision.reason : modeDecision.reason;
     int configuredMin = limiterSettings.minOutput.get();
-    int configuredMax = limiterSettings.maxOutput.get();
+    const int requestedMax = limiterSettings.maxOutput.get();
+    int configuredMax = requestedMax;
     if (configuredMin > configuredMax)
     {
         const int tmp = configuredMin;
@@ -2558,6 +2605,7 @@ static void processRS485Tick()
     modeInputs.correctionW = offset;
     modeInputs.maximumW = configuredMax;
     const uint32_t utc = uint32_t(time(nullptr));
+    pvForecast.observeClock(utc);
     control::PlanCaptureContext captureContext;
     captureContext.settings = preparedSettings;
     captureContext.maximumW = configuredMax; captureContext.minimumW = configuredMin; captureContext.offsetW = offset;
@@ -2583,16 +2631,17 @@ static void processRS485Tick()
         futurePrices.priceAt(utc + 900UL, preparedSettings.relativeTimePolicy?1:forecastPriceFactor, coveredPrice);
     planCaptureFaults.observe(source.chargerFaultKnown, source.chargerFault);
     const bool knownSourceFault = planCaptureFaults.blocked(source.genuineBmsFault);
-    const bool manualMode = operatingModes.confirmed().mode != control::OperatingMode::Automatic;
-    const bool projectionHardInvalid = captureContext.hardInvalid(knownSourceFault) || manualMode ||
+    const bool projectionHardInvalid = captureContext.hardInvalid(knownSourceFault) ||
         (control::kPriceInputVersion==2 && !futurePrices.priceFresh(utc));
     const bool planSourceGrace = source.sourcesWithinGrace || source.bmsWithinGrace;
     dischargeBudget.observe(nowMs, utc, planContextEpoch, planSourceGrace, projectionHardInvalid, forecastCoverage);
     chargePlan.observe(nowMs, utc, planContextEpoch, planSourceGrace, projectionHardInvalid, forecastCoverage);
     const bool capturePlans = dischargeBudget.captureDue(nowMs) || chargePlan.captureDue(nowMs);
     control::DischargeBudget *budgetTrace = capturePlans ? &dischargeBudget.candidate : nullptr;
-    const bool plannerExpensiveNow = currentControl.expensivePrice(preparedSettings, priceFresh, measuredPrice);
-    const bool plannerCheapNow = currentControl.cheapPrice();
+    const bool plannerExpensiveNow = plannerPriceBand.expensivePrice(preparedSettings, priceFresh, measuredPrice);
+    const bool plannerCheapNow = plannerPriceBand.cheapPrice();
+    // Preserve the active controller's pre-existing price-band update and reset semantics.
+    currentControl.expensivePrice(preparedSettings, priceFresh, measuredPrice);
     // An unavailable MPPT supplies no measured PV. Fresh BMS voltage only bounds the installed
     // MPPT's possible future charging after sunlight restores its power supply.
     const bool chargerPlanningAvailable = source.chargerValid || source.bmsValid;
@@ -2647,15 +2696,12 @@ static void processRS485Tick()
         modeDecision=control::ModeDecision{};modeDecision.reason=currentDecision.reason;
         modePublishDirty=true;
     }
-    // This projection consumes the decision but never participates in PID, MOS or inverter commands.
+    // This economic projection does not participate in PID, MOS or inverter commands.
     control::ChargePlanInputs projection;
-    projection.controlEnabled = preparedSettings.inverterEnabled &&
-        (kRs485MockTransport || rs485settings.enableRS485.get()) &&
-        (limiterSettings.enableController.get() || !source.batteryDischargeIntentAvailable);
+    projection.controlEnabled = true;
     projection.sourcesQualified = preparedSettings.valid && planSourceGrace &&
-        inputs.bmsValid && chargerPlanningAvailable && inputs.priceValid && inputs.metersValid && source.batteryChargeStateKnown &&
-        !inputs.chargerFault && (!inputs.alarmRestricted || inputs.softwareMosLockOnly) &&
-        (!projection.controlEnabled || !currentDecision.direct || source.chargerStandby);
+        inputs.bmsValid && chargerPlanningAvailable && inputs.priceValid && source.batteryChargeStateKnown &&
+        !inputs.chargerFault && (!inputs.alarmRestricted || inputs.softwareMosLockOnly);
     projection.chargeAvailable = source.batteryChargeAvailable;
     projection.soc = source.soc;
     projection.fullCapacityAh = source.fullCapacityAh;
@@ -2663,29 +2709,57 @@ static void processRS485Tick()
     projection.currentChargerW = source.chargerW;
     projection.priceFactor = forecastPriceFactor;
     dischargeBudget.qualification(futurePlan.valid && inputs.bmsValid && chargerPlanningAvailable &&
-        inputs.priceValid && inputs.metersValid && source.batteryChargeStateKnown && !knownSourceFault);
+        inputs.priceValid && source.batteryChargeStateKnown && !knownSourceFault);
     chargePlan.qualification(futurePlan.valid && projection.sourcesQualified && !knownSourceFault);
     if (capturePlans)
     {
+        control::CurrentDecision economicDecision;
+        economicDecision.chargeTargetValid = futurePlan.valid && std::isfinite(futurePlan.chargeTargetW) && futurePlan.chargeTargetW >= 0;
+        economicDecision.chargeTargetW = futurePlan.chargeTargetW;
         chargePlan.candidate.project(utc, preparedSettings, futurePlan, futurePrices, pvForecast,
-            currentDecision, dischargeBudget.candidate, projection);
+            economicDecision, dischargeBudget.candidate, projection);
         if (knownSourceFault)
         {
             dischargeBudget.candidate.finish(false, "source_fault");
             chargePlan.candidate.finish(false, "source_fault");
         }
-        if (manualMode) {
-            dischargeBudget.candidate.finish(false, "manual_mode");
-            chargePlan.candidate.finish(false, "manual_mode");
-        }
-        dischargeBudget.select(dischargeBudget.candidate, nowMs, planContextEpoch);
-        chargePlan.select(chargePlan.candidate, nowMs, planContextEpoch);
+        // Both candidates were produced in this pass; select checks their qualification.
+        dischargeBudget.select(dischargeBudget.candidate, nowMs, planContextEpoch, true);
+        chargePlan.select(chargePlan.candidate, nowMs, planContextEpoch, true);
     }
     else if (chargePlan.invalidationDue(futurePlan.valid && projection.sourcesQualified))
     {
         chargePlan.candidate.reset(utc, futurePrices.revision(), pvForecast.revision());
         chargePlan.candidate.finish(false, futurePlan.valid ? "sources_missing" : futurePlan.reason);
         chargePlan.select(chargePlan.candidate, nowMs, planContextEpoch);
+    }
+    // Limiter OFF requests the configured wire-representable MAX independently
+    // of planning and MQTT inputs, while retaining known local protection gates.
+    if (!limiterSettings.enableController.get())
+    {
+        const bool validMaximum = requestedMax >= 0 && requestedMax <= int(UINT16_MAX);
+        const char *reason = !modeInputs.inverterEnabled ? "inverter_off" :
+            (!modeInputs.transportEnabled ? "transport_off" :
+            (modeInputs.genuineFault ? "source_alarm" :
+            (planCaptureFaults.blocked(false) ? "charger_fault" :
+            (!validMaximum ? "limiter_max_invalid" : "limiter_disabled_max"))));
+        const bool bypass = !strcmp(reason, "limiter_disabled_max");
+        const int target = bypass ? requestedMax : 0;
+        modeDecision.handled = false;
+        modeDecision.effective = bypass ? "bypass" : "hold";
+        modeDecision.reason = reason;
+        currentDecision = control::CurrentDecision{};
+        currentDecision.direct = true;
+        currentDecision.ceilingW = target;
+        currentDecision.strategy = bypass ? "bypass" : "hold";
+        currentDecision.reason = reason;
+        currentDecisionAvailable = true;
+        const char *effective = target == 0 ? "hold" : modeDecision.effective;
+        modePublishDirty = pendingModePublish || strcmp(previousEffective, effective) || strcmp(previousReason, reason);
+        resetPidController();
+        inverterCalculatedValue = target;
+        issueInverterCommand(target, target, 0);
+        return;
     }
     if (modeDecision.handled) {
         // Policy demand already includes correction. Zero bias preserves STOP and

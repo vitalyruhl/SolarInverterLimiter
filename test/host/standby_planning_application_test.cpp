@@ -43,14 +43,14 @@ int main() {
     assert(!productionProjection(source, inputs, decision).sourcesQualified);
     inputs.bmsValid = true;
     source.chargerStandby = false;
-    assert(!productionProjection(source, inputs, decision).sourcesQualified);
+    assert(productionProjection(source, inputs, decision).sourcesQualified); // Economic planning does not depend on a direct output decision.
     decision.direct = false;
     const auto batteryOnly = productionProjection(source, inputs, decision);
     assert(batteryOnly.sourcesQualified && batteryOnly.maxChargeW == 1890);
     decision.direct = true;
     source.chargerValid = source.sourcesWithinGrace = true;
     source.chargerVoltageV = 53;
-    assert(!productionProjection(source, inputs, decision).sourcesQualified); // Still recovering.
+    assert(productionProjection(source, inputs, decision).sourcesQualified); // Output recovery does not invalidate the economic projection.
     decision.direct = false;
     const auto recovered = productionProjection(source, inputs, decision);
     assert(recovered.sourcesQualified && recovered.maxChargeW == 1855);

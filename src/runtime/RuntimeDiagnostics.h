@@ -23,16 +23,16 @@ public:
     void loop() { progress_.loop(millis()); }
     void enter(RuntimeStage stage) { progress_.enter(stage, millis()); }
     void controlCompleted() { progress_.controlCompleted(millis()); }
-    template<class Stats> void report(const Stats &stats, uint32_t priceRevision, uint32_t pvRevision) {
+    template<class Stats> void report(const Stats &stats, uint32_t priceRevision, uint32_t pvRevision, const char *rs485WriteStatus) {
         const uint32_t now = millis();
         if (!progress_.reportDue(now)) return;
         const IPAddress ip = WiFi.localIP();
-        Serial.printf("[I] DIAG ms=%lu boot=%lu reset=%lu ip=%u.%u.%u.%u gap=%lu peak=%s stage_ms=%lu control_age=%lu heap=%u min=%u block=%u stack=%u integrity=%u rx_to=%lu rx_bad=%lu rx_big=%lu tx_fail=%lu conn_fail=%lu txBackpressure=%lu txPartialWrites=%lu txTimeouts=%lu txOverflows=%lu price_rev=%lu pv_rev=%lu peak_at=%lu loops=%lu slow_stage=%s slow_stage_ms=%lu slow_stage_at=%lu slow_loop_ms=%lu slow_loop_at=%lu\n",
+        Serial.printf("[I] DIAG ms=%lu boot=%lu reset=%lu ip=%u.%u.%u.%u gap=%lu peak=%s stage_ms=%lu control_age=%lu heap=%u min=%u block=%u stack=%u integrity=%u rx_to=%lu rx_bad=%lu rx_big=%lu tx_fail=%lu rs485_tx=%s conn_fail=%lu txBackpressure=%lu txPartialWrites=%lu txTimeouts=%lu txOverflows=%lu price_rev=%lu pv_rev=%lu peak_at=%lu loops=%lu slow_stage=%s slow_stage_ms=%lu slow_stage_at=%lu slow_loop_ms=%lu slow_loop_at=%lu\n",
             ulong(now), ulong(retainedProgress.bootCount), ulong(reset_), unsigned(ip[0]), unsigned(ip[1]), unsigned(ip[2]), unsigned(ip[3]), ulong(progress_.maxLoopGapMs()),
             stageName(progress_.peakStage()), ulong(progress_.maxStageMs()), ulong(progress_.controlAgeMs(now)),
             unsigned(ESP.getFreeHeap()), unsigned(ESP.getMinFreeHeap()), unsigned(ESP.getMaxAllocHeap()),
             unsigned(uxTaskGetStackHighWaterMark(nullptr)), unsigned(heap_caps_check_integrity_all(false)),
-            ulong(stats.rxTimeouts), ulong(stats.rxMalformed), ulong(stats.rxOversize), ulong(stats.txFailures),
+            ulong(stats.rxTimeouts), ulong(stats.rxMalformed), ulong(stats.rxOversize), ulong(stats.txFailures), rs485WriteStatus,
             ulong(stats.connectFailures), ulong(stats.txBackpressure), ulong(stats.txPartialWrites),
             ulong(stats.txTimeouts), ulong(stats.txOverflows), ulong(priceRevision), ulong(pvRevision),
             ulong(progress_.peakStageEndedAtMs()), ulong(progress_.loops()), stageName(progress_.lastSlowStage()),

@@ -59,7 +59,8 @@ extern RS485Packet packet;
 extern RS485_Settings rs485settings;
 
 void RS485begin();
-void sendToRS485(uint16_t demand);
+// Reports local frame acceptance only, not inverter receipt or acknowledgement.
+bool sendToRS485(uint16_t demand);
 void sendToRS485Packet(uint16_t demand);
 String reciveFromRS485();
 RS485Packet reciveFromRS485Packet();

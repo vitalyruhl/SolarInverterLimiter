@@ -5,10 +5,16 @@ limit to a grid-tie inverter over RS485. It follows household demand from MQTT
 meter data, plans battery discharge against electricity prices and PV forecasts,
 and consumes BMS/MPPT telemetry from SolarBatteryTelemetry (SBT).
 
-Current firmware version: **5.9.6** (`VERSION` in `src/main.cpp`).
+Current firmware version: **5.10.0** (`VERSION` in `src/main.cpp`).
 
 ## Recent changes
 
+- **5.10.0**: With `Limiter Enabled` off, request the configured MAX on every
+  RS485 control tick independently of the operating mode and MQTT planning
+  inputs, subject to the documented stop and hardware-fault gates. Local serial
+  write acceptance is reported separately from inverter confirmation. Economic
+  planning and its diagnostic recommendation remain available in manual modes
+  when the required planning inputs are valid.
 - **5.9.6**: Builds against the released ConfigurationsManager 4.12.0 from the
   PlatformIO registry instead of the local test packages; all profiles,
   including `testesp_mqtt_drop_oldest`, now use the registry package.
@@ -33,7 +39,7 @@ Current firmware version: **5.9.6** (`VERSION` in `src/main.cpp`).
   TCP backpressure, so the bounded TX queue does not overflow and drop the
   session during WiFi stalls. Healthy links are not delayed.
 - **5.9.0**: Forecast prices use horizon-based premiums: up to 12 h, 12-24 h and
-  beyond 24 h (defaults 3 / 8 / 10%, keys `pred12Pct`, `pred24Pct`, `predPct`).
+beyond 24 h (defaults 3 / 8 / 10%, keys `pred12Pct`, `pred24Pct`, `predPct`).
 - **5.8.3**: `Output Correction Offset (W)` biases household demand before the
   PID or manual-mode calculation instead of the final command (see
   [Control behavior](#control-behavior)).
@@ -159,8 +165,8 @@ Normal and shadow builds use the relative-time-tier planner
 cheap / very expensive / additional expensive shares and applies a configurable
 minimum storage net advantage. Forecast prices are valued as
 `raw + abs(raw) * premium / 100`, with the premium selected by slot horizon
-(up to 12 h, up to 24 h, beyond). A nonpositive or missing current price stops
-output in this policy.
+(up to 12 h, up to 24 h, beyond). With the limiter enabled, a nonpositive or
+missing current price stops output in this policy.
 
 | Setting | Default |
 | --- | --- |
@@ -209,8 +215,8 @@ ON. After a restart it starts blocked until fresh SOC reaches Reserve ON.
 policy, when qualified sources permit discharge and the reserve latch allows it.
 The relative-time policy does not apply this override.
 
-Negative-price handling (`LimiterNegPrice` / `LimNegZero`) is mutually
-exclusive: force MIN or set output to 0 (default) while
+With the limiter enabled, negative-price handling (`LimiterNegPrice` /
+`LimNegZero`) is mutually exclusive: force MIN or set output to 0 (default) while
 `SolarLimiter/Input/NegativePrice` is true.
 
 ## MQTT
@@ -237,6 +243,13 @@ Topics are relative to the configured publish root (default `SolarLimiter`).
 Input topics are configurable under Settings > MQTT-Topics. The bounded MQTT TX
 queue settings (`txQueueBytes`, `txStallTimeoutMs`) are enforced to at least
 8192 bytes / 30000 ms at boot.
+
+After a UTC rollback of more than five seconds, SIL discards its active and
+partially received PV forecasts. Until its clock reaches the previous high-water
+mark, it rejects forecasts generated after its current UTC with `clock_recovery`,
+even when the sender's clock lead would normally be within the 120-second
+allowance. Unknown forecast slots are not credited as solar energy; fresh
+measured PV remains independent of the forecast.
 
 ## Home Assistant
 
