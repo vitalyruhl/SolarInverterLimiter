@@ -14,7 +14,8 @@ Current firmware version: **5.10.0** (`VERSION` in `src/main.cpp`).
   inputs, subject to the documented stop and hardware-fault gates. Local serial
   write acceptance is reported separately from inverter confirmation. Economic
   planning and its diagnostic recommendation remain available in manual modes
-  when the required planning inputs are valid.
+  when the required planning inputs are valid. Grid, inverter and price input
+  freshness uses 64-bit monotonic uptime, including across the `millis()` wrap.
 - **5.9.6**: Builds against the released ConfigurationsManager 4.12.0 from the
   PlatformIO registry instead of the local test packages; all profiles,
   including `testesp_mqtt_drop_oldest`, now use the registry package.
@@ -117,6 +118,13 @@ root `SILHardening/COM8/out` and client ID `SILHardening-COM8-device`, and
 disable MQTT if fixture isolation is incomplete. `planner_shadow*` requires mock
 transport at compile time and only publishes below `SolarLimiterTest/`. Never
 upload mock or shadow images to the production inverter.
+
+In `planner_shadow*`, SIL's own startup does not erase NVS after an
+initialization error, and the startup factory-reset button is disabled. The
+shadow-only linker guard also prevents the Arduino Core's specific full-NVS
+erase on `NO_FREE_PAGES` or `NEW_VERSION_FOUND` before SIL starts. The first
+NVS initialization error is preserved and blocks normal startup. CM may still
+write default settings, so this is not a read-only NVS environment.
 
 ### ConfigurationsManager dependency
 

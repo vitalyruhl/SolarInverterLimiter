@@ -1,3 +1,4 @@
+param([string] $MainSource = '')
 $ErrorActionPreference = 'Stop'
 $repo = (Resolve-Path (Join-Path $PSScriptRoot '../..')).Path
 $outputDirectory = Join-Path $repo '.Temp/test/limiter-disabled'
@@ -6,7 +7,8 @@ $json = Join-Path $repo '.pio/plan-retention-5.4.7-final/libdeps/usb/ArduinoJson
 if (!(Test-Path -LiteralPath (Join-Path $json 'ArduinoJson.h'))) { throw 'Existing ArduinoJson headers not found' }
 New-Item -ItemType Directory -Path $outputDirectory -Force | Out-Null
 
-$source = [IO.File]::ReadAllText((Join-Path $repo 'src/main.cpp'))
+if (!$MainSource) { $MainSource = Join-Path $repo 'src/main.cpp' }
+$source = [IO.File]::ReadAllText($MainSource)
 function Get-UniqueProductionMatch([string] $pattern, [string] $description) {
     $matches = [regex]::Matches($source, $pattern)
     if ($matches.Count -ne 1) { throw "Expected one production $description, found $($matches.Count)" }

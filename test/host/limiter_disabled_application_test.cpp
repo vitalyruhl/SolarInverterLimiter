@@ -22,8 +22,9 @@ template <class T> static T constrain(T value, T lower, T upper) {
 
 // [MOCKED!] Only the Arduino clock, received telemetry, settings, logging,
 // and hardware serial/GPIO boundaries are supplied by the host fixture.
-static unsigned long clockMs = 1000;
-static unsigned long millis() { return clockMs; }
+static uint64_t clockMs = 1000;
+static unsigned long millis() { return static_cast<uint32_t>(clockMs); }
+[[maybe_unused]] static int64_t esp_timer_get_time() { return int64_t(clockMs) * 1000; }
 static std::time_t fakeTime(std::time_t *out) {
     const std::time_t now = 1800000000;
     if (out) *out = now;
@@ -48,7 +49,9 @@ public:
     enum Input { Grid, Inverter, Price, Count };
     struct Reading { float value = 0; bool valid = false; };
     Reading readings[Count];
-    bool read(Input input, uint32_t, uint32_t, float &value) const {
+    mutable uint64_t lastReadAt[Count] = {};
+    bool read(Input input, uint64_t now, uint32_t, float &value) const {
+        lastReadAt[input] = now;
         value = readings[input].value;
         return readings[input].valid;
     }
@@ -465,6 +468,18 @@ static bool onOffOnRecovery() {
     return passed;
 }
 
+static bool telemetryUptimeSurvivesMillisWrap() {
+    resetFixture(control::OperatingMode::Automatic);
+    provideHealthyInputs();
+    clockMs = (uint64_t(1) << 32) + 5000;
+    processRS485Tick();
+    bool passed = true;
+    for (unsigned i = 0; i < control::TelemetryAge::Count; ++i)
+        passed = passed && telemetryAge.lastReadAt[i] == clockMs;
+    std::printf("%s control tick passes 64-bit uptime to all telemetry inputs\n", passed ? "PASS" : "FAIL");
+    return passed;
+}
+
 int main() {
     std::printf("[MOCKED!] profile=%s\n", kRs485MockTransport ? "planner_shadow" : "production_encoder");
     RS485begin();
@@ -546,6 +561,7 @@ int main() {
     if (!transportDiagnosticRecovery()) ++failures;
     if (!modeAfterReconnectSimulation()) ++failures;
     if (!economicPlanKeepsItsValuesAcrossLimiterChange()) ++failures;
+    if (!telemetryUptimeSurvivesMillisWrap()) ++failures;
 
     return failures ? 1 : 0;
 }

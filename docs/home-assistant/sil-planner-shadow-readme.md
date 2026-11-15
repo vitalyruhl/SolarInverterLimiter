@@ -40,7 +40,7 @@ Production Assessment is observed separately as `sensor.sil_comparison_productio
 
 ## Comparison entities and view
 
-The script observes an explicit diagnostic topic allowlist and creates only `sensor.sil_shadow_*` and `sensor.sil_comparison_production_*` states. Test budget, charge intent, config, state, assessment and runtime are read from the `SolarLimiterTest` namespace. Only production Planning/State and Planning/Config are observed. There are no actuator subscriptions or trigger publications.
+The script observes an explicit diagnostic topic allowlist and creates only `sensor.sil_shadow_*` and `sensor.sil_comparison_production_*` states. Test budget, charge intent, config, state, assessment and runtime are read from the `SolarLimiterTest` namespace. Production Planning/State, Planning/Config and Planning/Assessment are observed. There are no actuator subscriptions or trigger publications.
 
 The production entities (`sensor.sil_production_price_input`, `sensor.sil_comparison_production_*`) feed the Overview forecast card in `dashboard-overview-home.yaml` and `dashboard-overview-power.yaml`. The former test-dashboard comparison view is no longer tracked in the repository; the `sil_shadow_*` test entities remain available for ad-hoc views.
 

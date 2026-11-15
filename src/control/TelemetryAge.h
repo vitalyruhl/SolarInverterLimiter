@@ -31,14 +31,16 @@ public:
         for (auto &s : stamps_) s = Stamp{};
         portEXIT_CRITICAL(&mux_);
     }
-    bool read(Input i, uint32_t now, uint32_t timeout, float &value) const {
+    // now is monotonic uptime in milliseconds, not the 32-bit millis() value.
+    bool read(Input i, uint64_t now, uint32_t timeout, float &value) const {
         portENTER_CRITICAL(&mux_);
         const Stamp stamp = stamps_[i];
         portEXIT_CRITICAL(&mux_);
         value = stamp.value;
-        return stamp.valid && uint32_t(now - stamp.at) < timeout;
+        // A caller may have captured now just before a newer sample arrived.
+        return stamp.valid && now >= stamp.at && now - stamp.at < timeout;
     }
-    void receive(const char *topic, const uint8_t *payload, unsigned length, uint32_t now) {
+    void receive(const char *topic, const uint8_t *payload, unsigned length, uint64_t now) {
         if (!topic || !payload) return;
         for (unsigned i = 0; i < Count; ++i) {
             if (!topic_[i] || !path_[i] || topic_[i]->get() != topic) continue;
@@ -154,7 +156,7 @@ private:
         if (i == Price) { out = float(number); return std::isfinite(out); }
         return checkedIntegerToFloat(number, out);
     }
-    struct Stamp { uint32_t at = 0; float value = 0; bool valid = false; };
+    struct Stamp { uint64_t at = 0; float value = 0; bool valid = false; };
     mutable portMUX_TYPE mux_ = portMUX_INITIALIZER_UNLOCKED;
     Stamp stamps_[Count];
     Config<String> *topic_[Count] = {}, *path_[Count] = {};

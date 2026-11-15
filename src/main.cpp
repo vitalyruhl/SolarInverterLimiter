@@ -1,5 +1,6 @@
 #include <Arduino.h>
 #include <esp_system.h>
+#include <esp_timer.h>
 #include <nvs_flash.h>
 #include <Preferences.h>
 #include <Ticker.h>
@@ -15,6 +16,7 @@
 #include "ConfigManager.h"
 #include "runtime/CompactLiveMetadata.h"
 #include "runtime/RuntimeDiagnostics.h"
+#include "runtime/ShadowNvsGuard.h"
 
 #include "core/CoreSettings.h"
 #include "core/CoreWiFiServices.h"
@@ -593,11 +595,27 @@ static ControlLogSnapshot controlLog;
 // MAIN FUNCTIONS
 //----------------------------------------
 
+#if defined(SIL_PLANNER_SHADOW) && SIL_PLANNER_SHADOW
+static bool shadowStartupBlocked = false;
+#endif
+
 void setup()
 {
     Serial.begin(115200);
     runtimeDiagnostics.begin(VERSION, kRs485MockTransport);
+#if defined(SIL_PLANNER_SHADOW) && SIL_PLANNER_SHADOW
+    shadowStartupBlocked = shadowNvsBootError() != ESP_OK;
+    if (!shadowStartupBlocked)
+        shadowStartupBlocked = !ensureNvsReady() || shadowNvsBootError() != ESP_OK;
+    if (shadowStartupBlocked)
+    {
+        Serial.printf("[E] Shadow startup blocked: NVS initialization failed (%d)\n",
+                      static_cast<int>(shadowNvsBootError()));
+        return;
+    }
+#else
     ensureNvsReady();
+#endif
 
     setupLogging();
     lmg.scopedTag("SETUP");
@@ -699,6 +717,7 @@ static bool ensureNvsReady()
         return true;
     }
 
+#if !defined(SIL_PLANNER_SHADOW) || !SIL_PLANNER_SHADOW
     if (err == ESP_ERR_NVS_NO_FREE_PAGES || err == ESP_ERR_NVS_NEW_VERSION_FOUND || err == ESP_ERR_NVS_INVALID_STATE)
     {
         const esp_err_t eraseErr = nvs_flash_erase();
@@ -714,6 +733,7 @@ static bool ensureNvsReady()
             return true;
         }
     }
+#endif
 
     Serial.printf("[E] NVS init failed (%d)\n", static_cast<int>(err));
     return false;
@@ -721,6 +741,13 @@ static bool ensureNvsReady()
 
 void loop()
 {
+#if defined(SIL_PLANNER_SHADOW) && SIL_PLANNER_SHADOW
+    if (shadowStartupBlocked)
+    {
+        delay(1000);
+        return;
+    }
+#endif
     runtimeDiagnostics.loop();
     runtimeDiagnostics.enter(sil::RuntimeStage::Wifi);
 #if defined(SIL_TEST_SINGLE_STACK_RESET) && SIL_TEST_SINGLE_STACK_RESET
@@ -938,7 +965,7 @@ void setupGUI()
     limiter.value<RuntimeFloatMeta>("solar", []()
                   {
         float watts = 0;
-        return telemetryAge.read(control::TelemetryAge::Inverter, millis(), control::kGridAcStaleMs, watts)
+        return telemetryAge.read(control::TelemetryAge::Inverter, uint64_t(esp_timer_get_time()) / 1000ULL, control::kGridAcStaleMs, watts)
             ? double(watts) : NAN;
     },
         "Measured Inverter AC Output", "W", 0, 5);
@@ -1147,11 +1174,16 @@ static void registerIOBindings()
             },
             .onLongPressOnStartup = []()
             {
+#if defined(SIL_PLANNER_SHADOW) && SIL_PLANNER_SHADOW
+                lmg.logTag(LL::Warn, "IO", "Reset button ignored in shadow profile");
+#else
                 lmg.logTag(LL::Warn, "IO", "Reset button pressed at startup -> restoring defaults");
                 ConfigManager.clearAllFromPrefs();
                 ConfigManager.saveAll();
                 delay(500);
-                ESP.restart(); },
+                ESP.restart();
+#endif
+            },
         },
         resetOptions);
 
@@ -1288,7 +1320,7 @@ static void setupMqtt()
                 lmg.logTag(!strcmp(result, "accepted") ? LL::Info : LL::Warn,
                     "PV", "rx=%s rev=%lu slots=%u", result,
                     static_cast<unsigned long>(pvForecast.revision()), pvForecast.slots());
-        } else telemetryAge.receive(topic, payload, length, millis());
+        } else telemetryAge.receive(topic, payload, length, uint64_t(esp_timer_get_time()) / 1000ULL);
     });
     mqtt.onDisconnected([]() {
         // Preserve original meter timestamps; their unchanged 20 s expiry still protects output.
@@ -2532,12 +2564,13 @@ static void processRS485Tick()
 
     const uint32_t nowMs = millis();
     float measuredGridW = 0, measuredInverterW = 0, measuredPrice = 0;
+    const uint64_t telemetryNowMs = uint64_t(esp_timer_get_time()) / 1000ULL;
     int currentInverterOutputW = 0, signedGridPowerW = 0;
-    const bool gridFresh = telemetryAge.read(control::TelemetryAge::Grid, nowMs, control::kGridAcStaleMs, measuredGridW) &&
+    const bool gridFresh = telemetryAge.read(control::TelemetryAge::Grid, telemetryNowMs, control::kGridAcStaleMs, measuredGridW) &&
         control::checkedFloatToInt(measuredGridW, signedGridPowerW);
-    const bool inverterFresh = telemetryAge.read(control::TelemetryAge::Inverter, nowMs, control::kGridAcStaleMs, measuredInverterW) &&
+    const bool inverterFresh = telemetryAge.read(control::TelemetryAge::Inverter, telemetryNowMs, control::kGridAcStaleMs, measuredInverterW) &&
         control::checkedFloatToInt(measuredInverterW, currentInverterOutputW);
-    const bool priceFresh = telemetryAge.read(control::TelemetryAge::Price, nowMs, 1200000UL, measuredPrice);
+    const bool priceFresh = telemetryAge.read(control::TelemetryAge::Price, telemetryNowMs, 1200000UL, measuredPrice);
     const int offset = limiterSettings.inputCorrectionOffset.get();
     const int gridImportW = max(signedGridPowerW, 0);
     const int gridExportW = control::nonnegativeExportMagnitude(signedGridPowerW);
