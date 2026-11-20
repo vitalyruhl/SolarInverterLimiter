@@ -26,6 +26,11 @@ public:
     bool read(uint64_t now, uint32_t timeout, float &value) {
         return age_.read(input_, now, timeout, value);
     }
+    void mapping(const char *topic, const char *path) {
+        topic_.value = topic;
+        path_.value = path;
+        age_.refreshMappings();
+    }
 
 private:
     control::TelemetryAge::Input input_;
@@ -132,6 +137,43 @@ static bool lateFirstReadAndDifferentTimeouts(const InputCase &test) {
     return ok;
 }
 
+static bool changeMapping(const InputCase &test) {
+    Receiver receiver(test.input);
+    float value = 0;
+    receiver.send("900", 100);
+    receiver.mapping("meter", "none");
+    const bool unchanged = receiver.read(101, test.timeout, value) && value == 900;
+    receiver.mapping("other", "none");
+    receiver.send("900", 102);
+    const bool oldTopicRejected = !receiver.read(102, test.timeout, value);
+    receiver.mapping("meter", "watts");
+    receiver.send("{\"watts\":400}", 103);
+    const bool mapped = receiver.read(103, test.timeout, value) && value == 400;
+    receiver.mapping("meter", "new");
+    const bool oldPathRejected = !receiver.read(104, test.timeout, value);
+
+    // Initial match and parsing belong to the old binding. Replacing and then
+    // restoring the binding before the final stamp write must reject this sample.
+    unsigned locks = 0;
+    bool interleaved = false;
+    telemetryBeforeCritical = [&] {
+        if (++locks == 2) {
+            interleaved = true;
+            receiver.mapping("other", "new");
+            receiver.mapping("meter", "new");
+        }
+    };
+    receiver.send("{\"new\":999}", 105);
+    telemetryBeforeCritical = {};
+    const bool interrupted = interleaved && !receiver.read(105, test.timeout, value);
+    receiver.send("{\"new\":700}", 106);
+    const bool recovered = receiver.read(106, test.timeout, value) && value == 700;
+    const bool ok = unchanged && oldTopicRejected && mapped && oldPathRejected && interrupted && recovered;
+    std::printf("%s %s mapping unchanged=%d oldTopicRejected=%d mapped=%d oldPathRejected=%d interrupted=%d recovered=%d\n",
+        ok ? "PASS" : "FAIL", test.name, unchanged, oldTopicRejected, mapped, oldPathRejected, interrupted, recovered);
+    return ok;
+}
+
 int main() {
     constexpr InputCase cases[] = {
         {control::TelemetryAge::Grid, "grid", 20000},
@@ -145,6 +187,7 @@ int main() {
         failures += !readCapturedBeforeNewerSampleDoesNotPoisonIt(test);
         failures += !staleSampleNeverReappearsAfterFullCycle(test);
         failures += !lateFirstReadAndDifferentTimeouts(test);
+        failures += !changeMapping(test);
     }
     std::printf("TelemetryAge wrap tests: %u failure(s)\n", failures);
     return failures ? 1 : 0;

@@ -61,13 +61,27 @@ public:
     Plan snapshot;
     Plan candidate; // Fixed publication staging; never copy the planner or renew a held frame.
     char payload[Plan::kPayloadBytes] = {};
+    void setTiming(uint32_t publishS, uint32_t retentionS, uint32_t discardS) {
+        publishMs_ = publishS * 1000UL;
+        retentionMs_ = retentionS * 1000UL;
+        discardMs_ = discardS * 1000UL;
+    }
     void connection(bool connected) {
-        if (connected && !connected_) { requested_ = true; replay_ = true; pending_ = false; }
+        if (connected && !connected_) {
+            // Transport recovery alone must not advance the generation time.
+            if (snapshot.valid && !topicInvalidated_) {
+                pending_ = true;
+                attempted_ = false;
+            } else {
+                requested_ = true;
+            }
+        }
         connected_ = connected;
     }
     void topicChanged() {
-        requested_ = true; pending_ = false; publishedValid_ = false; replay_ = false;
+        requested_ = true; pending_ = false; publishedValid_ = false;
         sourceChanged_ = snapshot.valid;
+        topicInvalidated_ = snapshot.valid;
     }
     // New accepted price/forecast content requests capture without renewing the held frame.
     void requestCapture() { requested_ = true; }
@@ -93,7 +107,17 @@ public:
             if (!degraded_) requested_ = true;
             markDegraded(now);
         }
-        if (rollbackEpoch_ && degraded_ && !rollbackHeld_ && uint32_t(now - degradedAt_) > 300000UL) {
+        if (degraded_ && timed_ && uint32_t(now - degradedAt_) > retentionMs_ &&
+            (uint32_t(now - validAt_) >= discardMs_ ||
+             (utcValid && utc >= snapshot.generatedAt && utc - snapshot.generatedAt >= discardMs_ / 1000UL))) {
+            snapshot.reset(0, 0, 0);
+            snapshot.finish(false, "history_expired");
+            degraded_ = timed_ = rollbackEpoch_ = rollbackHeld_ = waitingForNewUtc_ = false;
+            degradedAt_ = 0;
+            captured(now);
+            requested_ = true;
+        }
+        if (rollbackEpoch_ && degraded_ && !rollbackHeld_ && uint32_t(now - degradedAt_) > retentionMs_) {
             // Keep the original generation through the full minimum, then permit
             // one new projection when the observed UTC second advances.
             rollbackHeld_ = true; waitingForNewUtc_ = true; retryAfterUtc_ = utc;
@@ -122,7 +146,8 @@ public:
         if (validCandidate && newGeneration) {
             snapshot = next; context_ = context;
             const uint32_t age = lastUtc_ > next.generatedAt ? (lastUtc_ - next.generatedAt) * 1000UL : 0;
-            validAt_ = now - age; timed_ = true; degraded_ = sourceChanged_ = replay_ = false;
+            validAt_ = now - age; timed_ = true; degraded_ = sourceChanged_ = false;
+            topicInvalidated_ = false;
             waitingForNewUtc_ = rollbackEpoch_ = rollbackHeld_ = false; degradedAt_ = 0;
             captured(now);
         } else if (snapshot.valid) {
@@ -133,20 +158,19 @@ public:
             waitingForNewUtc_ = validCandidate && !newGeneration && next.generatedAt == lastUtc_ &&
                 (!rollbackEpoch_ || (rollbackHeld_ && !freshlyBuilt));
             if (waitingForNewUtc_) retryAfterUtc_ = lastUtc_;
-            if (replay_) { pending_ = true; attempted_ = false; }
-            replay_ = false; captured_ = true; requested_ = false; captureAt_ = now;
+            captured_ = true; requested_ = false; captureAt_ = now;
         } else {
             snapshot = next;
             if (snapshot.valid) snapshot.finish(false, "plan_context_invalid");
-            timed_ = degraded_ = sourceChanged_ = replay_ = waitingForNewUtc_ = rollbackEpoch_ = rollbackHeld_ = false;
+            timed_ = degraded_ = sourceChanged_ = waitingForNewUtc_ = rollbackEpoch_ = rollbackHeld_ = false;
             degradedAt_ = 0;
             captured(now);
         }
     }
-    bool captureDue(uint32_t now) const {
+    bool captureDue(uint32_t now, bool periodicCapture = true) const {
         const bool retry = waitingForNewUtc_ && sourceReady_ && (!qualificationKnown_ || qualified_) &&
             lastUtc_ > retryAfterUtc_;
-        return requested_ || !captured_ || retry || uint32_t(now - captureAt_) >= 60000UL;
+        return requested_ || !captured_ || retry || (periodicCapture && uint32_t(now - captureAt_) >= publishMs_);
     }
     bool invalidationDue(bool planValid) const {
         return connected_ && !planValid && !retained() &&
@@ -156,25 +180,26 @@ public:
         captured_ = pending_ = true; requested_ = attempted_ = false; captureAt_ = now;
     }
     bool publishDue(uint32_t now) const {
-        // Until the independent status reaches consumers, never replay a historical
-        // valid payload that could otherwise be mistaken for a current plan.
-        return connected_ && pending_ && !sourceChanged_ && !retained() &&
-            !(snapshot.valid && timed_ && uint32_t(now - validAt_) >= 180000UL) &&
+        // Plans are non-retained on the broker. Replays carry their original generation.
+        const bool heartbeat = publishedValid_ && snapshot.valid &&
+            !retained() && uint32_t(now - publishedAt_) >= publishMs_;
+        return connected_ && (pending_ || heartbeat) && !(snapshot.valid && topicInvalidated_) &&
             (!attempted_ || uint32_t(now - attemptAt_) >= 5000UL);
     }
     void published(bool success, uint32_t now) {
         attempted_ = true; attemptAt_ = now;
-        if (success) { pending_ = false; publishedValid_ = snapshot.valid; }
+        if (success) { pending_ = false; publishedValid_ = snapshot.valid; publishedAt_ = now; }
     }
 private:
     void markDegraded(uint32_t now) {
         if (snapshot.valid && !degraded_) { degraded_ = true; degradedAt_ = now; }
     }
     uint32_t captureAt_ = 0, attemptAt_ = 0;
+    uint32_t publishedAt_ = 0, publishMs_ = 60000UL, retentionMs_ = 300000UL, discardMs_ = 86400000UL;
     uint32_t validAt_ = 0, lastUtc_ = 0, lastValidUtc_ = 0, context_ = 0, observedAt_ = 0, degradedAt_ = 0, retryAfterUtc_ = 0;
     bool connected_ = false, captured_ = false, requested_ = true, pending_ = false;
     bool attempted_ = false, publishedValid_ = false;
-    bool degraded_ = false, sourceChanged_ = false, replay_ = false, blocked_ = false;
+    bool degraded_ = false, sourceChanged_ = false, topicInvalidated_ = false, blocked_ = false;
     bool sourceReady_ = false, qualified_ = false, qualificationKnown_ = false, timed_ = false, waitingForNewUtc_ = false;
     bool rollbackEpoch_ = false, rollbackHeld_ = false;
 };

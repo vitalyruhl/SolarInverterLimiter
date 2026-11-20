@@ -6,12 +6,12 @@
 #include <iostream>
 using namespace control;
 static constexpr uint32_t now=1792454400;
-static void load(FuturePrices& p){
- for(unsigned k=0;k<6;++k){
-  JsonDocument d;d["v"]=kPriceInputVersion;d["r"]=now;d["t"]=now;d["d"]=900;d["n"]=144;d["k"]=k;
+static void load(FuturePrices& p, uint32_t revision = now, unsigned first = 0, unsigned end = 6){
+ for(unsigned k=first;k<end;++k){
+  JsonDocument d;d["v"]=kPriceInputVersion;d["r"]=revision;d["t"]=now;d["d"]=900;d["n"]=144;d["k"]=k;
   auto prices=d["p"].to<JsonArray>(),origin=d["o"].to<JsonArray>();
   for(unsigned i=0;i<24;++i){prices.add(400000);origin.add(1);}
-  std::string s;serializeJson(d,s);const auto result=p.receive(reinterpret_cast<const uint8_t*>(s.data()),s.size(),now,100+k,kPriceInputVersion==2);
+  std::string s;serializeJson(d,s);const auto result=p.receive(reinterpret_cast<const uint8_t*>(s.data()),s.size(),revision,100+k,kPriceInputVersion==2);
   assert(!std::strcmp(result,k==5?"accepted":"pending"));
  }
 }
@@ -36,8 +36,25 @@ int main(){
  const auto before=prices.plan(now,100,c,true,50,0,100,1,true,.4f,false,.01f,900,nullptr,0,&trace);
  assert(before.valid&&prices.inputVersion()==2);for(unsigned i=0;i<trace.count;++i)assert(trace.watts[i]==0);
  assert(prices.priceFresh(now+179)&&!prices.priceFresh(now+180));
+ assert(prices.priceFresh(now+299,300)&&!prices.priceFresh(now+300,300));
+ assert(prices.plan(now+180,180,c,true,50,0,100,2,true,.4f,false,1,900,nullptr,0,&trace,-1,false,300).valid);
  assert(!prices.plan(now+180,200,c,true,50,0,100,2,true,.4f,false,1,900,nullptr,0,&trace).valid);
  const std::string withdrawal="{\"v\":2,\"r\":"+std::to_string(now+181)+",\"t\":"+std::to_string(now)+",\"d\":900,\"n\":0,\"k\":0,\"p\":[],\"o\":[]}";
+ FuturePrices replay;
+ const auto *bytes = reinterpret_cast<const uint8_t *>(withdrawal.data());
+ const std::string schedule = "{\"v\":2,\"r\":" + std::to_string(now) + ",\"t\":" + std::to_string(now) +
+     ",\"d\":900,\"n\":2,\"k\":0,\"p\":[400000,400000],\"o\":[1,1]}";
+ FuturePrices ttl;
+ const auto *scheduleBytes = reinterpret_cast<const uint8_t *>(schedule.data());
+ assert(!std::strcmp(ttl.receive(scheduleBytes, schedule.size(), now+60, 10, true, 60), "test_price_stale"));
+ assert(!std::strcmp(ttl.receive(scheduleBytes, schedule.size(), now+60, 11, true, 61), "accepted"));
+ load(replay);
+ load(replay, now+400, 0, 1);
+ assert(!std::strcmp(replay.receive(bytes, withdrawal.size(), now+400, 0, true, 60), "withdrawn"));
+ assert(!replay.slots() && !replay.economicValid());
+ load(replay, now+400, 1, 6);
+ assert(replay.slots()==144 && replay.revision()==now+400);
+ assert(!std::strcmp(replay.receive(bytes, withdrawal.size(), now+400, 0, true, 60), "old_revision"));
  assert(!std::strcmp(prices.receive(reinterpret_cast<const uint8_t*>(withdrawal.data()),withdrawal.size(),now+181,300,true),"withdrawn"));
  const auto after=prices.plan(now+181,301,c,true,80,0,100,3,true,.4f,false,1,900,nullptr,0,&trace);
  assert(!after.valid&&!prices.priceFresh(now+181)&&std::abs(after.availableWh-before.availableWh)<.01f);

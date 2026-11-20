@@ -7,6 +7,8 @@
 #include "DischargeBudget.h"
 #include "JsonArena.h"
 #include "PvForecast.h"
+#include "PlanCaptureContext.h"
+#include "PlanLifecycleSettings.h"
 #include <algorithm>
 #include <cmath>
 #include <cstring>
@@ -15,6 +17,7 @@
 namespace control {
 struct FuturePlan {
     bool relativePricePositive=false;
+    bool retained = false;
     int directPvCeilingW=0;
     bool valid = false, pvQualified = false, coupledProjection = false;
     float offeredPvWh = 0; // Sum of known DC offers; unknown intervals contribute no invented energy.
@@ -31,18 +34,29 @@ class FuturePrices {
 public:
     static constexpr unsigned kSlots = 288, kChunk = 24, kPlanSlots = 144;
     static_assert(kPlanSlots == DischargeBudget::kSlots, "Trace must cover the entire allocation window");
-    void clear() {
+private:
+    void clearActiveSchedule() {
         projectionCount_ = 0;
 #if SIL_RELATIVE_TIME_POLICY
         relativeCheapFull_=relativeWasCheap_=false;
+        economicQualified_ = false;
+        economicValid_ = false;
 #endif
         if (activeCount_) ++contentRevision_;
-        activeCount_ = pendingCount_ = 0; parts_ = 0;
-        activeRevision_ = pendingRevision_ = 0;
-        pendingPoisoned_ = cacheValid_ = false;
+        activeCount_ = 0;
+        activeRevision_ = 0;
+        cacheValid_ = false;
         // Losing a schedule must never replenish the independently measured energy pool.
     }
-    const char *receive(const uint8_t *payload, unsigned length, uint32_t utc, uint32_t ms, bool originV2 = false) {
+public:
+    void clear() {
+        clearActiveSchedule();
+        pendingCount_ = parts_ = 0;
+        pendingRevision_ = 0;
+        pendingPoisoned_ = false;
+    }
+    const char *receive(const uint8_t *payload, unsigned length, uint32_t utc, uint32_t ms,
+                        bool originV2 = false, uint32_t freshnessS = 180) {
         if (utc < 1704067200UL) return "clock_invalid";
         if (!payload || !length || length > 768) return "packet_size";
         if (std::memchr(payload, 0, length)) return "packet_json";
@@ -65,8 +79,7 @@ public:
             start % 900 || start > revision || revision - start >= 900 || start > utc ||
             count > kSlots || part >= 12 || coverageEnd > UINT32_MAX ||
             (count && uint64_t(utc) >= coverageEnd)) return "packet_range";
-        if (originV2 && uint64_t(utc)>=uint64_t(revision)+180) return "test_price_stale";
-        if (revision < activeRevision_ || revision < pendingRevision_) return "old_revision";
+        if (revision < activeRevision_ || (count && revision < pendingRevision_)) return "old_revision";
         if (!count) {
             if (part || prices.size()) return "packet_empty";
             if (revision == pendingRevision_ && pendingCount_) {
@@ -74,9 +87,14 @@ public:
             }
             if (revision == activeRevision_) return activeCount_ ? "packet_conflict" : "duplicate";
             if (originV2 && origins.size()) return "packet_origin";
-            clear(); activeRevision_ = revision; activeAcceptedUtc_ = utc; activeVersion_ = originV2 ? 2 : 1;
+            // Keep newer staged chunks. They convey no authority until the complete schedule arrives.
+            if (revision < pendingRevision_) clearActiveSchedule();
+            else clear();
+            activeRevision_ = revision; activeAcceptedUtc_ = utc; activeVersion_ = originV2 ? 2 : 1;
             return "withdrawn";
         }
+        // A newer valid withdrawal may revoke an older plan after its feed has expired.
+        if (originV2 && uint64_t(utc) >= uint64_t(revision) + freshnessS) return "test_price_stale";
         const unsigned offset = part * kChunk;
         if (count < 2 || offset >= count || prices.size() != std::min(kChunk, count - offset))
             return "packet_count";
@@ -117,7 +135,7 @@ public:
         parts_ |= uint16_t(1u << part);
         const unsigned chunks = (count + kChunk - 1) / kChunk;
         if (parts_ != (1u << chunks) - 1) return "pending";
-        if (activeStart_ != start || activeCount_ != count ||
+        if (activeStart_ != start || activeCount_ != count || activeVersion_ != (originV2 ? 2 : 1) ||
             std::memcmp(active_, pending_, count * sizeof(active_[0])) ||
             std::memcmp(origins_, pendingOrigins_, count)) ++contentRevision_;
         std::memcpy(active_, pending_, count * sizeof(active_[0]));
@@ -130,8 +148,47 @@ public:
                     bool bmsValid, float soc, float batteryW, float fullAh,
                     uint32_t sequence, bool currentPriceValid, float currentPrice, bool currentExpensive,
                     float factor, int maximumW, const PvForecast *pv = nullptr, float qualifiedMaxChargeW = 0, DischargeBudget *trace = nullptr,
-                    float currentChargerW = -1, bool currentCheap = false) {
+                    float currentChargerW = -1, bool currentCheap = false, uint32_t priceFreshnessS = 180) {
+#if SIL_RELATIVE_TIME_POLICY
+        const uint32_t elapsed = ms - lastObservationMs_;
+        lastObservationMs_ = ms;
+        if (economicBudget_.valid) {
+            ageMs_ += elapsed;
+            if (utc >= projectionUtc_) ageMs_ = std::max<uint64_t>(ageMs_, uint64_t(utc - projectionUtc_) * 1000);
+            if (degraded_) degradedMs_ += elapsed;
+            if (utc < 1704067200UL || (lastUtc_ && uint64_t(utc) + 5 < lastUtc_)) economicQualified_ = false;
+        }
+#endif
+        FuturePlan result = calculate(utc, ms, cfg, bmsValid, soc, batteryW, fullAh, sequence,
+            currentPriceValid, currentPrice, currentExpensive, factor, maximumW, pv, qualifiedMaxChargeW,
+            trace, currentChargerW, currentCheap, priceFreshnessS);
+#if SIL_RELATIVE_TIME_POLICY
+        if (economicBudget_.valid) {
+            economicValid_ = cfg.relativeTimePolicy && economicQualified_ && utc >= projectionUtc_ &&
+                appliedContext_ == relativeContext_ && relativeKey_.prices == contentRevision_ &&
+                relativePv_ == pv && relativeKey_.pv == (pv ? pv->contentRevision() : 0) &&
+                utc >= economicBudget_.start && (utc - economicBudget_.start) / 900 < economicBudget_.count &&
+                ageMs_ < uint64_t(timing_.planMaxAgeS) * 1000;
+            if (!result.valid || result.retained) degraded_ = true;
+            if (ageMs_ >= uint64_t(timing_.planDiscardAfterS) * 1000 &&
+                (!degraded_ || degradedMs_ > uint64_t(timing_.planRetentionS) * 1000)) {
+                economicBudget_.reset(0, 0, 0);
+                economicValid_ = economicQualified_ = degraded_ = false;
+            }
+        }
+#endif
+        return result;
+    }
+private:
+    FuturePlan calculate(uint32_t utc, uint32_t ms, const PreparedSettings &cfg, bool bmsValid,
+                         float soc, float batteryW, float fullAh, uint32_t sequence, bool currentPriceValid,
+                         float currentPrice, bool currentExpensive, float factor, int maximumW, const PvForecast* pv,
+                         float qualifiedMaxChargeW, DischargeBudget* trace, float currentChargerW,
+                         bool currentCheap, uint32_t priceFreshnessS) {
         FuturePlan out;
+#if SIL_RELATIVE_TIME_POLICY
+        const bool previousTickQualified = projectionCount_ == kPlanSlots && relativeActive_;
+#endif
         projectionCount_ = 0;
         if (trace) trace->reset(utc, activeRevision_, pv ? pv->revision() : 0);
         const bool energyValid = bmsValid && std::isfinite(fullAh) && fullAh > 0 && fullAh <= 389 &&
@@ -171,7 +228,21 @@ public:
             out.reason = "clock_invalid"; clear(); lastUtc_ = utc; return finish(out, trace);
         }
         lastUtc_ = utc;
-        if (activeVersion_==2 && !priceFresh(utc)) { out.reason=testPriceStatus(utc); return finish(out,trace); }
+#if SIL_RELATIVE_TIME_POLICY
+        if (cfg.relativeTimePolicy && !generationQualified_) {
+            out.reason = "sources_missing";
+            return finish(out, trace);
+        }
+#endif
+        if (activeVersion_==2 && !priceFresh(utc, priceFreshnessS)) {
+            out.reason = testPriceStatus(utc, priceFreshnessS);
+#if SIL_RELATIVE_TIME_POLICY
+            if (cfg.relativeTimePolicy && currentPriceValid && activeCount_)
+                return heldSlot(utc, cfg, currentPrice, maximumW, pv, qualifiedMaxChargeW,
+                    currentChargerW, fullWh, out);
+#endif
+            return finish(out,trace);
+        }
         if (!activeCount_ || utc < activeStart_ || uint64_t(utc) >= uint64_t(activeStart_) + activeCount_ * 900ULL ||
             uint64_t(utc) > uint64_t(activeRevision_) + 259200) return finish(out, trace);
         const unsigned first = (utc - activeStart_) / 900;
@@ -182,10 +253,54 @@ public:
         }
 #if SIL_RELATIVE_TIME_POLICY
         if(cfg.relativeTimePolicy) {
-            if(end-first!=kPlanSlots){out.reason="relative_coverage";return finish(out,trace);}
-            return relativeProject(first,utc,cfg,currentPrice,maximumW,pv,qualifiedMaxChargeW,currentChargerW,
-                fullWh,out,trace);
+            if (end-first!=kPlanSlots) {
+                out.reason="relative_coverage";
+                return heldSlot(utc, cfg, currentPrice, maximumW, pv, qualifiedMaxChargeW,
+                    currentChargerW, fullWh, out);
+            }
+            PlanCaptureContext key;
+            key.settings = cfg;
+            key.maximumW = maximumW;
+            key.currentPrice = currentPrice;
+            key.prices = contentRevision_;
+            key.pv = pv ? pv->contentRevision() : 0;
+            key.pvValid = pv && pv->valid(utc);
+            const bool chargePossible = std::isfinite(qualifiedMaxChargeW) && qualifiedMaxChargeW > 0;
+            const bool socChanged = cfg.replanSocDeltaPct > 0 && std::fabs(soc - socAtBuild_) >= cfg.replanSocDeltaPct;
+            const bool energyChanged = cfg.replanEnergyDeltaWh > 0 &&
+                std::fabs(out.availableWh - relativeTotals_.availableWh) >= cfg.replanEnergyDeltaWh;
+            const bool pvDeviation = sustainedPvDeviation(ms, utc, cfg, currentChargerW, pv,
+                previousTickQualified && relativePv_ == pv && relativeKey_.pv == key.pv);
+            const bool softRebuild = cfg.replanMinimumIntervalS && (socChanged || energyChanged || pvDeviation) &&
+                ageMs_ >= uint64_t(cfg.replanMinimumIntervalS) * 1000;
+            const bool priorityChanged = (soc < cfg.chargePriorityThreshold) != (socAtBuild_ < cfg.chargePriorityThreshold);
+            const bool reserveChanged = (soc <= cfg.reserveOffSocPercent) != (socAtBuild_ <= cfg.reserveOffSocPercent) ||
+                (soc >= cfg.reserveOnSocPercent) != (socAtBuild_ >= cfg.reserveOnSocPercent);
+            const bool rebuildDue = forceRebuild_ || !previousTickQualified || !economicBudget_.valid ||
+                projectionStart_ != activeStart_ + first * 900UL || !relativeKey_.same(key) ||
+                relativeFullWh_ != fullWh || relativeChargePossible_ != chargePossible ||
+                relativePv_ != pv || utc < projectionUtc_ || ageMs_ >= uint64_t(timing_.planRecalcIntervalS) * 1000 ||
+                relativeContext_ != appliedContext_ || (soc >= 100 && socAtBuild_ < 100) ||
+                priorityChanged || reserveChanged || softRebuild;
+            FuturePlan result = relativeProject(first, utc, cfg, currentPrice, maximumW, pv, qualifiedMaxChargeW,
+                currentChargerW, fullWh, out, rebuildDue);
+            if (result.valid && rebuildDue) {
+                relativeKey_ = key;
+                relativeFullWh_ = fullWh;
+                socAtBuild_ = soc;
+                if (pvDeviation) pvDeviationApplied_ = true;
+                relativeChargePossible_ = chargePossible;
+                relativePv_ = pv;
+                ageMs_ = degradedMs_ = 0;
+                degraded_ = false;
+                appliedContext_ = relativeContext_;
+                relativeTotals_ = result;
+                economicQualified_ = generationQualified_;
+            }
+            if (trace && result.valid) *trace = economicBudget_;
+            return result;
         }
+        relativeActive_ = false;
 #endif
         // Cap resolution follows the whole-watt forecast wire contract, not arbitrary noise percentages.
         // 12000 W is the maximum encoded offer (10000 W * maximum calibration 1.2), not a plant limit.
@@ -220,13 +335,14 @@ public:
         out.reason = out.batteryCeilingW > 0 ? "forecast_release" : (out.shortfallWh > 0 ? "forecast_charge" : "forecast_hold");
         return finish(out, trace);
     }
-    bool priceFresh(uint32_t utc) const {
+public:
+    bool priceFresh(uint32_t utc, uint32_t freshnessS = 180) const {
         return activeCount_ && utc>=activeStart_ && uint64_t(utc)<uint64_t(activeStart_)+activeCount_*900ULL &&
-            (activeVersion_!=2 || (uint64_t(utc)<uint64_t(activeRevision_)+180 && uint64_t(utc)<uint64_t(activeAcceptedUtc_)+180));
+            (activeVersion_!=2 || (uint64_t(utc)<uint64_t(activeRevision_)+freshnessS && uint64_t(utc)<uint64_t(activeAcceptedUtc_)+freshnessS));
     }
-    const char* testPriceStatus(uint32_t utc) const {
+    const char* testPriceStatus(uint32_t utc, uint32_t freshnessS = 180) const {
         if (!activeCount_) return activeVersion_==2 && activeRevision_ ? "test_price_withdrawn" : "test_price_missing";
-        return priceFresh(utc) ? "ok" : "test_price_stale";
+        return priceFresh(utc, freshnessS) ? "ok" : "test_price_stale";
     }
     unsigned inputVersion() const { return activeVersion_; }
     uint32_t start() const { return activeStart_; }
@@ -240,6 +356,41 @@ public:
         return std::isfinite(value);
     }
     uint32_t planningBuilds() const { return planningBuilds_; }
+    void setProjectionTiming(const PlanLifecycleSettings &settings, uint32_t context,
+                             bool qualified, bool liveReady, bool forceRebuild, bool pvMeasured = true) {
+#if SIL_RELATIVE_TIME_POLICY
+        timing_ = settings;
+        relativeContext_ = context;
+        generationQualified_ = qualified;
+        liveReady_ = liveReady;
+        forceRebuild_ = forceRebuild;
+        pvMeasured_ = pvMeasured;
+#else
+        (void)settings; (void)context; (void)qualified; (void)liveReady; (void)forceRebuild; (void)pvMeasured;
+#endif
+    }
+    void copyEconomicBudget(DischargeBudget &trace) const {
+#if SIL_RELATIVE_TIME_POLICY
+        trace = economicBudget_;
+#else
+        (void)trace;
+#endif
+    }
+#if SIL_RELATIVE_TIME_POLICY
+    bool economicAvailable() const { return economicBudget_.valid; }
+    bool economicRetained() const { return economicAvailable() && degraded_; }
+    bool economicStale() const { return economicAvailable() && economicAgeS() >= timing_.planStaleAfterS; }
+    bool economicValid() const { return economicValid_; }
+    uint32_t economicGeneratedAt() const { return economicAvailable() ? economicBudget_.generatedAt : 0; }
+    uint32_t economicAgeS() const { return economicAvailable() ? uint32_t(std::min<uint64_t>(UINT32_MAX, ageMs_ / 1000)) : 0; }
+#else
+    bool economicAvailable() const { return false; }
+    bool economicRetained() const { return false; }
+    bool economicStale() const { return false; }
+    bool economicValid() const { return false; }
+    uint32_t economicGeneratedAt() const { return 0; }
+    uint32_t economicAgeS() const { return 0; }
+#endif
     uint32_t revision() const { return activeRevision_; }
     uint32_t contentRevision() const { return contentRevision_; }
     unsigned slots() const { return activeCount_; }
@@ -253,7 +404,7 @@ public:
     }
     const char* currentPriceTier()const {
 #if SIL_RELATIVE_TIME_POLICY
-        return priceTierName(relative_.tier(0));
+        return priceTierName(relative_.tier(liveTierIndex_));
 #else
         return "unknown";
 #endif
@@ -289,26 +440,85 @@ private:
         return out;
     }
 #if SIL_RELATIVE_TIME_POLICY
+    bool sustainedPvDeviation(uint32_t ms, uint32_t utc, const PreparedSettings& cfg, float measuredW,
+                              const PvForecast* forecast, bool continuous) {
+        float predictedW = 0;
+        const bool comparable = pvMeasured_ && std::isfinite(measuredW) && measuredW >= 0 &&
+            cfg.replanPvDeviationW > 0 && cfg.replanPvDeviationDurationS && forecast && forecast->wattsAt(utc, predictedW);
+        const float difference = measuredW - predictedW;
+        const int direction = comparable && std::fabs(difference) >= cfg.replanPvDeviationW ? (difference > 0 ? 1 : -1) : 0;
+        if (!direction || direction != pvDeviationDirection_ || !continuous || uint32_t(ms - pvObservedMs_) > kSourceStaleMs) {
+            pvDeviationDirection_ = direction;
+            pvDeviationAtMs_ = ms;
+            pvDeviationApplied_ = false;
+        }
+        pvObservedMs_ = ms;
+        return direction && !pvDeviationApplied_ &&
+            uint32_t(ms - pvDeviationAtMs_) >= uint64_t(cfg.replanPvDeviationDurationS) * 1000;
+    }
+    FuturePlan heldSlot(uint32_t utc, const PreparedSettings& cfg, float currentPrice, int maximumW,
+                        const PvForecast* pv, float chargeCap, float solarW, float fullWh, FuturePlan out) {
+        if (!relativeActive_ || !economicBudget_.valid || !economicQualified_ || !liveReady_ ||
+            !generationQualified_ || appliedContext_ != relativeContext_ || !std::isfinite(currentPrice) ||
+            currentPrice <= 0 || utc < projectionUtc_ || ageMs_ >= uint64_t(timing_.planMaxAgeS) * 1000 ||
+            utc < economicBudget_.start || relativeKey_.prices != contentRevision_ ||
+            relativePv_ != pv || relativeKey_.pv != (pv ? pv->contentRevision() : 0) ||
+            relativeKey_.pvValid != bool(pv && pv->valid(utc)) ||
+            fullWh != relativeFullWh_ || maximumW != relativeKey_.maximumW || maximumW < 0 ||
+            !std::isfinite(solarW) || solarW < 0 || !std::isfinite(chargeCap) || chargeCap < 0 ||
+            relativeChargePossible_ != (chargeCap > 0)) return out;
+        PlanCaptureContext key = relativeKey_;
+        key.settings = cfg;
+        if (!key.sameHard(relativeKey_)) return out;
+        const uint32_t elapsed = utc - economicBudget_.start;
+        const unsigned slot = elapsed / 900;
+        float rawPrice = 0;
+        if (slot >= economicBudget_.count || !priceAt(utc, 1, rawPrice) || rawPrice <= 0) return out;
+        const float remainingHours = float(900 - elapsed % 900) / 3600.0f;
+        const float storeW = std::min({projectedChargeW_[slot], chargeCap, solarW * float(kRelativeChargeEfficiency)});
+        // A held allocation cannot create energy or exceed the current inverter limit.
+        out.directPvCeilingW = int(std::clamp((solarW - storeW / float(kRelativeChargeEfficiency)) *
+                                            kDischargeEfficiency, 0.0f, float(maximumW)));
+        out.batteryCeilingW = int(std::min({float(economicBudget_.watts[slot]),
+            out.availableWh / remainingHours, float(maximumW - out.directPvCeilingW)}));
+        out.chargeTargetW = storeW;
+        out.valid = out.retained = out.relativePricePositive = true;
+        out.reason = "retained_plan";
+        liveTierIndex_ = slot;
+        return out;
+    }
     FuturePlan relativeProject(unsigned first,uint32_t utc,const PreparedSettings& cfg,float currentPrice,int maximumW,
-        const PvForecast* pv,float qualifiedChargeW,float currentSolarW,float fullWh,FuturePlan out,DischargeBudget* trace) {
+        const PvForecast* pv,float qualifiedChargeW,float currentSolarW,float fullWh,FuturePlan out,bool rebuildDue) {
         const float maximum=std::max(0.0f,float(maximumW));
         const float chargeCap=std::isfinite(qualifiedChargeW)?std::max(0.0f,std::min(qualifiedChargeW,12000.0f)):0;
-        projectionStart_=activeStart_+first*900UL;projectionUtc_=utc;
-        for(unsigned k=0;k<kPlanSlots;++k){
-            const double micro=double(active_[first+k]);
-            const double assessed=PriceOrigin(origins_[first+k])==PriceOrigin::Forecast?
-                micro+std::fabs(micro)*double(forecastPremium(cfg,utc,projectionStart_+k*900UL))/100:micro;
-            relative_.set(k,assessed*.000001);
+        liveTierIndex_ = 0;
+        if (rebuildDue) {
+            projectionStart_=activeStart_+first*900UL;projectionUtc_=utc;
+            economicBudget_.reset(utc, activeRevision_, pv ? pv->revision() : 0);
+            economicBudget_.start = projectionStart_;
+            economicBudget_.count = kPlanSlots;
+            for(unsigned k=0;k<kPlanSlots;++k){
+                const double micro=double(active_[first+k]);
+                const double assessed=PriceOrigin(origins_[first+k])==PriceOrigin::Forecast?
+                    micro+std::fabs(micro)*double(forecastPremium(cfg,utc,projectionStart_+k*900UL))/100:micro;
+                relative_.set(k,assessed*.000001);
+            }
+            if(!relative_.classify(cfg)){out.reason="relative_settings";return out;}
+            ++planningBuilds_;
+            highHoursAtBuild_=mediumHoursAtBuild_=0;
+            for(unsigned k=0;k<kPlanSlots;++k){
+                const float hours=float(projectionStart_+(k+1)*900UL-(k?projectionStart_+k*900UL:utc))/3600;
+                // A stopped raw-price interval has no demand to reserve or spread over.
+                if(active_[first+k]<=0||(!k&&currentPrice<=0))continue;
+                if(relative_.tier(k)==PriceTier::VeryExpensive)highHoursAtBuild_+=hours;
+                if(relative_.tier(k)==PriceTier::Expensive)mediumHoursAtBuild_+=hours;
+            }
         }
-        if(!relative_.classify(cfg)){out.reason="relative_settings";return finish(out,trace);}
-        ++planningBuilds_;
-        float highHours=0,mediumHours=0;
-        for(unsigned k=0;k<kPlanSlots;++k){
-            const float hours=float(projectionStart_+(k+1)*900UL-(k?projectionStart_+k*900UL:utc))/3600;
-            // A physically stopped raw-price interval has no demand to reserve or spread over.
-            if(active_[first+k]<=0||(!k&&currentPrice<=0))continue;
-            if(relative_.tier(k)==PriceTier::VeryExpensive)highHours+=hours;
-            if(relative_.tier(k)==PriceTier::Expensive)mediumHours+=hours;
+        float highHours = highHoursAtBuild_, mediumHours = mediumHoursAtBuild_;
+        if (active_[first] > 0 && currentPrice > 0) {
+            const float elapsedHours = float(utc - projectionUtc_) / 3600.0f;
+            if (relative_.tier(0) == PriceTier::VeryExpensive) highHours = std::max(0.0f, highHours - elapsedHours);
+            if (relative_.tier(0) == PriceTier::Expensive) mediumHours = std::max(0.0f, mediumHours - elapsedHours);
         }
         float pool=out.availableWh;
         const float capacity=std::max(0.0f,(100-cfg.reserveOffSocPercent)*.01f*fullWh*kDischargeEfficiency);
@@ -318,8 +528,10 @@ private:
         bool cheapFull=continuous&&relativeCheapFull_,previousCheap=continuous;
         const bool pvCurrentValid=pv&&pv->valid(utc);
         out.offeredPvWh=0;out.pvQualified=pvCurrentValid&&chargeCap>0;
-        if(trace){trace->start=projectionStart_;trace->count=kPlanSlots;}
-        for(unsigned k=0;k<kPlanSlots;++k){
+        // Every tick evaluates the live slot against measured energy and PV. The
+        // remaining 143 allocations and the published generation change only on rebuild.
+        const unsigned slotsToEvaluate = rebuildDue ? kPlanSlots : 1;
+        for(unsigned k=0;k<slotsToEvaluate;++k){
             const uint32_t start=projectionStart_+k*900UL;
             const float hours=float(start+900UL-(k?start:utc))/3600;
             const auto tier=relative_.tier(k);
@@ -331,8 +543,10 @@ private:
             if(known)out.offeredPvWh+=forecast*hours;
             const bool measured=!k&&std::isfinite(currentSolarW)&&currentSolarW>=0;
             const float solar=measured?std::min(currentSolarW,12000.0f):(k&&known?std::min(forecast,chargeCap/float(kRelativeChargeEfficiency)):0);
-            storageKnown_[k]=measured||(k&&known);solarW_[k]=solar;
-            if(!k)projectionFirstSolarW_=storageKnown_[0]?solar:-1;
+            if (rebuildDue) {
+                storageKnown_[k]=measured||(k&&known);solarW_[k]=solar;
+                if(!k)projectionFirstSolarW_=storageKnown_[0]?solar:-1;
+            }
             const float raw=float(active_[first+k])*.000001f;
             const bool positive=raw>0&&(k||currentPrice>0);
             const float physicalSoc=fullWh>0?(fullWh-headroom)/fullWh*100:0;
@@ -398,9 +612,10 @@ private:
             pool=std::max(0.0f,pool-allocation);headroom+=allocation/kDischargeEfficiency;
             const float restored=std::min(debt,stored);debt=std::max(0.0f,debt-restored);
             pool=std::min(capacity,pool+(stored-restored)*kDischargeEfficiency);headroom=std::max(0.0f,headroom-stored);
-            projectedChargeW_[k]=stored/hours;out.usablePvWh+=(stored-restored)*kDischargeEfficiency;
+            if (rebuildDue) projectedChargeW_[k]=stored/hours;
+            out.usablePvWh+=(stored-restored)*kDischargeEfficiency;
             const int watts=int(std::max(0.0f,std::min(maximum,allocation/hours)));
-            if(trace)trace->watts[k]=watts;
+            if (rebuildDue) economicBudget_.watts[k]=watts;
             if(!k){out.batteryCeilingW=watts;out.chargeTargetW=stored/hours;out.directPvCeilingW=int(direct);
                 out.relativePricePositive=positive;out.reservedWh=std::min(pool,maximum*highHours);
                 out.shortfallWh=std::max(0.0f,maximum*highHours-pool);out.projectedUnmetWhDC=out.shortfallWh/kDischargeEfficiency;}
@@ -409,9 +624,30 @@ private:
         }
         projectionCount_=kPlanSlots;out.valid=true;out.coupledProjection=true;
         out.reason=out.batteryCeilingW>0?"relative_release":(out.chargeTargetW>0?"relative_charge":"relative_hold");
-        return finish(out,trace);
+        if (rebuildDue) economicBudget_.finish(true, out.reason);
+        else {
+            out.offeredPvWh = relativeTotals_.offeredPvWh;
+            out.usablePvWh = relativeTotals_.usablePvWh;
+        }
+        relativeActive_ = true;
+        return out;
     }
     RelativeTiers relative_;
+    DischargeBudget economicBudget_;
+    PlanCaptureContext relativeKey_;
+    FuturePlan relativeTotals_;
+    const PvForecast *relativePv_ = nullptr;
+    float highHoursAtBuild_ = 0, mediumHoursAtBuild_ = 0, relativeFullWh_ = 0, socAtBuild_ = 0;
+    PlanLifecycleSettings timing_;
+    uint32_t relativeContext_ = 0, appliedContext_ = 0, lastObservationMs_ = 0;
+    uint64_t ageMs_ = 0, degradedMs_ = 0;
+    bool degraded_ = false, economicValid_ = false;
+    unsigned liveTierIndex_ = 0;
+    bool economicQualified_ = false, generationQualified_ = true, liveReady_ = false, forceRebuild_ = false;
+    uint32_t pvObservedMs_ = 0, pvDeviationAtMs_ = 0;
+    int pvDeviationDirection_ = 0;
+    bool pvDeviationApplied_ = false, pvMeasured_ = true;
+    bool relativeChargePossible_ = false, relativeActive_ = false;
     float lastSoc_=0;
     bool relativeCheapFull_=false,relativeWasCheap_=false;
     uint32_t relativeLiveAt_=0;

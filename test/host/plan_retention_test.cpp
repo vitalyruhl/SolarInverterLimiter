@@ -49,7 +49,8 @@ template<class S> static void continuity(const S& original){
  for(unsigned sec=10;sec<=124;sec+=6)step(p,missing,100+sec*1000,t+sec);
  assert(p.snapshot.valid&&p.snapshot.serialize(after,sizeof(after))>0&&!std::strcmp(before,after));
  p.connection(false);p.connection(true);step(p,missing,125100,t+125);
- assert(p.snapshot.valid&&p.retained()&&!p.publishDue(125100));
+ assert(p.snapshot.valid&&p.retained()&&p.publishDue(125100));
+ p.published(true,125100);
  step(p,missing,126100,t+126);assert(!p.publishDue(130100));
  step(p,missing,180100,t+180);assert(p.snapshot.valid&&p.retained()&&!p.publishDue(180100));
  assert(p.snapshot.generatedAt==t&&p.degradedSince()==5100);

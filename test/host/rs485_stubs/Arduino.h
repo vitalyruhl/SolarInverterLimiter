@@ -33,14 +33,21 @@ class HardwareSerial {
 public:
     unsigned beginCalls = 0;
     unsigned flushCalls = 0;
+    bool driverInstalled = false;
     std::size_t writeLimit = std::numeric_limits<std::size_t>::max();
     std::vector<std::vector<uint8_t>> frames;
 
-    void begin(int, int, int = -1, int = -1) { ++beginCalls; }
+    void begin(int, int, int = -1, int = -1) { ++beginCalls; driverInstalled = true; }
+    explicit operator bool() const { return driverInstalled; }
     std::size_t write(const uint8_t *data, std::size_t count) {
+        writeDriver(data, count);
+        return count;
+    }
+    int writeDriver(const uint8_t *data, std::size_t count) {
+        if (!driverInstalled) return -1;
         const std::size_t accepted = std::min(count, writeLimit);
         frames.emplace_back(data, data + accepted);
-        return accepted;
+        return static_cast<int>(accepted);
     }
     void flush() { ++flushCalls; }
     int available() { return 0; }

@@ -1,6 +1,7 @@
 #pragma once
 #include <cstdint>
 #include <cstdio>
+#include <functional>
 #include <string>
 #include <unordered_map>
 
@@ -22,5 +23,7 @@ struct ConfigManagerClass {
 };
 using portMUX_TYPE = int;
 #define portMUX_INITIALIZER_UNLOCKED 0
-#define portENTER_CRITICAL(mux) ((void)(mux))
+// Host tests can interleave a settings write just before stamp publication.
+inline std::function<void()> telemetryBeforeCritical;
+#define portENTER_CRITICAL(mux) do { (void)(mux); if (telemetryBeforeCritical) telemetryBeforeCritical(); } while (0)
 #define portEXIT_CRITICAL(mux) ((void)(mux))

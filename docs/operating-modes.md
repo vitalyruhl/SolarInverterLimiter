@@ -8,7 +8,7 @@ With `Limiter Enabled` on, the modes operate as follows:
 
 | Mode | Behavior |
 | --- | --- |
-| `automatic` | Existing economic controller, PID, forecasts and output correction. Missing BMS feedback preserves only a previously approved, bounded battery grace; fresh qualified Victron power can supply PV-only demand after that grace expires. |
+| `automatic` | Economic controller, PID, forecasts and output correction. Battery grace and automatic PV fallback require commissioned installation limits. Their default ceiling is zero. |
 | `household_follow` | `clamp(measured inverter AC + signed grid power + correction, 0, MAX)`, with correction applied once before clamping. Explicit selection permits missing BMS feedback and reports `manual_bms_unverified`. |
 | `charge_priority` | Holds output below the configured charge threshold (default 80% since 5.8.1, previously 95%). Between the threshold and 100%, the default inverter share is 10% (previously 0%). At 100%, household following latches until SOC drops below the threshold. |
 | `pv_follow` | Uses only fresh measured PV: `min(charger DC W * 0.90, clamp(measured household W + correction, 0, MAX))`. Excess PV remains available for battery charging; night-time zero PV produces zero output. |
@@ -28,9 +28,21 @@ requested value and does not confirm delivery or physical output.
 `diagnosticPlansRetained` reports whether either snapshot is being kept after
 its inputs or context became unsuitable. `diagnosticRetentionAgeS` is the age
 of the longest current retention period, or null when neither is retained. The
-original plan timestamps remain unchanged. These fields do not grant economic
-or inverter execution permission. Historical valid snapshots are not replayed
-until the status and consumer behavior can be coordinated safely.
+original plan timestamps remain unchanged. On MQTT reconnect the ESP sends
+the stored graphs once without broker retain. Consumers match their original
+generation times against `dischargeG` and `chargeG` in `Planning/State`.
+
+The `economic` object describes the relative planner's authoritative plan.
+`available`, `valid`, `stale` and `retained` report existence, economic
+eligibility, age classification and retention through an input outage.
+`g` is the original generation time in UTC seconds. `ageS` is its age at
+the last control tick. Both are null when no economic plan exists.
+`applied` reports a qualified automatic slot decision used for the local
+command, including a planned hold. Overrides, recovery, local write errors
+and protection that blocks a requested battery action clear it. The shadow
+profile evaluates the same decision with its mock transport. Use
+`transportWriteStatus` for the separate local write result and measured
+power to observe the inverter response.
 
 ## Limiter disabled
 
@@ -73,16 +85,22 @@ physical battery isolation is the boundary. Missing BMS feedback never establish
 that physical isolation. A remembered genuine discharge restriction still stops
 manual following.
 
-In automatic mode, missing BMS feedback never proves physical battery isolation.
-After any previously approved battery grace expires, the existing automatic
-PV-only path can qualify from advancing Victron samples alone. During recovery
-output remains zero. After qualification, it uses the same corrected household
-demand and 90% measured-PV cap as explicit PV following, while the selected mode
-remains automatic. Fault and output gates retain precedence; configured MIN
-cannot grant battery discharge. Without fresh Victron voltage
-and charging current, automatic output remains zero. BMS and Victron freshness
-are checked independently, even when SBT collects both sources. A collector
-outage that removes both sources cannot use remembered PV as a substitute.
+In automatic mode, a battery telemetry outage can carry a previously approved
+discharge only within the original source deadline and a conservative energy
+budget. The calculation starts at the source sample time and deducts
+worst-case discharge and other battery loads. It also reserves energy for the
+next control interval. The previous budget, command and current plan limit
+still cap output. Commissioning requires lower bounds for capacity, voltage
+and efficiency, upper bounds for discharge and other loads, SOC and energy
+margins, and an upper bound on the control interval.
+
+When BMS feedback is missing or the relative plan is unavailable, the
+`pv_limited_fallback` strategy requires fresh Victron and AC measurements,
+qualified protection inputs and a commissioned AC fraction of measured charger
+power. It caps output at corrected household demand and the inverter maximum.
+The default firmware has no commissioned outage limits and requests zero from
+these strategies. Normal automatic operation requalifies its sources after a
+fallback.
 
 The explicit PV follower uses no stored-battery discharge budget or forecast
 credit. Its measured-PV cap permits solar use below the reserve threshold or

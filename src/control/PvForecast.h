@@ -27,6 +27,10 @@ public:
         return utc >= 1704067200UL && active_.count && utc >= active_.start &&
             utc < active_.expires && utc < active_.start + active_.count * 900UL;
     }
+    // Packet age is evaluated at decision time. Future slots keep the source coverage.
+    bool current(uint32_t utc, uint32_t maxAgeS) const {
+        return valid(utc) && (!maxAgeS || uint64_t(utc) < uint64_t(active_.generated) + maxAgeS);
+    }
     uint32_t revision() const { return active_.revision; }
     uint32_t contentRevision() const { return contentRevision_; }
     uint32_t expiry() const { return active_.expires; }

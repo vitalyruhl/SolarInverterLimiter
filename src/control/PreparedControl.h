@@ -1,6 +1,7 @@
 #pragma once
 
 #include <stdint.h>
+#include <cmath>
 
 // Shared control constants and prepared settings used by the active controller and planner.
 namespace control {
@@ -43,8 +44,20 @@ constexpr float kCandidateChargeLowBlockC = 2.0f;
 constexpr float kCandidateDischargeLowWarningC = -10.0f;
 constexpr float kCandidateDischargeLowBlockC = -15.0f;
 
+// Installation-specific lower bounds and uncertainty margins must be commissioned.
+// NaN means unknown; the corresponding outage strategy cannot request power.
+struct OutageLimits {
+    float capacityAhLower = NAN, voltageVLower = NAN, maxOtherLoadW = NAN;
+    float socMarginPct = NAN, uncertaintyWh = NAN, efficiencyLower = NAN;
+    float maxDischargeAcW = NAN, nextCheckSeconds = NAN;
+    float pvAcFraction = NAN;
+};
+
 struct PreparedSettings {
     bool relativeTimePolicy = false;
+    // Zero disables a soft trigger until its plant threshold has been selected.
+    float replanSocDeltaPct = 0, replanEnergyDeltaWh = 0, replanPvDeviationW = 0;
+    uint32_t replanMinimumIntervalS = 0, replanPvDeviationDurationS = 0;
     float cheapTimePct = 5, veryExpensiveTimePct = 10, additionalExpensiveTimePct = 30;
     float storageMinimumNetAdvantageEurKwh = 0.05f;
     float chargePriorityThreshold = 95;
@@ -60,6 +73,7 @@ struct PreparedSettings {
     float priceDeadbandEurPerKwh = 0.06f;
     float priceHysteresisEurPerKwh = 0.02f;
     bool valid = false;
+    OutageLimits outage;
 };
 
 struct RuntimeState {

@@ -24,9 +24,18 @@ static CurrentDecision qualifyStorage(CurrentControl &control, const PreparedSet
   return out;
 }
 
+// [MOCKED!] Commissioned test values. Firmware defaults leave outage limits unknown.
+static void useOutageFixture(control::PreparedSettings &cfg, control::CurrentInputs &in, float pvFraction) {
+  cfg.outage = {100, 48, 100, 2, 5, 0.9f, 1000, 5, pvFraction};
+  in.bmsSampleAgeMs = 0;
+  in.fallbackProtectionKnown = true;
+}
+
 static void reconnectKeepsQualifiedBatteryPermission() {
   PreparedSettings cfg; cfg.valid = true;
-  auto in = qualifiedStorageInputs(); CurrentControl control;
+  auto in = qualifiedStorageInputs();
+  useOutageFixture(cfg, in, 1.0f);
+  CurrentControl control;
   in.chargerW = 0; in.futureBatteryCeilingW = 900;
   for (unsigned i = 0; i < 3; ++i) {
     in.bmsSequence = in.chargerSequence = i + 1;
@@ -43,7 +52,9 @@ static void reconnectKeepsQualifiedBatteryPermission() {
 
 static void limiterOffWaitsForCompleteBatteryGraceRecovery() {
   PreparedSettings cfg; cfg.valid = true; CurrentControl control;
-  auto in = qualifiedStorageInputs(); in.chargerW = 0; in.futureBatteryCeilingW = 900;
+  auto in = qualifiedStorageInputs();
+  useOutageFixture(cfg, in, 1.0f);
+  in.chargerW = 0; in.futureBatteryCeilingW = 900;
   for (unsigned i = 0; i < 3; ++i) {
     in.bmsSequence = in.chargerSequence = i + 1;
     control.update(cfg, in, true, true, 900, 900, 100 + i * 3000);
@@ -65,8 +76,9 @@ static void limiterOffWaitsForCompleteBatteryGraceRecovery() {
 
 static void batteryGraceCannotCreatePermissionOrSurviveAStop() {
   PreparedSettings cfg; cfg.valid = true;
-  for (int fault = 0; fault < 8; ++fault) {
+  for (int fault = 0; fault < 9; ++fault) {
     CurrentControl control; auto in = qualifiedStorageInputs();
+    useOutageFixture(cfg, in, 1.0f);
     in.chargerW = 0; in.futureBatteryCeilingW = 900;
     for (unsigned i = 0; i < 3; ++i) {
       in.bmsSequence = in.chargerSequence = i + 1;
@@ -85,6 +97,7 @@ static void batteryGraceCannotCreatePermissionOrSurviveAStop() {
     if (fault == 5) in.metersValid = false;
     if (fault == 6) in.chargerFault = true;
     if (fault == 7) { in.bmsValid = true; in.soc = 1; }
+    if (fault == 8) in.knownSourceFault = true;
     auto stopped = control.update(settings, in, true, transport, 900, 900, 10000);
     assert(stopped.ceilingW == 0 && !stopped.sourceGrace);
     in = qualifiedStorageInputs(); in.bmsValid = in.chargerValid = false;
@@ -97,6 +110,7 @@ static void batteryGraceCannotCreatePermissionOrSurviveAStop() {
   assert(!startup.update(cfg, absent, true, true, 900, 900, 100).sourceGrace);
   for (bool fullBattery : {false, true}) {
     CurrentControl pv; auto in = qualifiedStorageInputs();
+    useOutageFixture(cfg, in, 1.0f);
     in.soc = fullBattery ? 100 : 50;
     in.batteryDischargeIntentAvailable = fullBattery;
     in.chargerW = 1000;
@@ -111,6 +125,7 @@ static void batteryGraceCannotCreatePermissionOrSurviveAStop() {
 static void batteryGraceExcludesOldPvAndAllowsPartialRecovery() {
   PreparedSettings cfg; cfg.valid = true; CurrentControl control;
   auto in = qualifiedStorageInputs();
+  useOutageFixture(cfg, in, 1.0f);
   in.chargerW = 1000; in.futureBatteryCeilingW = 50;
   for (unsigned i = 0; i < 3; ++i) {
     in.bmsSequence = in.chargerSequence = i + 1;
@@ -239,7 +254,9 @@ static void recoveryRestartsDynamicsAtHeldCommand() {
 static void batteryUnavailablePvOnly() {
   for (unsigned invalid=0; invalid<4; ++invalid) {
     PreparedSettings cfg;cfg.valid=true;
-    CurrentInputs in;in.bmsValid=in.batteryDischargeIntentAvailable=in.chargerValid=in.metersValid=true;
+    CurrentInputs in;
+    useOutageFixture(cfg, in, 1.0f);
+    in.bmsValid=in.batteryDischargeIntentAvailable=in.chargerValid=in.metersValid=true;
     in.soc=invalid==0?-1:invalid==1?101:invalid==2?NAN:50;
     in.batteryW=invalid==3?NAN:0;in.chargerW=200;in.householdW=500;
     CurrentControl c;CurrentDecision d;
@@ -248,7 +265,9 @@ static void batteryUnavailablePvOnly() {
   }
   {
     PreparedSettings cfg;cfg.valid=true;CurrentControl c;
-    CurrentInputs in;in.chargerValid=in.metersValid=true;in.chargerW=200;in.householdW=500;
+    CurrentInputs in;
+    useOutageFixture(cfg, in, 1.0f);
+    in.chargerValid=in.metersValid=true;in.chargerW=200;in.householdW=500;
     in.chargerSequence=1;
     assert(c.update(cfg,in,true,true,900,900,100).ceilingW==0);
     assert(c.update(cfg,in,true,true,900,900,10000).ceilingW==0);
@@ -259,7 +278,9 @@ static void batteryUnavailablePvOnly() {
     for (bool limiterEnabled : {false, true}) {
       for (bool grace : {false, true}) {
         PreparedSettings cfg; cfg.valid = true;
-        CurrentInputs in; in.metersValid = in.chargerValid = true;
+        CurrentInputs in;
+        useOutageFixture(cfg, in, 1.0f);
+        in.metersValid = in.chargerValid = true;
         in.bmsValid = bmsValid; in.batteryDischargeIntentAvailable = false;
         in.soc = 100; in.chargerW = 200; in.householdW = 500;
         in.batteryW = 10000; in.priceValid = true; in.price = .8f;
@@ -277,23 +298,33 @@ static void batteryUnavailablePvOnly() {
         in.batteryW = -10000;
         assert(control.update(cfg,in,limiterEnabled,true,900,900,6200).ceilingW==200);
         in.batteryW = NAN;
-        assert(control.update(cfg,in,limiterEnabled,true,900,900,6300).ceilingW==200);
+        auto lostBms = control.update(cfg,in,limiterEnabled,true,900,900,6300);
+        if (bmsValid) {
+          assert(lostBms.direct && lostBms.ceilingW == 0);
+          ++in.chargerSequence;
+          control.update(cfg,in,limiterEnabled,true,900,900,9300);
+          ++in.chargerSequence;
+          lostBms = control.update(cfg,in,limiterEnabled,true,900,900,12300);
+        }
+        assert(lostBms.ceilingW == 200);
         in.householdW = 80;
-        assert(control.update(cfg,in,limiterEnabled,true,900,900,6400).ceilingW==80);
+        assert(control.update(cfg,in,limiterEnabled,true,900,900,12400).ceilingW==80);
         in.chargerW = 50;
-        assert(control.update(cfg,in,limiterEnabled,true,900,900,6500).ceilingW==50);
+        assert(control.update(cfg,in,limiterEnabled,true,900,900,12500).ceilingW==50);
         in.householdW = -10;
-        assert(control.update(cfg,in,limiterEnabled,true,900,900,6600).ceilingW==0);
+        assert(control.update(cfg,in,limiterEnabled,true,900,900,12600).ceilingW==0);
         in.householdW = 500; in.chargerValid = false;
-        const auto missing = control.update(cfg,in,limiterEnabled,true,900,900,6700);
+        const auto missing = control.update(cfg,in,limiterEnabled,true,900,900,12700);
         assert(missing.direct && missing.ceilingW==0);
         in.chargerValid=true; in.metersValid=false;
-        assert(control.update(cfg,in,limiterEnabled,true,900,900,6800).ceilingW==0);
+        assert(control.update(cfg,in,limiterEnabled,true,900,900,12800).ceilingW==0);
       }
     }
   }
   PreparedSettings cfg;cfg.valid=true;
-  CurrentInputs in;in.bmsValid=in.metersValid=in.chargerValid=true;
+  CurrentInputs in;
+  useOutageFixture(cfg, in, 1.0f);
+  in.bmsValid=in.metersValid=in.chargerValid=true;
   in.soc=90;in.chargerW=200;in.householdW=500;
   in.alarmRestricted=true;in.softwareMosLockOnly=true;
   CurrentControl control;CurrentDecision d;
@@ -309,7 +340,9 @@ static void batteryUnavailablePvOnly() {
 }
 static void missingBmsCanFollowFreshPv() {
   PreparedSettings cfg; cfg.valid = true;
-  CurrentInputs in; in.metersValid = in.chargerValid = true;
+  CurrentInputs in;
+  useOutageFixture(cfg, in, 1.0f);
+  in.metersValid = in.chargerValid = true;
   in.bmsValid = false; in.chargerW = 200; in.householdW = 500;
   CurrentControl control;
   CurrentDecision decision;
@@ -347,7 +380,9 @@ static void chargeOnlyHonorsFutureStorage() {
 }
 static void chargeOnlyPriorityAndRecovery() {
   PreparedSettings cfg;cfg.valid=true;
-  CurrentInputs in;in.bmsValid=in.batteryChargeAvailable=in.chargerValid=in.metersValid=in.priceValid=true;
+  CurrentInputs in;
+  useOutageFixture(cfg, in, 1.0f);
+  in.bmsValid=in.batteryChargeAvailable=in.chargerValid=in.metersValid=in.priceValid=true;
   in.soc=23;in.price=.2f;in.chargerW=216;in.householdW=800;in.batteryW=50;
   in.futureValid=true;in.futureChargeTargetW=50;in.futureReason="forecast_charge";
   CurrentControl control;CurrentDecision decision;
@@ -534,8 +569,12 @@ static void relativeHoldTrimsPassthroughUntilBatteryStopsDischarging() {
   in.futureBatteryCeilingW = 200;
   out = control.update(cfg, in, true, true, 900, 0, now + 1000);
   assert(out.ceilingW == 320 && !std::strcmp(out.strategy, "discharge")); // a planned budget disables the trim
+  assert(out.economicPlanApplied);
   in.futureBatteryCeilingW = 0; ++in.bmsSequence;
   assert(control.update(cfg, in, true, true, 900, 0, now + 2000).ceilingW == 120); // restarts untrimmed
+  in.futureBatteryCeilingW = 200;
+  in.soc = cfg.reserveOffSocPercent; ++in.bmsSequence;
+  assert(!control.update(cfg, in, true, true, 900, 0, now + 3000).economicPlanApplied);
 }
 
 static void relativeFullBatteryRestartsCurtailedPv() {
@@ -550,6 +589,7 @@ static void relativeFullBatteryRestartsCurtailedPv() {
   assert(!out.direct && !out.minimumOverrideAllowed);
   assert(out.chargeTargetValid && out.chargeTargetW == 0);
   assert(!std::strcmp(out.reason, "full_battery_pv"));
+  assert(!out.economicPlanApplied);
   in.soc = 99;
   assert(qualifyStorage(control, cfg, in, 4, 10100).ceilingW == 0);
   in.soc = 100;
@@ -573,7 +613,74 @@ static void relativeFullBatteryRestartsCurtailedPv() {
   assert(recovering.update(cfg, in, true, false, 900, 0, 6200).ceilingW == 0);
 }
 
+static void outageEnergyUsesOriginalSampleAndCommissionedBounds() {
+  for (uint32_t start : {0u, UINT32_MAX - 6200u}) {
+    PreparedSettings cfg;
+    cfg.valid = true;
+    cfg.reserveOffSocPercent = 10;
+    cfg.reserveOnSocPercent = 20;
+    // [MOCKED!] Four usable Wh; the worst case consumes 0.25 Wh/s.
+    cfg.outage = {1, 10, 0, 0, 0, 1, 900, 10, .75f};
+    CurrentControl c;
+    auto in = qualifiedStorageInputs();
+    in.futureBatteryCeilingW = 900;
+    in.bmsSampleAgeMs = 6000;
+    for (unsigned i = 0; i < 3; ++i) {
+      in.bmsSequence = in.chargerSequence = i + 1;
+      c.update(cfg, in, true, true, 900, 900, start + 3000 * i);
+    }
+    // Re-observing the same sequence must not recharge the reserve.
+    c.update(cfg, in, true, true, 900, 900, start + 7000);
+    in.bmsValid = in.chargerValid = false;
+    in.bmsWithinGrace = true;
+    assert(c.update(cfg, in, true, true, 900, 900, start + 8000).ceilingW == 720);
+    assert(c.update(cfg, in, true, true, 900, 900, start + 10000).ceilingW == 540);
+    assert(c.update(cfg, in, true, true, 900, 900, start + 16000).ceilingW == 0);
+  }
+  for (unsigned missing = 0; missing < 5; ++missing) {
+    PreparedSettings cfg; cfg.valid = true;
+    CurrentControl c;
+    auto in = qualifiedStorageInputs();
+    useOutageFixture(cfg, in, .75f);
+    if (missing == 0) cfg.outage = {};
+    if (missing == 1) cfg.outage.maxOtherLoadW = NAN;
+    if (missing == 2) cfg.outage.voltageVLower = 0;
+    if (missing == 3) in.bmsSampleAgeMs = UINT32_MAX;
+    if (missing == 4) cfg.outage.maxDischargeAcW = 899;
+    in.futureBatteryCeilingW = 900;
+    qualifyStorage(c, cfg, in);
+    in.bmsValid = in.chargerValid = false;
+    in.bmsWithinGrace = true;
+    const auto gap = c.update(cfg, in, true, true, 900, 900, 8000);
+    assert(gap.ceilingW == 0 && !gap.sourceGrace);
+  }
+}
+
+static void missingPlanUsesQualifiedPvAndRequalifies() {
+  PreparedSettings cfg; cfg.valid = cfg.relativeTimePolicy = true;
+  CurrentControl c;
+  auto in = qualifiedStorageInputs();
+  in.relativePricePositive = true;
+  in.futureBatteryCeilingW = 900;
+  assert(qualifyStorage(c, cfg, in).ceilingW == 900);
+  in.futureValid = false;
+  assert(c.update(cfg, in, true, true, 900, 900, 8000).ceilingW == 0);
+  cfg.outage.pvAcFraction = .75f;
+  assert(c.update(cfg, in, true, true, 900, 900, 9000).ceilingW == 0);
+  in.fallbackProtectionKnown = true;
+  const auto fallback = qualifyStorage(c, cfg, in, 4, 10000);
+  assert(fallback.pvOnly && fallback.ceilingW == 225 && !fallback.minimumOverrideAllowed);
+  assert(!std::strcmp(fallback.strategy, "pv_limited_fallback"));
+  assert(!fallback.economicPlanApplied);
+  in.futureValid = true;
+  const auto recovering = c.update(cfg, in, true, true, 900, 900, 17000);
+  assert(recovering.ceilingW == 0 && !recovering.economicPlanApplied);
+  assert(qualifyStorage(c, cfg, in, 7, 18000).ceilingW == 900);
+}
+
 int main() {
+  outageEnergyUsesOriginalSampleAndCommissionedBounds();
+  missingPlanUsesQualifiedPvAndRequalifies();
   relativeHoldTrimsPassthroughUntilBatteryStopsDischarging();
   relativeFullBatteryRestartsCurtailedPv();
   fullBatteryRestartsCurtailedPv();
@@ -601,7 +708,7 @@ int main() {
       in.soc = 50; in.chargerW = 300;
       auto d = c.update(cfg, in, true, true, 900, 200, 100);
       assert(d.direct && d.ceilingW == 0);
-      assert(!std::strcmp(d.reason, (missing & 1) ? ((missing & 2) ? "pv_missing" : "pv_recovery") : "recovery"));
+      assert(!std::strcmp(d.reason, (missing & 1) ? ((missing & 2) ? "pv_missing" : "pv_fallback_unverified") : "recovery"));
     }
   }
   cfg.idleOutputW = 500;

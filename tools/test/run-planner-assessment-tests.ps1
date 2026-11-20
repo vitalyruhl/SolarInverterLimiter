@@ -9,7 +9,7 @@ if ($LASTEXITCODE -ne 0) { throw 'Planner assessment host tests failed' }
 # Compile the actual pre-mutation HTTP gate and missing/stale input hold.
 $source = [IO.File]::ReadAllText((Join-Path $repo 'src/main.cpp'))
 $http = [regex]::Match($source, '(?s)static bool shadowWriteConfig\([^\r\n]+\) \{.*?\r?\n\}')
-$hold = [regex]::Match($source, '(?s)    if\(control::priceInputRequiredForMode\([^\r\n]+\) && !futurePrices.priceFresh\(utc\)\) \{.*?\r?\n    \}')
+$hold = [regex]::Match($source, '(?s)    const bool automatic = operatingModes\.confirmed\(\)\.mode[^;]+;\s*if\s*\(control::priceInputRequiredForMode\([^{]+\)\s*\{.*?\r?\n    \}')
 if (!$http.Success -or !$hold.Success) { throw 'Actual shadow HTTP/source gate extraction missing' }
 if ($hold.Index -lt $source.IndexOf('modeDecision = nextModeDecision;')) { throw 'Shadow feed hold must follow mode policy selection' }
 [IO.File]::WriteAllText((Join-Path $repo '.pio/shadow_http_gate.h'), $http.Value + [Environment]::NewLine + 'static void applyShadowSourceGate(uint32_t utc) {' + $hold.Value + '}')

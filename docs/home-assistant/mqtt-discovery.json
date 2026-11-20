@@ -35,7 +35,6 @@
     "availability_topic": "SolarLimiter/System-Info/status",
     "payload_available": "online",
     "payload_not_available": "offline",
-    "expire_after": 180,
     "icon": "mdi:battery-clock-outline"
   },
   "homeassistant/sensor/solarlimiter_charge_plan/config": {
@@ -63,8 +62,7 @@
     ],
     "availability_topic": "SolarLimiter/System-Info/status",
     "payload_available": "online",
-    "payload_not_available": "offline",
-    "expire_after": 180
+    "payload_not_available": "offline"
   },
   "homeassistant/sensor/sil_configured_maximum_output/config": {
     "name": "SIL configured maximum output",

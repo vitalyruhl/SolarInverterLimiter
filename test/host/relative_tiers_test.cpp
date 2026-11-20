@@ -200,7 +200,109 @@ static void minimumHurdleSurvivesDirectPvCaps(){
  c=config();c.additionalExpensiveTimePct=0;prices[8]=400000;PvForecast covered;solar(covered,8,100,1,15,1000,15);
  FuturePrices fullPv;load(fullPv,prices);result=plan(fullPv,c,red,0,&covered,2000);assert(result.valid&&result.usablePvWh==0);
 }
+static void relativePlanLifecycle() {
+    FuturePrices prices;
+    PlanLifecycleSettings settings;
+    auto cfg = config();
+    std::vector<int> schedule(145, 100000);
+    schedule[0] = schedule[1] = 800000;
+    load(prices, schedule);
+    prices.setProjectionTiming(settings, 1, true, true, false);
+    DischargeBudget trace;
+    const auto tick = [&](unsigned seconds, bool bms = true, float currentPrice = .4f) {
+        return prices.plan(at + seconds, 0xffffff00U + seconds * 1000U, cfg, bms, 60, -400,
+            100, seconds + 1, true, currentPrice, false, 1, 900, nullptr, 1200, &trace, 0);
+    };
+    assert(tick(0).valid && prices.economicValid() && trace.generatedAt == at);
+    const auto firstBuild = prices.planningBuilds();
+    for (unsigned s = 1; s <= 60; ++s) {
+        if (s == 20) load(prices, schedule, at + s);
+        assert(tick(s).valid && trace.generatedAt == at && trace.priceRevision == at);
+    }
+    assert(prices.planningBuilds() == firstBuild && prices.economicAgeS() == 60);
+    assert(!tick(199).retained);
+    auto held = tick(200);
+    assert(held.valid && held.retained && prices.economicRetained() && held.batteryCeilingW > 0);
+    assert(!trace.valid && prices.economicGeneratedAt() == at);
+    assert(!tick(201, true, 0).valid && !tick(202, false).valid);
+    assert(prices.economicAvailable());
+    prices.setProjectionTiming(settings, 1, true, false, false);
+    assert(!tick(203).valid && prices.economicValid());
+    prices.setProjectionTiming(settings, 1, true, true, false);
+    assert(tick(900).retained && prices.planningBuilds() == firstBuild);
+    assert(tick(1199).retained && !prices.economicStale());
+    assert(tick(1200).retained && prices.economicStale());
+    assert(tick(7199).retained && !tick(7200).valid && !prices.economicValid());
+
+    // History expiry during an outage must honor its independent minimum hold.
+    FuturePrices history;
+    settings.planMaxAgeS = 1200;
+    settings.planDiscardAfterS = 3600;
+    settings.planRetentionS = 7200;
+    history.setProjectionTiming(settings, 2, true, true, false);
+    load(history, schedule);
+    assert(plan(history, cfg, trace).valid);
+    assert(plan(history, cfg, trace, 400, nullptr, 0, 0, at + 180).retained);
+    auto advance = [&](uint32_t s) {
+        return history.plan(at+s, 100 + (s-180)*1000, cfg, true, 50, 0, 100, 1, true, .4f, false, 1, 900);
+    };
+    assert(!advance(7380).valid && history.economicAvailable());
+    assert(!advance(7381).valid && !history.economicAvailable());
+
+    FuturePrices events;
+    settings = PlanLifecycleSettings{};
+    settings.planRecalcIntervalS = 60;
+    events.setProjectionTiming(settings, 3, true, true, false);
+    load(events, schedule);
+    assert(plan(events,cfg,trace).valid);
+    assert(plan(events,cfg,trace,400,nullptr,0,0,at+60).valid && trace.generatedAt == at+60);
+    schedule[0] = 900000;
+    load(events,schedule,at+61);
+    assert(plan(events,cfg,trace,400,nullptr,0,0,at+61).valid && trace.generatedAt == at+61);
+    assert(events.planningBuilds()==3);
+    load(events,schedule,at+899);
+    assert(plan(events,cfg,trace,400,nullptr,0,0,at+899).valid);
+    assert(plan(events,cfg,trace,400,nullptr,0,0,at+900).valid && trace.start==at+900 && trace.generatedAt==at+900);
+    events.clear();
+    assert(!plan(events,cfg,trace,400,nullptr,0,0,at+901).valid && events.economicAvailable() && !events.economicValid());
+
+    // [MOCKED!] Commissioned SOC and available-energy deltas are independent soft triggers.
+    for (bool triggerOnSoc : {false, true}) {
+        FuturePrices soft;
+        load(soft, schedule);
+        cfg.replanMinimumIntervalS = 60;
+        cfg.replanSocDeltaPct = triggerOnSoc ? 1.0f : 0.0f;
+        cfg.replanEnergyDeltaWh = triggerOnSoc ? 0.0f : 50.0f;
+        soft.setProjectionTiming(PlanLifecycleSettings{}, 1, true, true, false);
+        assert(plan(soft, cfg, trace, 600).valid);
+        assert(plan(soft, cfg, trace, 500, nullptr, 0, 0, at+59).valid && soft.planningBuilds()==1);
+        assert(plan(soft, cfg, trace, 500, nullptr, 0, 0, at+60).valid && soft.planningBuilds()==2);
+        assert(plan(soft, cfg, trace, 500, nullptr, 0, 0, at+61).valid && soft.planningBuilds()==2);
+    }
+
+    FuturePrices pvTriggers;
+    PvForecast forecast;
+    solar(forecast, 0, 500);
+    load(pvTriggers, schedule);
+    cfg = config();
+    cfg.replanMinimumIntervalS = 10;
+    cfg.replanPvDeviationW = 100;
+    cfg.replanPvDeviationDurationS = 10;
+    auto measured = [&](unsigned s, float power, bool valid = true) {
+        pvTriggers.setProjectionTiming(PlanLifecycleSettings{}, 1, true, true, false, valid);
+        return pvTriggers.plan(at+s, s*1000U, cfg, true, 50, 0, 100, 1, true, .4f, false,
+            1, 900, &forecast, 1200, &trace, power);
+    };
+    assert(measured(0, 500).valid && measured(1, 700).valid);
+    assert(measured(5, 700, false).valid); // Loss of qualification restarts the observation.
+    assert(measured(6, 700).valid && measured(15, 700).valid && pvTriggers.planningBuilds()==1);
+    assert(measured(16, 700).valid && pvTriggers.planningBuilds()==2);
+    assert(measured(26, 700).valid && pvTriggers.planningBuilds()==2); // One rebuild per sustained deviation.
+    assert(measured(27, 500).valid && measured(28, 300).valid);
+    assert(measured(38, 300).valid && pvTriggers.planningBuilds()==3);
+}
 int main(){
+ relativePlanLifecycle();
  auto c=config();FuturePrices f;load(f,std::vector<int>(144,400000));DischargeBudget red;const auto result=plan(f,c,red);assert(result.valid);
  for(unsigned i=0;i<red.count;++i)assert(red.watts[i]==0);
  additionalStartsAfterActualHigh();minimumHurdleSurvivesDirectPvCaps();economicsValuesActualUniformTier();storageEconomicsAndTwoLosses();nonpositiveSlotsCreateNoDemand();neutralSolarFundsHigherOnly();fairHighAndPartial();protectMeasuredBeforeWeather();tiesAndConfiguration();physicalSplitsAndCheapExit();legacyDoesNotControlRelative();premiumOriginsAndCurrentGates();horizonStepsAffectAllocation();cheapFullLatchSurvivesReplan();

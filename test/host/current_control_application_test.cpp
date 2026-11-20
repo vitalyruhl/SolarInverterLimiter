@@ -50,6 +50,13 @@ static bool sendToRS485(uint16_t watts){
 }
 #include "current_control_application.h"
 
+// [MOCKED!] Commissioned test values. Firmware defaults leave outage limits unknown.
+static void useOutageFixture(control::PreparedSettings &cfg, control::CurrentInputs &in, float pvFraction) {
+  cfg.outage = {100, 48, 100, 2, 5, 0.9f, 1000, 5, pvFraction};
+  in.bmsSampleAgeMs = 0;
+  in.fallbackProtectionKnown = true;
+}
+
 static void localTransportWriteStatusIsSeparateFromCommands(){
  // [MOCKED!] Serial acceptance is local only; it does not confirm inverter reception.
  kRs485MockTransport=false;rs485settings.enableRS485.value=true;localWriteSucceeds=true;
@@ -118,7 +125,9 @@ static void allFinalBranches(){
 static void pvOnlyCorrectionOnce(){
  for(bool enabled:{true,false})for(int correction:{-50,0,50}){
   control::PreparedSettings cfg;cfg.valid=true;
-  control::CurrentInputs in;in.chargerValid=in.metersValid=true;
+  control::CurrentInputs in;
+  useOutageFixture(cfg, in, 1.0f);
+  in.chargerValid=in.metersValid=true;
   in.chargerW=200;in.householdW=80;
   control::CurrentControl c;
   currentInverterOutputW=20;signedGridPowerW=60;offset=correction;configuredMin=500;
@@ -140,7 +149,9 @@ static void pvOnlyCorrectionOnce(){
  }
  for(bool houseLimited:{true,false}){
   control::PreparedSettings cfg;cfg.valid=true;
-  control::CurrentInputs in;in.chargerValid=in.metersValid=true;
+  control::CurrentInputs in;
+  useOutageFixture(cfg, in, 1.0f);
+  in.chargerValid=in.metersValid=true;
   in.chargerW=houseLimited?1000:200;in.householdW=houseLimited?100:1000;
   currentInverterOutputW=0;signedGridPowerW=int(in.householdW);
   offset=houseLimited?-50:50;configuredMin=0;resetPidController();
@@ -193,6 +204,7 @@ static void productionModeGateKeepsBoundedReconnectOutput(){
  for(bool enabled:{true,false})for(int correction:{-50,50}){
   control::PreparedSettings cfg;cfg.valid=true;control::CurrentControl c;
   control::CurrentInputs in;
+  useOutageFixture(cfg, in, 1.0f);
   in.bmsValid=in.batteryDischargeIntentAvailable=in.batteryChargeAvailable=in.chargerValid=in.metersValid=in.priceValid=true;
   in.soc=50;in.price=.4f;in.futureValid=true;in.futureBatteryCeilingW=900;in.householdW=900;
   for(unsigned i=0;i<3;++i){in.bmsSequence=in.chargerSequence=i+1;c.update(cfg,in,true,true,900,900,100+i*3000);}
@@ -244,8 +256,10 @@ static void automaticPvFallbackSurvivesMissingBms() {
  // [MOCKED!] BMS outage, advancing Victron samples and physical TX; real policy/PID/application.
  for (bool enabled : {false, true}) for (int correction : {-50, 50}) for (int demand : {80, 800}) {
   control::PreparedSettings cfg; cfg.valid=true;
-  control::CurrentInputs in; in.chargerValid=in.metersValid=in.priceValid=true;
-  in.householdW=float(demand); in.chargerW=300; in.price=.2f;
+  control::CurrentInputs in;
+  useOutageFixture(cfg, in, 0.9f);
+  in.chargerValid=in.metersValid=in.priceValid=true;
+  in.correctionW=correction; in.householdW=float(demand); in.chargerW=300; in.price=.2f;
   control::CurrentControl controller;
   control::ModeInputs modeInputs; modeInputs.metersValid=modeInputs.chargerValid=true;
   modeInputs.householdW=float(demand); modeInputs.chargerW=300; modeInputs.maximumW=900; modeInputs.correctionW=correction;
@@ -262,6 +276,7 @@ static void automaticPvFallbackSurvivesMissingBms() {
   }
   const int expected=demand==800 ? 270 : (correction<0 ? 30 : 130);
   assert(modeDecision.automaticPvFallback && issued==expected);
+  assert(modePublishDirty && currentDecisionAvailable);
   // Fresh BMS restoration must requalify battery operation from both sample streams.
   in.bmsValid=in.batteryChargeAvailable=in.batteryDischargeIntentAvailable=true;
   in.soc=50; modeInputs.bmsValid=modeInputs.dischargeAllowed=true; modeInputs.soc=50;
@@ -286,6 +301,7 @@ static void automaticPvFallbackExpiresGraceAndRequalifiesAfterStops() {
  for (unsigned fault=0; fault<8; ++fault) {
   control::PreparedSettings cfg; cfg.valid=true;
   control::CurrentInputs in;
+  useOutageFixture(cfg, in, 0.9f);
   in.bmsValid=in.batteryDischargeIntentAvailable=in.batteryChargeAvailable=true;
   in.chargerValid=in.metersValid=in.priceValid=true; in.bmsWithinGrace=true;
   in.soc=50; in.chargerW=300; in.householdW=800; in.price=.4f;

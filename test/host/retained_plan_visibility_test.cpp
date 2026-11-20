@@ -97,7 +97,8 @@ static void outageRetention(Results &results, const Plan &original, uint32_t ini
     unchangedSnapshot(results, publication, expected.data(), label + " reconnect and failed rebuild");
     results.expect(publication.retained() && publication.degradedSince() == degradedMs,
                    label + " reconnect does not renew outage time");
-    results.expect(!publication.publishDue(degradedMs + 200u), label + " historical replay withheld");
+    results.expect(publication.publishDue(degradedMs + 200u), label + " reconnect sends original historical plan once");
+    publication.published(true, degradedMs + 200u);
 
     publication.observe(degradedMs + 300u, degradedUtc, 1, true, false, true);
     publication.qualification(true);
@@ -105,7 +106,7 @@ static void outageRetention(Results &results, const Plan &original, uint32_t ini
     unchangedSnapshot(results, publication, expected.data(), label + " identical prior generation replay");
     results.expect(publication.retained() && publication.degradedSince() == degradedMs,
                    label + " prior generation cannot end outage");
-    results.expect(!publication.publishDue(degradedMs + 300u), label + " prior generation remains withheld");
+    results.expect(!publication.publishDue(degradedMs + 300u), label + " prior generation is not requeued");
 
     Plan incomplete = original;
     incomplete.generatedAt = degradedUtc + 1u;
@@ -203,9 +204,23 @@ static void offlineCaptureAndZeroTimestamp(Results &results, const Plan &origina
     results.expect(publication.planAvailable() && !publication.publishDue(1), label + " offline capture is not published");
     publication.connection(true);
     publication.observe(2, kGenerated, 1, true, false, true);
-    publication.select(original, 2, 1);
+    results.expect(!publication.captureDue(2), label + " connect does not force a new projection");
     results.expect(publication.publishDue(2) && publication.snapshot.generatedAt == kGenerated,
                    label + " fresh original generation published after reconnect");
+    publication.published(true, 2);
+    publication.connection(true);
+    results.expect(!publication.publishDue(3), label + " connected poll does not resend");
+    publication.connection(false);
+    publication.connection(true);
+    results.expect(publication.publishDue(4) && !publication.captureDue(4),
+                   label + " reconnect queues the existing publication once");
+    publication.published(false, 4);
+    results.expect(!publication.publishDue(5003) && publication.publishDue(5004),
+                   label + " reconnect replay observes the send retry interval");
+    publication.requestCapture();
+    publication.connection(false);
+    publication.connection(true);
+    results.expect(publication.captureDue(5005), label + " input-driven capture survives reconnect");
 
     PlanPublication<Plan> wrapped;
     wrapped.observe(std::numeric_limits<uint32_t>::max() - 100u, kGenerated, 1, true, false, true);
@@ -376,8 +391,29 @@ static void clockRollbackRetainsThenAcceptsNewEpoch(Results &results, const Plan
     results.expect(publication.publishDue(jumpMs + 302000u), label + " corrected new plan publishable");
 }
 
+template<class Plan>
+static void publicationTiming(Results &results, const Plan &original) {
+    PlanPublication<Plan> p;
+    p.setTiming(30, 600, 3600);
+    p.connection(true);
+    p.observe(100, kGenerated, 1, true, false, true);
+    p.select(original, 100, 1);
+    p.published(true, 100);
+    results.expect(!p.publishDue(30099) && p.publishDue(30100), "periodic send uses configured interval");
+    results.expect(!p.captureDue(30100, false), "periodic send does not request economic calculation");
+    p.published(true, 30100);
+    const uint32_t outage = 3500100;
+    p.observe(outage, kGenerated + 3500, 1, false, false, true);
+    p.observe(outage + 600000, kGenerated + 4100, 1, false, false, true);
+    results.expect(p.retained() && p.snapshot.generatedAt == kGenerated, "outage retention includes its last millisecond");
+    p.observe(outage + 600001, kGenerated + 4100, 1, false, false, true);
+    results.expect(!p.planAvailable() && p.publishDue(outage + 600001), "expired history is invalidated after outage minimum");
+}
+
 int main() {
     Results results;
+    publicationTiming(results, originalDischarge(144));
+    publicationTiming(results, originalCharge(144));
     noPreviousPlanRemainsUnavailable<DischargeBudget>(results, "discharge");
     noPreviousPlanRemainsUnavailable<ChargePlan>(results, "charge");
     offlineCaptureAndZeroTimestamp(results, originalDischarge(2), "discharge");

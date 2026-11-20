@@ -7,7 +7,8 @@ if (!(Test-Path -LiteralPath $compiler)) { throw 'Existing Clang compiler not fo
 if (!(Test-Path -LiteralPath (Join-Path $json 'ArduinoJson.h'))) { throw 'Existing ArduinoJson headers not found' }
 New-Item -ItemType Directory -Path $outputDirectory -Force | Out-Null
 $output = Join-Path $outputDirectory 'telemetry_age_wrap_test.exe'
-& $compiler -std=c++17 -O2 -DARDUINOJSON_POOL_CAPACITY=128 -Wall -Wextra -Werror `
+# Host JSON slots use wider pointers. Leave room for both parser documents in the ESP arena.
+& $compiler -std=c++17 -O2 -DARDUINOJSON_POOL_CAPACITY=64 -Wall -Wextra -Werror `
     -I (Join-Path $repo 'test/host/telemetry_stubs') -I (Join-Path $repo 'src') -I $json `
     (Join-Path $repo 'test/host/telemetry_age_wrap_test.cpp') -o $output
 if ($LASTEXITCODE -ne 0) { throw 'TelemetryAge wrap test compilation failed' }

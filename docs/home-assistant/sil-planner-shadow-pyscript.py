@@ -111,7 +111,7 @@ def _shadow_cache_evidence(now):
     return core.cache_evidence('/config/data/sil_planner_shadow/provider-cache.json',now)
 
 @pyscript_executor
-def _shadow_energy_snapshot(production,test,production_context,test_context,now):
+def _shadow_energy_snapshot(production,test,production_context,test_context,now,production_status,test_status):
     import importlib.util
     import json
     from pathlib import Path
@@ -123,7 +123,7 @@ def _shadow_energy_snapshot(production,test,production_context,test_context,now)
     except Exception:
         return {'status':'unavailable','reason':'shared_pv_snapshot_unavailable','start':now,'end':now+129600}
     try:
-        return core.future_energy(packets,production,test,now,production_context,test_context)
+        return core.future_energy(packets,production,test,now,production_context,test_context,production_status,test_status)
     except Exception:
         return {'status':'unavailable','reason':'energy_snapshot_invalid','start':now,'end':now+129600}
 
@@ -144,10 +144,18 @@ def sil_shadow_energy_tick(**kwargs):
     prod_data=dict(production.attributes) if production and production.state not in ('unknown','unavailable','invalid','stale') else {}
     # Display plans retain their own valid cohort across soft price heartbeats.
     # The orange assessed-price curve keeps its separate strict latest-input binding.
-    test_data=dict(test.attributes) if test and test_current else {}
+    prod_state=hass.states.get('sensor.sil_comparison_production_state')
+    test_state=hass.states.get('sensor.sil_shadow_state')
+    prod_status=dict(prod_state.attributes) if prod_state else {}
+    test_status=dict(test_state.attributes) if test_state else {}
+    if prod_state and prod_state.state!='ready':prod_status['received_at']=0
+    if test_state and test_state.state!='ready':test_status['received_at']=0
+    # A reported held generation can remain visible through a genuine input outage.
+    show_test=test_current or test_status.get('diagnosticPlansRetained') is True and 'chargeG' in test_status
+    test_data=dict(test.attributes) if test and show_test else {}
     prod_context=dict(production_context.attributes) if production_context and production_context.state not in ('unknown','unavailable','invalid','stale') else {}
-    test_context_data=dict(test_context.attributes) if test_context and test_current else {}
-    result=_shadow_energy_snapshot(prod_data,test_data,prod_context,test_context_data,now)
+    test_context_data=dict(test_context.attributes) if test_context and show_test else {}
+    result=_shadow_energy_snapshot(prod_data,test_data,prod_context,test_context_data,now,prod_status,test_status)
     result.update(friendly_name='SIL forecast DC energy comparison',test_comparison=True,
                   source='Existing shared PV wire snapshot and DC charge intents')
     state.set('sensor.sil_comparison_future_energy',value=result['status'],new_attributes=result)
@@ -164,6 +172,23 @@ def _shadow_input_matches(payload,now):
     return revision==attributes.get('r') or (revision is not None and revision==attributes.get('previousR')
                                              and age<=REVISION_GRACE_S)
 
+def _shadow_display_status(payload,key,status,now):
+    """Return None for legacy controllers without generation-bound plan status."""
+    if status is None or key not in status.attributes:return None
+    meta=status.attributes
+    if status.state!='ready' or not 0<=now-meta.get('received_at',0)<=180:return 'stale'
+    if payload.get('valid') is not True or not meta[key] or meta[key]!=payload.get('g'):return 'unavailable'
+    return 'held' if meta.get('diagnosticPlansRetained') is True else 'ready'
+
+def _refresh_shadow_display(now):
+    status=hass.states.get('sensor.sil_shadow_state')
+    for entity_id,key in (('sensor.sil_shadow_discharge_budget','dischargeG'),('sensor.sil_shadow_charge_plan','chargeG')):
+        plan=hass.states.get(entity_id)
+        if plan is None:continue
+        value=_shadow_display_status(plan.attributes,key,status,now)
+        if value is not None and value!=plan.state:
+            state.set(entity_id,value=value,new_attributes=dict(plan.attributes))
+
 def _shadow_withdraw(now):
     frame={'v':2,'r':now,'t':now//900*900,'d':900,'n':0,'k':0,'p':[],'o':[]}
     sent=False
@@ -177,7 +202,12 @@ def _shadow_withdraw(now):
         entity=hass.states.get(entity_id)
         attributes=dict(entity.attributes) if entity else {}
         attributes['inputBlockedAt']=now
-        state.set(entity_id,value='input_blocked',new_attributes=attributes)
+        value='input_blocked'
+        if entity_id!='sensor.sil_shadow_assessment':
+            key='chargeG' if entity_id.endswith('_charge_plan') else 'dischargeG'
+            if _shadow_display_status(attributes,key,hass.states.get('sensor.sil_shadow_state'),now)=='held':
+                value='held'
+        state.set(entity_id,value=value,new_attributes=attributes)
     return {'withdrawMessages':1 if sent else 0,'withdrawSent':sent,'withdrawRevision':now}
 
 @service(supports_response='optional')
@@ -244,6 +274,7 @@ def sil_shadow_tick(**kwargs):
             state.set(entity_id,value='unavailable',new_attributes={'test_comparison':True,'source_topic':topic})
         elif entity.state=='ready' and now-entity.attributes.get('received_at',0)>180:
             state.set(entity_id,value='stale',new_attributes=dict(entity.attributes))
+    _refresh_shadow_display(now)
     sil_shadow_publish_prices()
 
 @mqtt_trigger('SolarLimiterTest/Planning/+')
@@ -267,6 +298,12 @@ def sil_shadow_observe(topic=None,payload_obj=None,retain=False,**kwargs):
     if payload_obj.get('valid') is False: status='invalid'
     if topic in ('SolarLimiterTest/Planning/DischargeBudget','SolarLimiterTest/Planning/ChargePlan','SolarLimiterTest/Planning/Assessment'):
         if not _shadow_input_matches(payload_obj,now): status='input_blocked'
+    if topic in ('SolarLimiterTest/Planning/DischargeBudget','SolarLimiterTest/Planning/ChargePlan'):
+        key='chargeG' if topic.endswith('/ChargePlan') else 'dischargeG'
+        bound=_shadow_display_status(payload_obj,key,hass.states.get('sensor.sil_shadow_state'),now)
+        if bound is not None:status=bound
     state.set(entity_id,value=status,new_attributes=attributes)
+    if topic=='SolarLimiterTest/Planning/State':
+        _refresh_shadow_display(now)
     if topic=='SolarLimiterTest/Planning/ChargePlan':
         sil_shadow_energy_tick()

@@ -10,6 +10,14 @@
 RS485_Settings rs485settings;
 
 #if !defined(SIL_MOCK_TRANSPORT) || !SIL_MOCK_TRANSPORT
+static void disabledAtBootDoesNotWriteToTheConsole() {
+    rs485settings.enableRS485.set(false);
+    RS485begin();
+    rs485settings.enableRS485.set(true);
+    assert(!sendToRS485(900));
+    assert(Serial.frames.empty() && Serial2.frames.empty() && pinWrites.empty());
+}
+
 static void assertFrame(const std::vector<uint8_t> &actual, const std::array<uint8_t, 8> &expected) {
     assert(actual.size() == expected.size());
     for (std::size_t i = 0; i < expected.size(); ++i) assert(actual[i] == expected[i]);
@@ -69,6 +77,10 @@ static void shortWritesAreReportedAndReturnToReceive() {
         assert(pinWrites.back().value == LOW);
     }
     Serial2.writeLimit = 8;
+    Serial2.driverInstalled = false;
+    assert(!sendToRS485(900));
+    assert(pinWrites.back().value == LOW);
+    Serial2.driverInstalled = true;
     assert(sendToRS485(900));
     assertFrame(Serial2.frames.back(), frame900);
 }
@@ -84,6 +96,7 @@ int main() {
     assert(pinModes.empty() && pinWrites.empty());
     std::cout << "[MOCKED!] Hardware mock blocks RS485 initialization and writes\n";
 #else
+    disabledAtBootDoesNotWriteToTheConsole();
     repeatedFramesUseTheCurrentDemand();
     disabledTransportDoesNotWrite();
     shortWritesAreReportedAndReturnToReceive();

@@ -18,6 +18,9 @@ constexpr float kRelativeHoldBatteryMarginW = 5.0f;
 struct CurrentInputs {
     bool sourcesWithinGrace = false;
     bool bmsWithinGrace = false; // Original receiver deadline; reconnect never renews it.
+    uint32_t bmsSampleAgeMs = UINT32_MAX;
+    bool fallbackProtectionKnown = false;
+    bool knownSourceFault = false;
     bool alarmRestricted = false;
     bool bmsValid = false;
     bool batteryDischargeIntentAvailable = false; // Fresh healthy source permits inverter intent, even with actual MOS OFF.
@@ -47,6 +50,7 @@ struct CurrentInputs {
 
 struct CurrentDecision {
     int ceilingW = 0;
+    bool economicPlanApplied = false; // This qualified decision uses the current economic slot.
     bool sourceGrace = false; // Previously qualified battery permission only; never fresh telemetry.
     bool fullBatteryPv = false; // Approval requires fresh full-battery and charger feedback.
     bool pvOnly = false; // Always use the household PID, including with Limiter OFF.
@@ -108,8 +112,12 @@ public:
         if (!in.metersValid || !std::isfinite(in.householdW)) return stop(out, "meters_missing");
         if (in.chargerFault) return stop(out, "charger_fault");
         if (batteryGraceActive_ && !in.bmsWithinGrace) return stop(out, "source_timeout");
-        if (!dischargeAvailable && batteryGraceAllowed(in))
-            return holdBattery(out, forecastLimit, maximumW, heldCommandW, "source_grace", true);
+        const bool planMissing = cfg.relativeTimePolicy && !in.futureValid;
+        const bool holdingBattery = !dischargeAvailable && batteryGraceAllowed(in);
+        if (in.knownSourceFault && (!bms || planMissing || batteryGraceActive_ || holdingBattery))
+            return stop(out, "source_alarm");
+        if (holdingBattery && !planMissing)
+            return holdBattery(out, cfg, forecastLimit, maximumW, heldCommandW, now, "source_grace", true);
         const bool pvOnly = !chargeAvailable && !dischargeAvailable;
         const bool batteryOnly = bms && dischargeAvailable && !charger;
         if (pvOnly != pvOnly_ || chargeAvailable != chargeAvailable_ || dischargeAvailable != dischargeAvailable_) {
@@ -125,20 +133,36 @@ public:
             out.direct = true; out.strategy = "preserve"; out.reason = "mppt_standby";
             return out;
         }
-        if (pvOnly) {
+        if (pvOnly || planMissing) {
             out.pvOnly = true; out.reserveAllowed = false;
             out.strategy = "pv_only";
             if (!in.metersValid || !std::isfinite(in.householdW)) return stop(out, "meters_missing");
             if (in.chargerFault) return stop(out, "charger_fault");
             if (!charger || in.chargerW <= 0) return stop(out, "pv_missing");
+            const bool fallback = !bms || planMissing;
+            if (fallback && (!in.fallbackProtectionKnown || !std::isfinite(cfg.outage.pvAcFraction) ||
+                cfg.outage.pvAcFraction <= 0 || cfg.outage.pvAcFraction > 1))
+                return stop(out, "pv_fallback_unverified");
+            if (fallback != fallbackActive_) {
+                resetDynamics();
+                fallbackActive_ = fallback;
+            }
             // Fresh PV can qualify without a missing battery sequence ever advancing.
             if (!qualify(in, now, true)) {
                 out.direct = true; out.reason = "pv_recovery"; return out;
             }
             const float demand = clamp(in.householdW + float(in.correctionW), 0, maximum);
-            out.ceilingW = int(clamp(in.chargerW, 0, demand));
-            out.reason = bms ? "pv_only_mos" : "pv_only_bms_missing";
+            out.ceilingW = int(clamp(in.chargerW * (fallback ? cfg.outage.pvAcFraction : 1.0f), 0, demand));
+            if (fallback) {
+                out.strategy = out.reason = "pv_limited_fallback";
+            } else {
+                out.reason = "pv_only_mos";
+            }
             return out; // No battery-power PI, forecast discharge budget or old reserve permission.
+        }
+        if (fallbackActive_) {
+            resetDynamics();
+            fallbackActive_ = false;
         }
         // Keep the household PID active for charge-only operation, including Limiter OFF.
         out.pvOnly = !dischargeAvailable;
@@ -154,10 +178,11 @@ public:
         if (!qualify(in, now, false, batteryOnly)) {
             pauseDynamics();
             if (batteryGraceActive_ && batteryGraceAllowed(in))
-                return holdBattery(out, forecastLimit, maximumW, heldCommandW, "source_recovery", false);
-            if (approved_ && in.sourcesWithinGrace && !(reserveKnown_ && !reserveAllowed_) &&
+                return holdBattery(out, cfg, forecastLimit, maximumW, heldCommandW, now, "source_recovery", false);
+            if (approved_ && in.sourcesWithinGrace && !in.knownSourceFault && !(reserveKnown_ && !reserveAllowed_) &&
                 (!lastApproved_.fullBatteryPv || (bms && in.soc >= 100 && charger))) {
                 out = lastApproved_;
+                out.economicPlanApplied = false;
                 out.minimumOverrideAllowed = false; out.direct = false;
                 out.ceilingW = std::max(0, std::min({out.ceilingW, forecastLimit, heldCommandW}));
                 out.chargeTargetValid = false; out.reason = batteryOnly ? "source_grace" : "source_recovery";
@@ -173,7 +198,6 @@ public:
             out.strategy = "bypass"; out.reason = "limiter_off";
             return out;
         }
-        if(cfg.relativeTimePolicy && !in.futureValid)return stop(out,"relative_plan_missing");
         if (charger && dischargeAvailable && out.reserveAllowed && in.soc >= 100) {
             // A full battery curtails MPPT output without an AC load. Measured
             // charger power cannot bound the PV that a new load will release.
@@ -197,7 +221,11 @@ public:
             out.pvOnly=battery==0;out.strategy=battery>0?"discharge":"preserve";
             out.priceBand=in.futurePriceTier;out.reason=in.futureReason;
             out.chargeTargetValid=true;out.chargeTargetW=chargeAvailable?std::max(0.0f,in.futureChargeTargetW):0;
+            out.economicPlanApplied = in.futureValid &&
+                (in.futureBatteryCeilingW <= 0 || (dischargeAvailable && out.reserveAllowed)) &&
+                (in.futureChargeTargetW <= 0 || chargeAvailable);
             batteryGraceBudgetW_=battery;
+            if (battery > 0) recordReserve(in, now);
             return approve(out,battery>0);
         }
         // Missing MPPT measurements cannot add direct PV or charging power.
@@ -232,6 +260,7 @@ public:
             out.ceilingW = int(economicCeiling_);
             out.strategy = "discharge"; out.reason = in.futureValid ? in.futureReason : "expensive";
             batteryGraceBudgetW_ = in.futureValid ? forecastLimit : int(maximum);
+            recordReserve(in, now);
             return approve(out, true);
         }
         economicActive_ = false;
@@ -292,14 +321,45 @@ private:
     bool approved_ = false;
     int batteryGraceBudgetW_ = 0;
     bool batteryGraceApproved_ = false, batteryGraceActive_ = false;
+    bool fallbackActive_ = false, reserveSampleKnown_ = false;
+    uint32_t reserveSequence_ = 0, reserveSeenAt_ = 0, reserveSourceAge_ = UINT32_MAX;
+    float reserveSoc_ = 0;
+    void recordReserve(const CurrentInputs &in, uint32_t now) {
+        if (reserveSampleKnown_ && in.bmsSequence == reserveSequence_) return;
+        reserveSampleKnown_ = true;
+        reserveSequence_ = in.bmsSequence;
+        reserveSeenAt_ = now;
+        reserveSourceAge_ = in.bmsSampleAgeMs;
+        reserveSoc_ = in.soc;
+    }
+    int reserveLimit(const PreparedSettings &cfg, int maximumW, uint32_t now) const {
+        const auto &l = cfg.outage;
+        if (!reserveSampleKnown_ || reserveSourceAge_ == UINT32_MAX ||
+            !(std::isfinite(l.capacityAhLower) && l.capacityAhLower > 0 &&
+              std::isfinite(l.voltageVLower) && l.voltageVLower > 0 &&
+              std::isfinite(l.maxOtherLoadW) && l.maxOtherLoadW >= 0 &&
+              std::isfinite(l.socMarginPct) && l.socMarginPct >= 0 &&
+              std::isfinite(l.uncertaintyWh) && l.uncertaintyWh >= 0 &&
+              l.efficiencyLower > 0 && l.efficiencyLower <= 1 &&
+              std::isfinite(l.maxDischargeAcW) && l.maxDischargeAcW >= maximumW &&
+              std::isfinite(l.nextCheckSeconds) && l.nextCheckSeconds > 0)) return 0;
+        const double ageMs = double(reserveSourceAge_) + uint32_t(now - reserveSeenAt_);
+        const double usableWh = (reserveSoc_ - cfg.reserveOffSocPercent - l.socMarginPct) * 0.01 *
+            l.capacityAhLower * l.voltageVLower - l.uncertaintyWh;
+        const double spentWh = (double(l.maxDischargeAcW) / l.efficiencyLower + l.maxOtherLoadW) * ageMs / 3600000;
+        const double allowedW = ((usableWh - spentWh) * 3600 / l.nextCheckSeconds - l.maxOtherLoadW) * l.efficiencyLower;
+        return int(std::max(0.0, std::min(double(maximumW), allowedW)));
+    }
     bool batteryGraceAllowed(const CurrentInputs &in) const {
         return batteryGraceApproved_ && batteryGraceBudgetW_ > 0 && in.bmsWithinGrace &&
             reserveKnown_ && reserveAllowed_;
     }
-    CurrentDecision holdBattery(CurrentDecision out, int forecastLimit, int maximumW,
-                                int heldCommandW, const char *reason, bool restartQualification) {
+    CurrentDecision holdBattery(CurrentDecision out, const PreparedSettings &cfg, int forecastLimit, int maximumW,
+                                int heldCommandW, uint32_t now, const char *reason, bool restartQualification) {
+        const int energyLimit = reserveLimit(cfg, maximumW, now);
+        if (!energyLimit) return stop(out, "reserve_grace_unavailable");
         out.ceilingW = std::max(0, std::min({batteryGraceBudgetW_, lastApproved_.ceilingW,
-            forecastLimit, maximumW, heldCommandW}));
+            forecastLimit, energyLimit, heldCommandW}));
         out.sourceGrace = true; out.direct = false;
         out.strategy = "hold"; out.reason = reason;
         out.minimumOverrideAllowed = false; out.chargeTargetValid = false;

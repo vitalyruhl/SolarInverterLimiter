@@ -95,6 +95,9 @@ static bool checkExecutionDiagnostic(control::OperatingMode mode, const char *ef
     const int wire = observedCommandW();
     const bool passed = !std::strcmp(configured, control::operatingModeName(mode)) &&
         !std::strcmp(actualEffective, effective) && !std::strcmp(kind, "battery_ac") &&
+        doc["economic"]["applied"].is<bool>() &&
+        (!(manualOverride || !std::strcmp(effective, "bypass") || !std::strcmp(effective, "hold")) ||
+         !doc["economic"]["applied"].as<bool>()) &&
         doc["manualOverride"].is<bool>() && doc["manualOverride"].as<bool>() == manualOverride &&
         doc["commandedW"].is<int>() && wire >= 0 && doc["commandedW"].as<int>() == wire;
     if (!passed) std::printf("FAIL %s execution diagnostics; expected effective=%s manual=%d actual wire/mock=%d: %s\n",

@@ -59,9 +59,13 @@ struct ChargePlan {
             reason = "forecast_missing"; return;
         }
         start = red.start; count = red.count; targetAt = future.targetAt;
-        if (!future.coupledProjection || !prices.projectionMatches(utc, start, count)) {
+        const uint32_t generation = cfg.relativeTimePolicy ? red.generatedAt : utc;
+        if (!future.coupledProjection || !prices.projectionMatches(generation, start, count)) {
             finish(false, "forecast_missing"); return;
         }
+        generatedAt = generation;
+        priceRevision = red.priceRevision;
+        pvRevision = red.pvRevision;
         remainingWhDC = future.projectedUnmetWhDC;
         for (unsigned i = 0; i < count; ++i) {
             solarWatts[i] = prices.projectedSolarW(i);
@@ -71,7 +75,8 @@ struct ChargePlan {
         // Slot zero follows the independently guarded live decision, including negative-price stops.
         if (!in.controlEnabled || !in.chargeAvailable || !decision.chargeTargetValid ||
             !std::isfinite(decision.chargeTargetW) || decision.chargeTargetW < 0) watts[0] = 0;
-        else if (watts[0] >= 0) watts[0] = int32_t(std::min(float(watts[0]), decision.chargeTargetW));
+        else if (!cfg.relativeTimePolicy && watts[0] >= 0)
+            watts[0] = int32_t(std::min(float(watts[0]), decision.chargeTargetW));
         finish(true, !in.controlEnabled ? "control_off" : (!in.chargeAvailable ? "charge_blocked" : "intent_projection"));
     }
     // Fixed buffers only. Unknown values are null; any malformed/overflowed plan fails closed.

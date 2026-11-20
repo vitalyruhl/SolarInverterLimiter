@@ -39,6 +39,7 @@
 #include "control/PvForecast.h"
 #include "control/ChargePlan.h"
 #include "control/ModeSettingsRuntime.h"
+#include "control/PlanSettingsRuntime.h"
 
 #include "RS485Module/RS485Module.h"
 #include "helpers/HelperModule.h"
@@ -124,7 +125,7 @@ static constexpr uint32_t kI2cHz = 400000;
 #endif
 
 #ifndef VERSION
-#define VERSION "5.10.0"
+#define VERSION "5.11.0"
 #endif
 
 static sil::RuntimeDiagnostics runtimeDiagnostics;
@@ -401,6 +402,7 @@ struct WiFiRoamingSettings
 
 // Global settings/config instances
 LimiterSettings limiterSettings;
+control::PlanSettingsRuntime planSettings;
 #if FEATURE_BME280_ENABLED
 TempSettings tempSettings;
 #endif
@@ -666,6 +668,10 @@ void setup()
 
     ConfigManager.checkSettingsForErrors();
     ConfigManager.loadAll();
+    telemetryAge.refreshMappings();
+    planSettings.finishLoad();
+    if (planSettings.usingDefaultsAfterInvalidLoad())
+        lmg.logTag(LL::Warn, "PLAN", "[W] Invalid plan settings, using defaults");
     operatingModes.begin();
     refreshPreparedSettings();
     normalizeNegativePriceSettings(NegativePriceSettingPreference::None, true, true);
@@ -674,6 +680,14 @@ void setup()
     setupNetworkDefaults();
     ioManager.begin();
 
+    // CM and shadow keep ownership of their subscription and routing callbacks.
+    // Capture settings on the web task after each write, including partial bulk updates.
+    ConfigManager.getWebManager().getServer()->addMiddleware([](AsyncWebServerRequest *request, ArMiddlewareNext next) {
+        const auto &url = request->url();
+        const bool write = url.startsWith("/config_raw") || (request->method() == HTTP_POST && url.startsWith("/config/"));
+        next();
+        if (write) telemetryAge.refreshMappings();
+    });
     ConfigManager.startWebServer();
 
     // The synchronous smart-roaming scan can suspend control for up to ten seconds.
@@ -867,6 +881,7 @@ void setupGUI()
     // Settings layout
     // coreSettings owns the WiFi/System/NTP pages now; MQTT module registers its own layout.
     ConfigManager.addSettingsPage("Limiter", 60);
+    ConfigManager.addSettingsPage("Plan", 65);
     ConfigManager.addSettingsGroup("Limiter", "Limiter", "Limiter Settings", 60);
 #if FEATURE_BME280_ENABLED
     ConfigManager.addSettingsPage("Temp", 70);
@@ -939,7 +954,7 @@ void setupGUI()
     ConfigManager.getRuntime().addRuntimeProvider("planning", [](JsonObject &data) {
         data["pv_revision"] = pvForecast.revision();
         data["pv_slots"] = pvForecast.slots();
-        data["pv_valid"] = pvForecast.valid(uint32_t(time(nullptr)));
+        data["pv_valid"] = pvForecast.current(uint32_t(time(nullptr)), planSettings.snapshot().pvForecastMaxAgeS);
         data["pv_calibrated"] = pvForecast.calibrated();
         data["pv_charge_limit_qualified"] = SIL_QUALIFIED_MPPT_MAX_CHARGE_A > 0;
         data["pv_offered_wh"] = futurePlan.offeredPvWh;
@@ -1178,6 +1193,7 @@ static void registerIOBindings()
                 lmg.logTag(LL::Warn, "IO", "Reset button ignored in shadow profile");
 #else
                 lmg.logTag(LL::Warn, "IO", "Reset button pressed at startup -> restoring defaults");
+                telemetryAge.detach();
                 ConfigManager.clearAllFromPrefs();
                 ConfigManager.saveAll();
                 delay(500);
@@ -1309,7 +1325,8 @@ static void setupMqtt()
             if (control::parseModeCommand(reinterpret_cast<const char *>(payload), length, uint32_t(time(nullptr)), command))
                 operatingModes.queueMode(command.mode, command.expiresAt);
         } else if (topic && priceScheduleTopic == topic) {
-            const char *result = futurePrices.receive(payload, length, uint32_t(time(nullptr)), millis(), control::kPriceInputVersion==2);
+            const char *result = futurePrices.receive(payload, length, uint32_t(time(nullptr)), millis(),
+                control::kPriceInputVersion==2, planSettings.snapshot().priceScheduleFreshnessS);
             if (strcmp(result, "pending") && strcmp(result, "duplicate"))
                 lmg.logTag(!strcmp(result, "accepted") || !strcmp(result, "withdrawn") ? LL::Info : LL::Warn,
                     "FORECAST", "rx=%s rev=%lu slots=%u", result,
@@ -1342,6 +1359,7 @@ static void setupMqtt()
 static void registerProjectSettings()
 {
     limiterSettings.attachTo(ConfigManager);
+    planSettings.attachTo(ConfigManager);
     operatingModes.attachTo(ConfigManager);
 #if FEATURE_BME280_ENABLED
     tempSettings.attachTo(ConfigManager);
@@ -2004,12 +2022,16 @@ static String addRelativeDiagnostics(const char* base,bool tierState) {
 #endif
 static String buildPlanningConfigPayload()
 {
-    char payload[640];
-    snprintf(payload,sizeof(payload),
+    const auto lifecycle = planSettings.snapshot();
+    char payload[896];
+    const int written = snprintf(payload,sizeof(payload),
         "{\"v\":1,\"valid\":%s,\"resOff\":%s,\"resOn\":%s,\"mosMan\":%s,\"invEn\":%s,"
         "\"priceC\":%s,\"priceDb\":%s,\"hystDb\":%s,\"fcPriceF\":%s,\"maxOutputW\":%d,"
         "\"deferralToleranceEurKwh\":%s,\"predictionPremium12hPct\":%s,\"predictionPremium24hPct\":%s,"
-        "\"predictionPremiumPct\":%s,\"predictionPremiumModel\":\"horizon_steps_v1\",\"shadowProfile\":%s,\"priceInputVersion\":%u}",
+        "\"predictionPremiumPct\":%s,\"predictionPremiumModel\":\"horizon_steps_v1\",\"shadowProfile\":%s,\"priceInputVersion\":%u,"
+        "\"planRecalcIntervalS\":%u,\"planStaleAfterS\":%u,\"planMaxAgeS\":%u,\"planDiscardAfterS\":%u,"
+        "\"priceScheduleFreshnessS\":%u,\"pvForecastMaxAgeS\":%u,\"planRetentionS\":%u,\"planPublishIntervalS\":%u,"
+        "\"planSettingsInvalidAtBoot\":%s}",
         preparedSettings.valid?"true":"false",JsonNumberText(preparedSettings.reserveOffSocPercent,4).text,
         JsonNumberText(preparedSettings.reserveOnSocPercent,4).text,preparedSettings.mosManualMode?"true":"false",
         preparedSettings.inverterEnabled?"true":"false",JsonNumberText(preparedSettings.priceComfortEurPerKwh,4).text,
@@ -2018,7 +2040,13 @@ static String buildPlanningConfigPayload()
         JsonNumberText(preparedSettings.deferralToleranceEurKwh,8).text,
         JsonNumberText(preparedSettings.predictionPremium12hPct,4).text,JsonNumberText(preparedSettings.predictionPremium24hPct,4).text,
         JsonNumberText(preparedSettings.predictionPremiumPct,4).text,
-        control::kPlannerShadowProfile?"true":"false",control::kPriceInputVersion);
+        control::kPlannerShadowProfile?"true":"false",control::kPriceInputVersion,
+        unsigned(lifecycle.planRecalcIntervalS),unsigned(lifecycle.planStaleAfterS),unsigned(lifecycle.planMaxAgeS),
+        unsigned(lifecycle.planDiscardAfterS),unsigned(lifecycle.priceScheduleFreshnessS),unsigned(lifecycle.pvForecastMaxAgeS),
+        unsigned(lifecycle.planRetentionS),unsigned(lifecycle.planPublishIntervalS),
+        planSettings.usingDefaultsAfterInvalidLoad()?"true":"false");
+    if (written < 0 || size_t(written) >= sizeof(payload))
+        return String("{\"v\":1,\"valid\":false,\"reason\":\"config_format\"}");
 #if SIL_RELATIVE_TIME_POLICY
     return addRelativeDiagnostics(payload,false);
 #else
@@ -2028,6 +2056,7 @@ static String buildPlanningConfigPayload()
 static String buildPlanningAssessmentPayload()
 {
     const uint32_t utc=uint32_t(time(nullptr));
+    const uint32_t freshnessS = planSettings.snapshot().priceScheduleFreshnessS;
     const auto source=sbtInputs.controlSnapshot(millis());
     unsigned counts[3]={};
     for(unsigned i=0;i<futurePrices.slots();++i)++counts[futurePrices.originAt(futurePrices.start()+i*900u)];
@@ -2041,7 +2070,7 @@ static String buildPlanningAssessmentPayload()
         "\"predictionPremiumPct\":%s,\"predictionPremiumModel\":\"horizon_steps_v1\",\"currentRawEurKwh\":%s,\"currentAssessedEurKwh\":%s,"
         "\"currentMeasuredEurKwh\":%s,\"availableWh\":%s,\"fullCapacityAh\":%s,\"soc\":%s,\"batteryW\":%s,\"chargerW\":%s,"
         "\"bmsSequence\":%lu,\"chargerSequence\":%lu,\"bmsValid\":%s,\"chargerValid\":%s,\"mockTransport\":%s,\"shadowProfile\":%s}",
-        ulong(utc),futurePrices.priceFresh(utc)?"true":"false",futurePrices.testPriceStatus(utc),ulong(futurePrices.revision()),ulong(futurePrices.start()),futurePrices.slots(),
+        ulong(utc),futurePrices.priceFresh(utc, freshnessS)?"true":"false",futurePrices.testPriceStatus(utc, freshnessS),ulong(futurePrices.revision()),ulong(futurePrices.start()),futurePrices.slots(),
         ulong(utc>=futurePrices.revision()?utc-futurePrices.revision():0),futurePrices.inputVersion(),counts[0],counts[1],counts[2],
         JsonNumberText(preparedSettings.deferralToleranceEurKwh,8).text,
         JsonNumberText(preparedSettings.predictionPremium12hPct,4).text,JsonNumberText(preparedSettings.predictionPremium24hPct,4).text,
@@ -2153,6 +2182,21 @@ static String buildPlanningStatePayload()
     const char *manualOverride = configuredMode == control::OperatingMode::Automatic ? "false" : "true";
     const bool plansAvailable = dischargeBudget.planAvailable() && chargePlan.planAvailable();
     const bool plansRetained = dischargeBudget.retained() || chargePlan.retained();
+    const unsigned long dischargeG = dischargeBudget.planAvailable() ? dischargeBudget.snapshot.generatedAt : 0;
+    const unsigned long chargeG = chargePlan.planAvailable() ? chargePlan.snapshot.generatedAt : 0;
+    const bool economicAvailable = futurePrices.economicAvailable();
+    char planG[12] = "null", planAge[12] = "null", economic[144];
+    if (economicAvailable) {
+        snprintf(planG, sizeof(planG), "%lu", static_cast<unsigned long>(futurePrices.economicGeneratedAt()));
+        snprintf(planAge, sizeof(planAge), "%lu", static_cast<unsigned long>(futurePrices.economicAgeS()));
+    }
+    const bool applied = currentDecisionAvailable && configuredMode == control::OperatingMode::Automatic &&
+        futurePrices.economicValid() && currentDecision.economicPlanApplied;
+    snprintf(economic, sizeof(economic),
+        "{\"available\":%s,\"valid\":%s,\"retained\":%s,\"stale\":%s,\"g\":%s,\"ageS\":%s,\"applied\":%s}",
+        economicAvailable ? "true" : "false", futurePrices.economicValid() ? "true" : "false",
+        futurePrices.economicRetained() ? "true" : "false", futurePrices.economicStale() ? "true" : "false",
+        planG, planAge, applied ? "true" : "false");
     char outageAge[16];
     if (plansRetained) {
         const uint32_t now = millis();
@@ -2162,25 +2206,27 @@ static String buildPlanningStatePayload()
     } else snprintf(outageAge, sizeof(outageAge), "null");
     if (!currentDecisionAvailable)
     {
-        char startup[512];
+        char startup[640];
         const int written = snprintf(startup, sizeof(startup),
             "{\"v\":1,\"strategy\":null,\"reason\":null,\"limitW\":null,\"chargeW\":null,\"reserveOk\":null,\"allocWh\":null,"
             "\"transportWriteStatus\":\"%s\",\"autoStrategy\":%s,\"autoLimitW\":%s,\"autoLimitKind\":\"battery_ac\",\"autoReason\":\"%s\","
             "\"configuredMode\":\"%s\",\"effectiveStrategy\":null,\"manualOverride\":%s,\"commandedW\":null,"
-            "\"diagnosticPlansAvailable\":%s,\"diagnosticPlansRetained\":%s,\"diagnosticRetentionAgeS\":%s}",
+            "\"diagnosticPlansAvailable\":%s,\"diagnosticPlansRetained\":%s,\"diagnosticRetentionAgeS\":%s,"
+            "\"dischargeG\":%lu,\"chargeG\":%lu,\"economic\":%s}",
             lastTransportWriteStatus, autoStrategy, autoLimit, futurePlan.reason, configuredName, manualOverride,
-            plansAvailable ? "true" : "false", plansRetained ? "true" : "false", outageAge);
+            plansAvailable ? "true" : "false", plansRetained ? "true" : "false", outageAge, dischargeG, chargeG, economic);
         if (written < 0 || static_cast<size_t>(written) >= sizeof(startup)) return "{\"v\":1,\"diagnosticError\":\"format\"}";
         return String(startup);
     }
-    char payload[768];
+    char payload[960];
     const int written = snprintf(payload, sizeof(payload),
              "{\"v\":1,\"strategy\":\"%s\",\"reason\":\"%s\",\"limitW\":%d,\"chargeW\":%s,\"reserveOk\":%s%s,"
              "\"forecast\":%s,\"forecastReason\":\"%s\",\"revision\":%lu,\"allocWh\":%s,\"availableWh\":%s,"
              "\"shortfallWh\":%s,\"batteryMaxW\":%d,\"targetUTC\":%lu,\"transportWriteStatus\":\"%s\","
              "\"autoStrategy\":%s,\"autoLimitW\":%s,\"autoLimitKind\":\"battery_ac\",\"autoReason\":\"%s\","
              "\"configuredMode\":\"%s\",\"effectiveStrategy\":\"%s\",\"manualOverride\":%s,\"commandedW\":%d,"
-             "\"diagnosticPlansAvailable\":%s,\"diagnosticPlansRetained\":%s,\"diagnosticRetentionAgeS\":%s}",
+             "\"diagnosticPlansAvailable\":%s,\"diagnosticPlansRetained\":%s,\"diagnosticRetentionAgeS\":%s,"
+             "\"dischargeG\":%lu,\"chargeG\":%lu,\"economic\":%s}",
              currentDecision.strategy, currentDecision.reason, currentDecision.ceilingW,
              currentDecision.chargeTargetValid ? JsonNumberText(currentDecision.chargeTargetW, 1).text : "null",
              currentDecision.reserveKnown ? (currentDecision.reserveAllowed ? "true" : "false") : "null",
@@ -2192,7 +2238,7 @@ static String buildPlanningStatePayload()
              futurePlan.valid ? JsonNumberText(futurePlan.shortfallWh, 1).text : "null",
              futurePlan.batteryCeilingW, static_cast<unsigned long>(futurePlan.targetAt), lastTransportWriteStatus,
              autoStrategy, autoLimit, futurePlan.reason, configuredName, currentDecision.strategy, manualOverride, inverterSetValue,
-             plansAvailable ? "true" : "false", plansRetained ? "true" : "false", outageAge);
+             plansAvailable ? "true" : "false", plansRetained ? "true" : "false", outageAge, dischargeG, chargeG, economic);
     if (written < 0 || static_cast<size_t>(written) >= sizeof(payload)) return "{\"v\":1,\"diagnosticError\":\"format\"}";
     return String(payload);
 }
@@ -2512,6 +2558,7 @@ static void issueInverterCommand(int watts, int maximumW, int outputOffsetW, int
     if (minimumW > 0 && (currentDecision.ceilingW < minimumW || watts < minimumW))
     {
         currentDecision.strategy = "minimum";
+        currentDecision.economicPlanApplied = false;
         currentDecision.reason = "minimum_output";
         currentDecision.reserveAllowed = true;
         currentDecision.pvOnly = false;
@@ -2535,6 +2582,7 @@ static void issueInverterCommand(int watts, int maximumW, int outputOffsetW, int
     }
     const bool transportEnabled = rs485settings.enableRS485.get();
     const bool locallyAccepted = sendToRS485(static_cast<uint16_t>(watts));
+    if (!transportEnabled || !locallyAccepted) currentDecision.economicPlanApplied = false;
     lastTransportWriteStatus = !transportEnabled ? "disabled" :
         (locallyAccepted ? "accepted" : "write_failed");
     if (transportEnabled)
@@ -2599,6 +2647,9 @@ static void processRS485Tick()
     control::CurrentInputs inputs;
     inputs.sourcesWithinGrace = source.sourcesWithinGrace;
     inputs.bmsWithinGrace = source.bmsWithinGrace;
+    inputs.bmsSampleAgeMs = source.bmsSampleAgeMs;
+    inputs.fallbackProtectionKnown = source.batteryDischargeIntentAvailable && source.chargerFaultKnown &&
+        !source.genuineBmsFault && !source.chargerFault;
     inputs.alarmRestricted = source.alarmRestricted;
     inputs.bmsValid = source.bmsValid;
     inputs.batteryDischargeIntentAvailable = source.batteryDischargeIntentAvailable;
@@ -2638,6 +2689,7 @@ static void processRS485Tick()
     modeInputs.correctionW = offset;
     modeInputs.maximumW = configuredMax;
     const uint32_t utc = uint32_t(time(nullptr));
+    const auto lifecycle = planSettings.snapshot();
     pvForecast.observeClock(utc);
     control::PlanCaptureContext captureContext;
     captureContext.settings = preparedSettings;
@@ -2650,7 +2702,7 @@ static void processRS485Tick()
     captureContext.transport = kRs485MockTransport || rs485settings.enableRS485.get();
     captureContext.negativeMin = limiterSettings.forceMinOnNegativePrice.get();
     captureContext.negativeZero = limiterSettings.setZeroOnNegativePrice.get();
-    captureContext.pvValid = pvForecast.valid(utc);
+    captureContext.pvValid = pvForecast.current(utc, lifecycle.pvForecastMaxAgeS);
     if (!planCaptureContextKnown || !planCaptureContext.same(captureContext))
     {
         if (!planCaptureContextKnown || !planCaptureContext.sameHard(captureContext))
@@ -2664,12 +2716,16 @@ static void processRS485Tick()
         futurePrices.priceAt(utc + 900UL, preparedSettings.relativeTimePolicy?1:forecastPriceFactor, coveredPrice);
     planCaptureFaults.observe(source.chargerFaultKnown, source.chargerFault);
     const bool knownSourceFault = planCaptureFaults.blocked(source.genuineBmsFault);
+    inputs.knownSourceFault = knownSourceFault;
     const bool projectionHardInvalid = captureContext.hardInvalid(knownSourceFault) ||
-        (control::kPriceInputVersion==2 && !futurePrices.priceFresh(utc));
+        (control::kPriceInputVersion==2 && !futurePrices.priceFresh(utc, lifecycle.priceScheduleFreshnessS));
     const bool planSourceGrace = source.sourcesWithinGrace || source.bmsWithinGrace;
+    dischargeBudget.setTiming(lifecycle.planPublishIntervalS, lifecycle.planRetentionS, lifecycle.planDiscardAfterS);
+    chargePlan.setTiming(lifecycle.planPublishIntervalS, lifecycle.planRetentionS, lifecycle.planDiscardAfterS);
     dischargeBudget.observe(nowMs, utc, planContextEpoch, planSourceGrace, projectionHardInvalid, forecastCoverage);
     chargePlan.observe(nowMs, utc, planContextEpoch, planSourceGrace, projectionHardInvalid, forecastCoverage);
-    const bool capturePlans = dischargeBudget.captureDue(nowMs) || chargePlan.captureDue(nowMs);
+    const bool periodicCapture = !preparedSettings.relativeTimePolicy;
+    bool capturePlans = dischargeBudget.captureDue(nowMs, periodicCapture) || chargePlan.captureDue(nowMs, periodicCapture);
     control::DischargeBudget *budgetTrace = capturePlans ? &dischargeBudget.candidate : nullptr;
     const bool plannerExpensiveNow = plannerPriceBand.expensivePrice(preparedSettings, priceFresh, measuredPrice);
     const bool plannerCheapNow = plannerPriceBand.cheapPrice();
@@ -2682,14 +2738,26 @@ static void processRS485Tick()
     const float planningMaxChargeW = chargerPlanningAvailable && source.batteryChargeConfirmed && !knownSourceFault &&
         std::isfinite(planningVoltageV) && planningVoltageV > 0
         ? planningVoltageV * SIL_QUALIFIED_MPPT_MAX_CHARGE_A : 0.0f;
+    const uint32_t previousBuilds = futurePrices.planningBuilds();
+    const bool generationQualified = planSourceGrace && source.bmsValid && chargerPlanningAvailable &&
+        priceFresh && source.batteryChargeStateKnown && !knownSourceFault;
+    const bool heldInputsReady = inputs.metersValid && (source.chargerValid || source.chargerStandby);
+    const bool recoveryCapture = capturePlans && (chargePlan.retained() || dischargeBudget.retained());
+    futurePrices.setProjectionTiming(lifecycle, planContextEpoch, generationQualified, heldInputsReady,
+        recoveryCapture, source.chargerValid);
     futurePlan = futurePrices.plan(utc, nowMs, preparedSettings,
         source.bmsValid, source.soc, source.batteryW, source.fullCapacityAh,
         source.bmsSequence, priceFresh, measuredPrice,
         plannerExpensiveNow,
-        forecastPriceFactor, configuredMax, &pvForecast,
+        forecastPriceFactor, configuredMax, captureContext.pvValid ? &pvForecast : nullptr,
         planningMaxChargeW, budgetTrace,
-        source.chargerValid ? source.chargerW : 0.0f, plannerCheapNow);
-    if (!budgetTrace && dischargeBudget.invalidationDue(futurePlan.valid))
+        source.chargerValid ? source.chargerW : 0.0f, plannerCheapNow, lifecycle.priceScheduleFreshnessS);
+    const bool freshProjection = previousBuilds != futurePrices.planningBuilds();
+    if (preparedSettings.relativeTimePolicy && freshProjection && !capturePlans) {
+        futurePrices.copyEconomicBudget(dischargeBudget.candidate);
+        capturePlans = true;
+    }
+    if (!capturePlans && dischargeBudget.invalidationDue(futurePlan.valid))
     {
         dischargeBudget.candidate.reset(utc, futurePrices.revision(), pvForecast.revision());
         dischargeBudget.candidate.finish(false, futurePlan.reason);
@@ -2709,6 +2777,7 @@ static void processRS485Tick()
     modeInputs.automaticSourceGrace = currentDecision.sourceGrace;
     modeInputs.automaticPvOnly = currentDecision.pvOnly;
     modeInputs.automaticPvQualified = !currentDecision.direct;
+    modeInputs.automaticPvLimitW = currentDecision.ceilingW;
     const auto nextModeDecision = modePolicy.update(operatingModes.confirmed(), modeInputs);
     if (strcmp(modeDecision.effective, nextModeDecision.effective) || strcmp(modeDecision.reason, nextModeDecision.reason))
         modePublishDirty = true;
@@ -2722,10 +2791,12 @@ static void processRS485Tick()
         // Retain qualified PV recovery state only while the automatic fallback owns output.
         if (!modeDecision.automaticPvFallback) currentControl.resetTransient();
     }
-    // Origin-price freshness has final priority; explicit production modes retain their existing independence.
-    if(control::priceInputRequiredForMode(operatingModes.confirmed().mode==control::OperatingMode::Automatic) && !futurePrices.priceFresh(utc)) {
+    // An expired V2 feed permits only a separately qualified retained automatic slot.
+    const bool automatic = operatingModes.confirmed().mode == control::OperatingMode::Automatic;
+    if (control::priceInputRequiredForMode(automatic) && !futurePrices.priceFresh(utc, lifecycle.priceScheduleFreshnessS)
+        && !(automatic && futurePlan.retained)) {
         currentControl.resetTransient();currentDecision=control::CurrentDecision{};
-        currentDecision.direct=true;currentDecision.reason=futurePrices.testPriceStatus(utc);
+        currentDecision.direct=true;currentDecision.reason=futurePrices.testPriceStatus(utc, lifecycle.priceScheduleFreshnessS);
         modeDecision=control::ModeDecision{};modeDecision.reason=currentDecision.reason;
         modePublishDirty=true;
     }
@@ -2741,10 +2812,17 @@ static void processRS485Tick()
     projection.maxChargeW = planningMaxChargeW;
     projection.currentChargerW = source.chargerW;
     projection.priceFactor = forecastPriceFactor;
-    dischargeBudget.qualification(futurePlan.valid && inputs.bmsValid && chargerPlanningAvailable &&
-        inputs.priceValid && source.batteryChargeStateKnown && !knownSourceFault);
-    chargePlan.qualification(futurePlan.valid && projection.sourcesQualified && !knownSourceFault);
-    if (capturePlans)
+    dischargeBudget.qualification(futurePlan.valid && !futurePlan.retained && generationQualified);
+    chargePlan.qualification(futurePlan.valid && !futurePlan.retained && projection.sourcesQualified && !knownSourceFault);
+    const bool currentGeneration = preparedSettings.relativeTimePolicy && !freshProjection &&
+        futurePlan.valid && !futurePlan.retained && dischargeBudget.planAvailable() && chargePlan.planAvailable() &&
+        !dischargeBudget.retained() && !chargePlan.retained();
+    if (capturePlans && currentGeneration) {
+        // Replay the published cohort without rewriting it from live slot-zero values.
+        dischargeBudget.captured(nowMs);
+        chargePlan.captured(nowMs);
+    }
+    else if (capturePlans)
     {
         control::CurrentDecision economicDecision;
         economicDecision.chargeTargetValid = futurePlan.valid && std::isfinite(futurePlan.chargeTargetW) && futurePlan.chargeTargetW >= 0;
@@ -2757,8 +2835,9 @@ static void processRS485Tick()
             chargePlan.candidate.finish(false, "source_fault");
         }
         // Both candidates were produced in this pass; select checks their qualification.
-        dischargeBudget.select(dischargeBudget.candidate, nowMs, planContextEpoch, true);
-        chargePlan.select(chargePlan.candidate, nowMs, planContextEpoch, true);
+        const bool freshGeneration = !preparedSettings.relativeTimePolicy || freshProjection;
+        dischargeBudget.select(dischargeBudget.candidate, nowMs, planContextEpoch, freshGeneration);
+        chargePlan.select(chargePlan.candidate, nowMs, planContextEpoch, freshGeneration);
     }
     else if (chargePlan.invalidationDue(futurePlan.valid && projection.sourcesQualified))
     {
@@ -2816,6 +2895,7 @@ static void processRS485Tick()
         inverterCalculatedValue = min(negativePriceOverrideTarget, currentDecision.ceilingW);
         currentDecision.ceilingW = inverterCalculatedValue;
         currentDecision.strategy = "negative_price";
+        currentDecision.economicPlanApplied = false;
         currentDecision.reason = "negative_price_override";
         currentDecision.chargeTargetValid = false;
     }
@@ -2834,6 +2914,7 @@ static void processRS485Tick()
         if (pidController.initialized && !control::checkedFloatToInt(roundf(pidController.output), pidInput)) resetPidController();
         inverterCalculatedValue = computePidStabilizedTarget(pidBaseTarget, effectiveMin, effectiveCeiling);
         if (!pidController.initialized) {
+            currentDecision.economicPlanApplied = false;
             currentDecision.direct = true;
             currentDecision.minimumOverrideAllowed = false;
             currentDecision.chargeTargetValid = false;

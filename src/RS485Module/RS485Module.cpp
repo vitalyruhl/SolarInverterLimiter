@@ -1,5 +1,6 @@
 #include "RS485Module/RS485Module.h"
 #include "ConfigManager.h"
+#include <driver/uart.h>
 
 byte byte0 = 36;
 byte byte1 = 86;
@@ -13,6 +14,7 @@ byte byte7 = 8;
 byte serialpacket[8];
 HardwareSerial *RS485serial = &Serial;
 RS485Packet packet;
+static bool rs485Started = false;
 
 void RS485begin()
 {
@@ -23,6 +25,7 @@ void RS485begin()
 
     if (!rs485settings.enableRS485.get())
     {
+        rs485Started = false;
         CM_LOG("[RS485] RS485 communication disabled");
         return;
     }
@@ -48,6 +51,7 @@ void RS485begin()
         RS485serial = &Serial; // Optional fallback
         RS485serial->begin(rs485settings.baudRate.get(), SERIAL_8N1);
     }
+    rs485Started = static_cast<bool>(*RS485serial);
 }
 
 void sendToRS485Packet(uint16_t demand)
@@ -95,6 +99,8 @@ bool sendToRS485(uint16_t demand)
         return false;
     }
 
+    if (!rs485Started) return false;
+
     // -- Compute serial packet to inverter (just the 3 bytes that change) --
     byte4 = int(demand / 256); // (2 byte watts as short integer xaxb)
     if (byte4 < 0 or byte4 > 256)
@@ -118,7 +124,9 @@ bool sendToRS485(uint16_t demand)
 
     digitalWrite(rs485settings.dePin.get(), HIGH); // Activate send mode
     delayMicroseconds(100);
-    const size_t bytesWritten = RS485serial->write(serialpacket, 8);
+    // HardwareSerial::write() in Arduino-ESP32 2.x always returns the requested size.
+    constexpr uart_port_t port = RS485_Settings::useExtraSerial ? UART_NUM_2 : UART_NUM_0;
+    const int bytesWritten = uart_write_bytes(port, serialpacket, sizeof(serialpacket));
     RS485serial->flush(); // wait for send to finish
     delayMicroseconds(100);
     digitalWrite(rs485settings.dePin.get(), LOW); // Activate receive mode
@@ -138,7 +146,7 @@ bool sendToRS485(uint16_t demand)
     //            serialpacket[6],
     //            serialpacket[7])
     //     .Info();
-    return bytesWritten == sizeof(serialpacket);
+    return bytesWritten == static_cast<int>(sizeof(serialpacket));
 }
 
 String reciveFromRS485()

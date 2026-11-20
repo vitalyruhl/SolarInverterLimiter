@@ -36,6 +36,7 @@ inline bool sameModeSettings(const ModeSettings &a,const ModeSettings &b) {
 struct ModeInputs {
     bool automaticSourceGrace=false; // Supplied only by the bounded CurrentControl decision.
     bool automaticPvOnly=false, automaticPvQualified=false; // Supplied only by CurrentControl.
+    int automaticPvLimitW=0;
     bool metersValid=false,bmsValid=false,dischargeAllowed=false,chargeKnown=false,chargeAllowed=false;
     // genuineFault is a directional discharge restriction, not a charge-only alarm.
     bool settingsValid=true,inverterEnabled=true,transportEnabled=true,physicalDischargeOff=false,genuineFault=false,chargerFault=false,chargerValid=false;
@@ -85,10 +86,11 @@ public:
             // discharge permission does not grant or consume stored energy.
             if (!in.chargerValid || !std::isfinite(in.chargerW) || in.chargerW < 0)
                 return stop("pv_unverified");
-            out.watts=int(std::min(double(demand),double(in.chargerW)*0.9));
+            out.watts=automaticPv ? std::min(demand, std::max(0, in.automaticPvLimitW)) :
+                int(std::min(double(demand),double(in.chargerW)*0.9));
             out.automaticPvFallback=automaticPv;
-            out.effective="pv_follow";
-            out.reason=bms ? "pv_follow" : "pv_bms_unverified";
+            out.effective=automaticPv ? "pv_limited_fallback" : "pv_follow";
+            out.reason=automaticPv ? out.effective : (bms ? "pv_follow" : "pv_bms_unverified");
             return out;
         }
         if (bms) {

@@ -18,13 +18,26 @@ inline int modeTestUiMutex=0;
 inline SemaphoreHandle_t xSemaphoreCreateMutex() {return &modeTestUiMutex;}
 inline void xSemaphoreTake(SemaphoreHandle_t m,int) {assert(*m==0);++*m;}
 inline void xSemaphoreGive(SemaphoreHandle_t m) {assert(*m==1);--*m;}
+struct ConfigRequestContext {
+    enum class Origin {None,ApplySingle,SaveSingle,ApplyAll,SaveAll};
+    Origin origin=Origin::None;
+    std::string payload;
+};
 class Preferences {
 public:
+    inline static std::map<std::string,int> integers;
+    bool isKey(const char *key) const {return integers.count(key) != 0;}
+    int getInt(const char *key, int fallback) const {return !failRead && isKey(key) ? integers.at(key) : fallback;}
+    size_t putInt(const char *key,int value) {
+        if(failWrite) return 0;
+        integers[key]=value;
+        return sizeof(int32_t);
+    }
     inline static std::vector<uint8_t> stored;
     inline static std::vector<uint8_t> staged;
     inline static unsigned writes=0;
     inline static bool failOpen=false,failWrite=false,failRead=false,failPromote=false,corruptRead=false,shortWrite=false,webTask=false;
-    bool begin(const char *ns,bool) {assert(!std::strcmp(ns,"SILModes"));return !failOpen;}
+    bool begin(const char *ns,bool) {assert(!std::strcmp(ns,"SILModes") || !std::strcmp(ns,"ConfigManager"));return !failOpen;}
     void end() {}
     size_t getBytesLength(const char *key) {return !std::strcmp(key,"profile")?stored.size():staged.size();}
     size_t getBytes(const char *key,void *data,size_t n) {
@@ -56,9 +69,31 @@ public:
 };
 template<class T> class Config : public BaseSetting {
     T value_;
+    const ConfigOptions<T> options_;
 public:
-    explicit Config(const ConfigOptions<T> &options):value_(options.defaultValue) {}
-    void set(const T &value) {value_=value;modified=true;}
+    explicit Config(const ConfigOptions<T> &options):value_(options.defaultValue),options_(options) {}
+    bool hasError() const {return false;}
+    bool needsSave() const {return modified;}
+    const char *getKey() const {return options_.key;}
+    const ConfigOptions<T> &options() const {return options_;}
+    const T &get() const {return value_;}
+    void set(const T &value) {if(value!=value_) {value_=value;modified=true;}}
+    void setDefault() override {value_=options_.defaultValue;modified=true;}
+    void load(Preferences &prefs) override {
+        if constexpr(std::is_same_v<T,int>) {
+            value_=prefs.getInt(getKey(),options_.defaultValue);
+            modified=!prefs.isKey(getKey());
+            if(modified) save(prefs);
+        }
+    }
+    void save(Preferences &) override {
+        if constexpr(std::is_same_v<T,int>) {
+            if(modified && !Preferences::failWrite) {
+                Preferences::integers[getKey()]=value_;
+                modified=false;
+            }
+        }
+    }
     void toJSON(JsonObject &object) const override {
         assert(modeTestUiMutex==1);
         if constexpr(std::is_same_v<T,String>) object["value"]=value_.c_str();
@@ -67,6 +102,8 @@ public:
 };
 class ConfigManagerClass {
 public:
+    ConfigRequestContext context;
+    const ConfigRequestContext &getCurrentRequestContext() const {return context;}
     std::vector<BaseSetting *> settings;
     void addSetting(BaseSetting *setting) {settings.push_back(setting);}
     bool edit(size_t index,const char *json) {

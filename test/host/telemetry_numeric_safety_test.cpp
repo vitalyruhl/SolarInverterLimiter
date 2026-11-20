@@ -26,6 +26,7 @@ struct Receiver {
         age.attach(cfg);
     }
     bool send(const char *text, float &value, unsigned now = 100) {
+        age.refreshMappings();
         age.receive("meter", reinterpret_cast<const uint8_t *>(text), unsigned(std::strlen(text)), now);
         return age.read(control::TelemetryAge::Grid, now, 500, value);
     }

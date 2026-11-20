@@ -18,7 +18,7 @@ $issue = Get-UniqueProductionMatch '(?s)static void issueInverterCommand\(int wa
 $tick = Get-UniqueProductionMatch '(?ms)^static void processRS485Tick\(\)\r?\n\{.*?^\}\r?\n(?=\r?\n#if CM_ENABLE_LOGGING && CM_ENABLE_VERBOSE_LOGGING\r?\nstatic void verboseLogging\(\))' 'control tick'
 $numberText = Get-UniqueProductionMatch '(?ms)^struct JsonNumberText\r?\n\{.*?^\};' 'JSON number formatter'
 $planningState = Get-UniqueProductionMatch '(?ms)^static String buildPlanningStatePayload\(\)\r?\n\{.*?^\}\r?\n(?=\r?\nstatic void publishMqttNow\(\))' 'planning state payload'
-foreach ($required in @('futurePrices.plan(', 'pvForecast.valid(', 'chargePlan.candidate.project(',
+foreach ($required in @('futurePrices.plan(', 'pvForecast.current(', 'chargePlan.candidate.project(',
                         'dischargeBudget.observe(', 'chargePlan.observe(', 'chargePlan.select(')) {
     if (!$tick.Contains($required)) { throw "Production tick extraction missing: $required" }
 }

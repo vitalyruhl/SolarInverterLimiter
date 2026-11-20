@@ -9,6 +9,8 @@
 using namespace control;
 static constexpr uint32_t start=1792454400;
 static FuturePrices futurePrices;
+static FuturePlan futurePlan;
+static struct { uint32_t priceScheduleFreshnessS = 180; } lifecycle;
 static CurrentControl currentControl;
 static CurrentDecision currentDecision;
 static CurrentInputs inputs;
@@ -32,6 +34,8 @@ int main(){
  PreparedSettings cfg;cfg.valid=true;cfg.relativeTimePolicy=true;
  inputs.bmsValid=inputs.chargerValid=inputs.metersValid=inputs.priceValid=true;
  inputs.batteryChargeAvailable=inputs.batteryDischargeIntentAvailable=true;
+ cfg.outage = {100, 48, 100, 2, 5, .9f, 1000, 5, .9f};
+ inputs.bmsSampleAgeMs=0;inputs.fallbackProtectionKnown=true;
  inputs.soc=50;inputs.householdW=900;inputs.price=.4f;
  inputs.futureValid=true;inputs.futureBatteryCeilingW=400;inputs.futurePriceTier="very_expensive";
  modeInputs.metersValid=modeInputs.chargerValid=modeInputs.bmsValid=modeInputs.dischargeAllowed=true;
@@ -40,7 +44,7 @@ int main(){
  assert(currentDecision.ceilingW==400&&!currentDecision.direct);
  const uint32_t lastBms=6100;
  inputs.bmsValid=inputs.batteryChargeAvailable=inputs.batteryDischargeIntentAvailable=false;
- inputs.futureValid=false;inputs.chargerW=300;modeInputs.bmsValid=false;modeInputs.chargerW=300;
+ inputs.futureValid=true;inputs.chargerW=300;modeInputs.bmsValid=false;modeInputs.chargerW=300;
  FuturePlan unavailable;assert(!unavailable.valid&&!unavailable.relativePricePositive);
  for(uint32_t now:{10000u,120000u,lastBms+179999}){
   inputs.bmsWithinGrace=inputs.sourcesWithinGrace=true;++inputs.chargerSequence;step(cfg,now);
@@ -49,11 +53,35 @@ int main(){
  inputs.bmsWithinGrace=inputs.sourcesWithinGrace=false;step(cfg,lastBms+180000);
  assert(currentDecision.ceilingW==0&&!currentDecision.sourceGrace); // fresh prices never renew the BMS deadline
  for(unsigned i=0;i<3;++i){++inputs.chargerSequence;step(cfg,lastBms+180010+i*3000);}
- assert(modeDecision.automaticPvFallback&&!std::strcmp(modeDecision.effective,"pv_follow")&&modeDecision.watts==270);
+ assert(modeDecision.automaticPvFallback&&!std::strcmp(modeDecision.effective,"pv_limited_fallback")&&modeDecision.watts==270);
  bindActualRelativePrice(start+193,true,-.01f);assert(!inputs.relativePricePositive);
  inputs.price=-.01f;currentDecision=currentControl.update(cfg,inputs,true,true,900,270,200000);assert(currentDecision.ceilingW==0);
  inputs.price=.4f;futurePrices.clear();bindActualRelativePrice(start+200,true,.4f);assert(!inputs.relativePricePositive);
  currentDecision=currentControl.update(cfg,inputs,true,true,900,270,200010);applyActualRelativeMode();applyActualRelativeFeedHold(start+200);
- assert(currentDecision.direct&&currentDecision.ceilingW==0&&modeDecision.watts==0);
+ assert(currentDecision.direct&&currentDecision.ceilingW==0&&modeDecision.watts==0&&modePublishDirty);
+ // [MOCKED!] Only a genuinely qualified retained automatic plan bypasses the V2 feed hold.
+ futurePrices = FuturePrices{};
+ freshPrices(start);
+ PlanLifecycleSettings timing;
+ futurePrices.setProjectionTiming(timing, 1, true, true, false);
+ auto evaluate = [&](unsigned seconds) {
+  return futurePrices.plan(start+seconds, seconds*1000, cfg, true, 60, 0, 100, 1,
+      true, .4f, false, 1, 900, nullptr, 1200, nullptr, 0);
+ };
+ assert(evaluate(0).valid);
+ futurePlan = evaluate(180);
+ assert(futurePlan.valid && futurePlan.retained);
+ currentDecision.direct = false;
+ applyActualRelativeFeedHold(start+180);
+ assert(!currentDecision.direct);
+ operatingModes.settings.mode = OperatingMode::ChargePriority;
+ applyActualRelativeFeedHold(start+180);
+ assert(currentDecision.direct == kPlannerShadowProfile);
+ operatingModes.settings.mode = OperatingMode::Automatic;
+ futurePlan = evaluate(timing.planMaxAgeS);
+ assert(!futurePlan.valid);
+ currentDecision.direct = false;
+ applyActualRelativeFeedHold(start+timing.planMaxAgeS);
+ assert(currentDecision.direct && currentDecision.ceilingW==0);
  std::cout<<"[MOCKED!] Actual main positive-price binding preserves original BMS grace, qualified PV fallback, live negative and missing-feed zero passed\n";
 }

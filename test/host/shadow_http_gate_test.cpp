@@ -2,6 +2,7 @@
 #include "control/ApplicationProfile.h"
 #include "control/FuturePrices.h"
 #include "control/CurrentControl.h"
+#include "control/PlanLifecycleSettings.h"
 #include "control/OperatingModes.h"
 #include <string>
 #include <cassert>
@@ -22,6 +23,8 @@ static bool shadowWebWriteAllowed(const String&,const String& key,const String& 
 static control::CurrentControl currentControl;
 static control::CurrentDecision currentDecision;
 static control::FuturePrices futurePrices;
+static control::FuturePlan futurePlan;
+static control::PlanLifecycleSettings lifecycle;
 static control::ModeDecision modeDecision;
 static bool modePublishDirty=false;
 static struct {control::ModeSettings settings;const control::ModeSettings& confirmed(){return settings;}} operatingModes;

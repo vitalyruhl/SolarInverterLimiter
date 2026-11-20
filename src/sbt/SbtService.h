@@ -109,6 +109,7 @@ class Service {
         bool batteryDischargeIntentAvailable = false;
         float soc = 0, batteryW = 0, chargerW = 0, chargerVoltageV = 0, batteryVoltageV = 0, fullCapacityAh = NAN;
         uint32_t bmsSequence = 0, chargerSequence = 0;
+        uint32_t bmsSampleAgeMs = UINT32_MAX;
     };
     struct DiagnosticSnapshot {
         bool online = false, fresh[2] = {}, chargeStateValid = false, protectionValid = false;
@@ -163,6 +164,11 @@ class Service {
             if (std::isfinite(voltage) && voltage > 0) s.batteryVoltageV = voltage;
         }
         if (s.bmsValid) {
+            const auto health = receiver_.sourceHealth(0);
+            if (health.timestamped) {
+                const uint64_t age = uint64_t(health.age) + uint32_t(now - health.received);
+                if (age < UINT32_MAX) s.bmsSampleAgeMs = uint32_t(age);
+            }
             s.soc = receiver_.numeric("bms/state_of_charge_pct");
             s.batteryW = receiver_.numeric("bms/power_w");
             s.bmsValid = s.soc >= 0 && s.soc <= 100 && std::isfinite(s.batteryW);

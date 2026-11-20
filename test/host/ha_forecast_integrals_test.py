@@ -79,6 +79,18 @@ class IntegralTests(unittest.TestCase):
         self.assertIsNone(result['test'])
         self.assertAlmostEqual(result['pv']['kwh'],2*result['production']['kwh'],places=6)
 
+    def test_live_generation_binding_after_reconnect(self):
+        plan={'v':1,'valid':True,'g':1000,'r':123,'pv':900,'t':900,'d':900,'n':2,'w':[1000,0]}
+        status={'chargeG':1000,'dischargeG':1000,'diagnosticPlansAvailable':True,
+                'received_at':1300,'diagnosticPlansRetained':True}
+        held=core.charge_snapshot(plan,1300,900,plan,status)
+        self.assertEqual((held['generatedAt'],held['retained']),(1000,True))
+        for bad in (dict(status,received_at=1119),dict(status,chargeG=0),dict(status,dischargeG=999),
+                    dict(status,diagnosticPlansAvailable=False)):
+            self.assertIsNone(core.charge_snapshot(plan,1300,900,plan,bad))
+        self.assertIsNone(core.charge_snapshot(plan,1300,900,dict(plan,r=321),status))
+        self.assertIsNone(core.charge_snapshot(plan,2700,900,plan,dict(status,received_at=2700)))
+
     def test_whole_day_is_only_claimed_with_complete_coverage(self):
         zone=ZoneInfo('Europe/Berlin')
         start=int(datetime(2026,11,7,tzinfo=zone).timestamp())
@@ -117,7 +129,7 @@ class EnergyLifecycleTests(unittest.TestCase):
             'task':SimpleNamespace(unique=lambda *args,**kwargs:None),
             'hass':SimpleNamespace(states=SimpleNamespace(get=store.get)),
             'state':SimpleNamespace(set=lambda entity_id,**kwargs:result.append(kwargs)),
-            '_shadow_energy_snapshot':lambda prod,test,pc,tc,t:core.future_energy([packet],prod,test,t,pc,tc)}
+            '_shadow_energy_snapshot':lambda prod,test,pc,tc,t,ps,ts:core.future_energy([packet],prod,test,t,pc,tc,ps,ts)}
         exec(compile(ast.fix_missing_locations(ast.Module(body=[tick],type_ignores=[])),'energy_tick','exec'),ns)
         ns['sil_shadow_energy_tick']()
         return result[0]['new_attributes']
@@ -164,7 +176,7 @@ class ProductionLifecycleTests(unittest.TestCase):
     def namespace(self,blocked=False,overlap=False):
         root=Path(__file__).resolve().parents[2]
         tree=ast.parse((root/'docs/home-assistant/sil-planner-shadow-pyscript.py').read_text(encoding='utf-8'))
-        functions=[node for node in tree.body if isinstance(node,ast.FunctionDef) and node.name in ('_production_withdraw','_held_attributes','sil_production_publish_prices','_shadow_withdraw','sil_shadow_publish_prices')]
+        functions=[node for node in tree.body if isinstance(node,ast.FunctionDef) and node.name in ('_production_withdraw','_held_attributes','sil_production_publish_prices','_shadow_display_status','_shadow_withdraw','sil_shadow_publish_prices')]
         for node in functions:node.decorator_list=[]
         now=1793997000;calls=[]
         entity=lambda value,attributes:SimpleNamespace(state=value,attributes=attributes)
@@ -278,6 +290,18 @@ class LastGoodHoldTests(unittest.TestCase):
         self.assertEqual(json.loads(calls[0]['payload'])['n'],2)
 
 class ShadowInputBindingTests(unittest.TestCase):
+    def test_display_status_handles_out_of_order_frames_and_restart(self):
+        ns,_,_=ProductionLifecycleTests().namespace()
+        display=ns['_shadow_display_status']
+        frame={'valid':True,'g':1000}
+        state=SimpleNamespace(state='ready',attributes={'dischargeG':1000,'received_at':1300,'diagnosticPlansRetained':True})
+        self.assertEqual(display(frame,'dischargeG',state,1300),'held')
+        self.assertEqual(display(frame,'dischargeG',state,1481),'stale')
+        self.assertEqual(display(dict(frame,g=1001),'dischargeG',state,1300),'unavailable')
+        state.attributes['dischargeG']=0
+        self.assertEqual(display(frame,'dischargeG',state,1300),'unavailable')
+        self.assertIsNone(display(frame,'dischargeG',None,1300))
+
     def matches(self,revision,attributes,now=1793997060,state='ready'):
         root=Path(__file__).resolve().parents[2]
         tree=ast.parse((root/'docs/home-assistant/sil-planner-shadow-pyscript.py').read_text(encoding='utf-8'))

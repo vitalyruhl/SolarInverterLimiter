@@ -52,6 +52,8 @@ int main(){
   assert(!p.valid(t)); // Shuffled chunks activate only together.
   assert(!std::strcmp(send(p,packet()),"accepted"));
   assert(p.valid(t) && p.revision()==t);
+  assert(p.current(t+299,300) && !p.current(t+300,300));
+  assert(p.current(t+300,0) && !p.current(t+48*900,86400*7));
   float energy=0;
   assert(p.energyWh(t,t+3600,energy) && energy==1000);
   assert(p.energyWh(t+450,t+900,energy) && energy==125);

@@ -7,6 +7,7 @@
 #include <cmath>
 #include <cstdlib>
 #include <cstring>
+#include <mutex>
 #include <strings.h>
 
 namespace control {
@@ -25,11 +26,46 @@ public:
             snprintf(key, sizeof(key), "MQTTRK_%08X", unsigned(h));
             path_[i] = static_cast<Config<String> *>(cfg.findSettingByKeyHint("MQTT-Topics", key));
         }
+        refreshMappings();
+    }
+    // Called by the settings writer after loading or applying CM mappings.
+    // The telemetry task only accesses our copy of the topic and JSON key.
+    void refreshMappings() {
+        std::lock_guard<std::mutex> lock(mappingMutex_);
+        for (unsigned i = 0; i < Count; ++i) {
+            if (!topic_[i] || !path_[i]) continue;
+            auto &binding = bindings_[i];
+            const auto &topic = topic_[i]->get();
+            const auto &key = path_[i]->get();
+            const char *begin = key.c_str(), *end = begin + key.length();
+            trim(begin, end);
+            const size_t length = size_t(end - begin);
+            const bool usable = topic.length() && length < sizeof(binding.path);
+            if (binding.usable == usable && binding.topic == topic &&
+                (!usable || (std::strlen(binding.path) == length && !std::memcmp(binding.path, begin, length)))) continue;
+            binding.topic = topic;
+            binding.usable = usable && binding.topic == topic;
+            if (binding.usable) {
+                std::memcpy(binding.path, begin, length);
+                binding.path[length] = 0;
+            }
+            portENTER_CRITICAL(&mux_);
+            invalidate(i);
+            portEXIT_CRITICAL(&mux_);
+        }
     }
     void reset() {
         portENTER_CRITICAL(&mux_);
-        for (auto &s : stamps_) s = Stamp{};
+        for (unsigned i = 0; i < Count; ++i) invalidate(i);
         portEXIT_CRITICAL(&mux_);
+    }
+    void detach() {
+        std::lock_guard<std::mutex> lock(mappingMutex_);
+        for (unsigned i = 0; i < Count; ++i) {
+            topic_[i] = path_[i] = nullptr;
+            bindings_[i].usable = false;
+        }
+        reset();
     }
     // now is monotonic uptime in milliseconds, not the 32-bit millis() value.
     bool read(Input i, uint64_t now, uint32_t timeout, float &value) const {
@@ -43,16 +79,23 @@ public:
     void receive(const char *topic, const uint8_t *payload, unsigned length, uint64_t now) {
         if (!topic || !payload) return;
         for (unsigned i = 0; i < Count; ++i) {
-            if (!topic_[i] || !path_[i] || topic_[i]->get() != topic) continue;
-            portENTER_CRITICAL(&mux_);
-            stamps_[i].valid = false;
-            portEXIT_CRITICAL(&mux_);
+            char path[sizeof(Binding::path)];
+            uint32_t generation;
+            {
+                std::lock_guard<std::mutex> lock(mappingMutex_);
+                const auto &binding = bindings_[i];
+                if (!binding.usable || binding.topic != topic) continue;
+                std::memcpy(path, binding.path, sizeof(path));
+                portENTER_CRITICAL(&mux_);
+                stamps_[i].valid = false;
+                generation = generations_[i];
+                portEXIT_CRITICAL(&mux_);
+            }
             if (!length || length > 1024 || std::memchr(payload, 0, length)) continue;
             float parsed = 0;
-            if (!parse(i, reinterpret_cast<const char *>(payload), length, parsed)) continue;
+            if (!parse(i, path, reinterpret_cast<const char *>(payload), length, parsed)) continue;
             portENTER_CRITICAL(&mux_);
-            stamps_[i].value = parsed;
-            stamps_[i].at = now; stamps_[i].valid = true;
+            if (generation == generations_[i]) stamps_[i] = {now, parsed, true};
             portEXIT_CRITICAL(&mux_);
         }
     }
@@ -98,16 +141,13 @@ private:
         if (errno == ERANGE) return false;
         return checkedIntegerToFloat(double(prefix), out);
     }
-    bool parse(unsigned i, const char *data, unsigned length, float &out) {
+    bool parse(unsigned i, char *path, const char *data, unsigned length, float &out) {
         const char *begin = data, *end = data + length;
         trim(begin, end);
-        const String &keySetting = path_[i]->get();
-        const char *keyBegin = keySetting.c_str(), *keyEnd = keyBegin + keySetting.length();
-        trim(keyBegin, keyEnd);
-        const size_t keyLength = size_t(keyEnd - keyBegin);
+        const size_t keyLength = std::strlen(path);
         const bool json = begin < end && (*begin == '{' || *begin == '[');
         if (!json) {
-            if (keyLength && !(keyLength == 4 && strncasecmp(keyBegin, "none", 4) == 0)) return false;
+            if (keyLength && !(keyLength == 4 && strncasecmp(path, "none", 4) == 0)) return false;
             char text[48];
             const size_t n = size_t(end - begin);
             if (n >= sizeof(text)) return false;
@@ -117,9 +157,6 @@ private:
         }
         // An empty path selects the whole object/array, which is never numeric.
         if (!keyLength) return false;
-        char path[64];
-        if (keyLength >= sizeof(path)) return false;
-        std::memcpy(path, keyBegin, keyLength);
         size_t pathLength = keyLength;
         // CM ignores one trailing separator.
         if (path[pathLength - 1] == '.') --pathLength;
@@ -159,6 +196,14 @@ private:
     struct Stamp { uint64_t at = 0; float value = 0; bool valid = false; };
     mutable portMUX_TYPE mux_ = portMUX_INITIALIZER_UNLOCKED;
     Stamp stamps_[Count];
+    void invalidate(unsigned i) {
+        stamps_[i] = Stamp{};
+        ++generations_[i];
+    }
+    uint32_t generations_[Count] = {};
+    struct Binding { String topic; char path[64] = {}; bool usable = false; };
+    Binding bindings_[Count];
+    std::mutex mappingMutex_;
     Config<String> *topic_[Count] = {}, *path_[Count] = {};
     JsonArena arena_;
 };

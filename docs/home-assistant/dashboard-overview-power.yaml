@@ -14,8 +14,12 @@ cards:
       {% set e = 'sensor.solarlimiter_discharge_budget' %}
       {% set w = state_attr(e, 'w') or [] %}
       {% set stamp = state_attr(e, 'g') | int(0) %}
-      {% if states(e) == 'ready' and stamp > 0 and as_timestamp(now()) - stamp < 180 %}
-      **Plan aktuell** · Stand {{ stamp | timestamp_custom('%d.%m. %H:%M:%S') }}
+      {% set status = 'sensor.sil_comparison_production_state' %}
+      {% set token = state_attr(status, 'dischargeG') %}
+      {% set age = as_timestamp(now()) - stamp %}
+      {% set live = states(status) == 'ready' and 0 <= as_timestamp(now()) - (state_attr(status, 'received_at') | int(0)) <= 180 %}
+      {% if states(e) == 'ready' and stamp > 0 and age >= -120 and ((token is none and age <= 180) or (live and token == stamp)) %}
+      {% if token is not none and state_attr(status, 'diagnosticPlansRetained') %}**Gehaltene Planung**{% else %}**Plan aktuell**{% endif %} · Erstellt {{ stamp | timestamp_custom('%d.%m. %H:%M:%S') }}
       {% if (w | max if w else 0) == 0 %}      **keine Batterieentladung eingeplant**.{% else %}SIL Batterieenergie einlagert – bis zu **{{ w | max }} W**.
       {% endif %}
       {% else %}
@@ -55,7 +59,12 @@ cards:
             a.t % 900 !== 0 || a.g < a.t || a.g >= a.t + a.d ||
             a.w.some(w => !Number.isInteger(w) || w < 0)) return [];
         const generatedMs = a.g * 1000, coverageEnd = (a.t + a.n * a.d) * 1000;
-        if (nowMs - generatedMs > 180000 || generatedMs - nowMs > 120000 || nowMs >= coverageEnd) return [];
+        const status = hass.states['sensor.sil_comparison_production_state'];
+        const meta = status?.attributes;
+        const bound = Number.isInteger(meta?.dischargeG);
+        const live = status?.state === 'ready' && meta?.dischargeG === a.g &&
+          nowMs >= meta.received_at * 1000 && nowMs - meta.received_at * 1000 <= 180000;
+        if ((bound ? !live : nowMs - generatedMs > 180000) || generatedMs - nowMs > 120000 || nowMs >= coverageEnd) return [];
         const points = [];
         for (let i = 0; i < a.n; ++i) {
           const intervalStart = (a.t + i * a.d) * 1000;
@@ -117,7 +126,12 @@ cards:
               a.t % 900 !== 0 || a.g < a.t || a.g >= a.t + a.d ||
               a.s.some(v => v !== null && (!Number.isInteger(v) || v < 0 || v > 12000))) return [];
           const generatedMs = a.g * 1000, coverageEnd = (a.t + a.n * a.d) * 1000;
-          if (nowMs - generatedMs > 180000 || generatedMs - nowMs > 120000 || nowMs >= coverageEnd) return [];
+          const status = hass.states['sensor.sil_comparison_production_state'];
+          const meta = status?.attributes;
+          const bound = Number.isInteger(meta?.chargeG);
+          const live = status?.state === 'ready' && meta?.chargeG === a.g &&
+            nowMs >= meta.received_at * 1000 && nowMs - meta.received_at * 1000 <= 180000;
+          if ((bound ? !live : nowMs - generatedMs > 180000) || generatedMs - nowMs > 120000 || nowMs >= coverageEnd) return [];
           const points = [];
           for (let i = 0; i < a.n; ++i) {
             const intervalStart = (a.t + i * a.d) * 1000;
@@ -151,7 +165,12 @@ cards:
             a.t % 900 !== 0 || a.g < a.t || a.g >= a.t + a.d ||
             a.w.some(w => w !== null && (!Number.isInteger(w) || w < 0 || w > 12000))) return [];
         const generatedMs = a.g * 1000, coverageEnd = (a.t + a.n * a.d) * 1000;
-        if (nowMs - generatedMs > 180000 || generatedMs - nowMs > 120000 || nowMs >= coverageEnd) return [];
+        const status = hass.states['sensor.sil_comparison_production_state'];
+        const meta = status?.attributes;
+        const bound = Number.isInteger(meta?.chargeG);
+        const live = status?.state === 'ready' && meta?.chargeG === a.g &&
+          nowMs >= meta.received_at * 1000 && nowMs - meta.received_at * 1000 <= 180000;
+        if ((bound ? !live : nowMs - generatedMs > 180000) || generatedMs - nowMs > 120000 || nowMs >= coverageEnd) return [];
         const points = [];
         for (let i = 0; i < a.n; ++i) {
           const intervalStart = (a.t + i * a.d) * 1000;

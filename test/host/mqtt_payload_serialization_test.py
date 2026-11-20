@@ -48,7 +48,7 @@ class PayloadSerialization(unittest.TestCase):
 struct Decision {
  const char *strategy="automatic", *reason="forecast_hold";
  int ceilingW=900;
- bool chargeTargetValid=false, reserveKnown=false, reserveAllowed=false;
+ bool chargeTargetValid=false, reserveKnown=false, reserveAllowed=false, economicPlanApplied=false;
  float chargeTargetW=0;
 } currentDecision;
 struct Plan {
@@ -56,7 +56,16 @@ struct Plan {
  float reservedWh=500, availableWh=900, shortfallWh=0, chargeTargetW=0;
  int batteryCeilingW=900; uint32_t targetAt=1700000000;
 } futurePlan;
-struct { uint32_t revision() const { return 1700000000; } } futurePrices;
+struct {
+ bool available=false, valid=false;
+ bool economicAvailable() const { return available; }
+ bool economicValid() const { return valid; }
+ bool economicStale() const { return available; }
+ bool economicRetained() const { return available; }
+ uint32_t economicGeneratedAt() const { return UINT32_MAX; }
+ uint32_t economicAgeS() const { return UINT32_MAX; }
+ uint32_t revision() const { return UINT32_MAX; }
+} futurePrices;
 namespace control {
  enum class OperatingMode { Automatic, ChargePriority };
  const char *operatingModeName(OperatingMode mode) {
@@ -67,6 +76,7 @@ struct { struct Mode { control::OperatingMode mode=control::OperatingMode::Autom
  Mode confirmed() const { return {}; }
 } operatingModes;
 struct Publication {
+ struct { uint32_t generatedAt=1700000000; } snapshot;
  bool available=false, held=false;
  uint32_t since=0;
  bool planAvailable() const { return available; }
@@ -84,10 +94,21 @@ int main() {
  currentDecisionAvailable=true;
  for (const char *status : {"accepted", "write_failed", "disabled", "mock"}) {
   lastTransportWriteStatus=status;
+  futurePrices.available=true;
+  futurePrices.valid=std::string(status)!="disabled";
+  currentDecision.economicPlanApplied=std::string(status)=="accepted";
   dischargeBudget.available=chargePlan.available=true;
   dischargeBudget.held=chargePlan.held=std::string(status)=="write_failed";
   std::cout << buildPlanningStatePayload() << '\n';
  }
+ // Upper-bound fixture for protocol counters, numeric fields and real reason strings.
+ futurePlan.targetAt=UINT32_MAX; futurePlan.batteryCeilingW=INT32_MAX;
+ futurePlan.reason="current_price_missing";
+ futurePlan.reservedWh=futurePlan.availableWh=futurePlan.shortfallWh=2147483647.0f;
+ currentDecision.strategy="pv_limited_fallback"; currentDecision.reason="reserve_grace_unavailable";
+ currentDecision.ceilingW=INT32_MAX; currentDecision.chargeTargetValid=true;
+ currentDecision.chargeTargetW=2147483647.0f; inverterSetValue=INT32_MAX;
+ std::cout << buildPlanningStatePayload() << '\n';
  std::string longReason(900, 'x'); currentDecision.reason=longReason.c_str();
  std::cout << buildPlanningStatePayload() << '\n';
 }
@@ -95,9 +116,18 @@ int main() {
         self.assertEqual([row.get("transportWriteStatus") for row in rows[:5]],
                          ["unknown", "accepted", "write_failed", "disabled", "mock"])
         self.assertIsNone(rows[0]["strategy"])
+        self.assertEqual(rows[0]["economic"], {"available":False,"valid":False,"stale":False,
+            "retained":False,"g":None,"ageS":None,"applied":False})
+        self.assertTrue(rows[1]["economic"]["applied"])
+        self.assertFalse(rows[2]["economic"]["applied"])
+        self.assertTrue(rows[2]["economic"]["valid"])
+        self.assertFalse(rows[3]["economic"]["valid"])
+        self.assertEqual(rows[1]["economic"]["ageS"], 4294967295)
         self.assertFalse(rows[0].get("diagnosticPlansAvailable"))
         self.assertTrue(rows[2].get("diagnosticPlansAvailable"))
         self.assertTrue(rows[2].get("diagnosticPlansRetained"))
+        self.assertEqual((rows[0]["dischargeG"], rows[0]["chargeG"]), (0, 0))
+        self.assertEqual((rows[2]["dischargeG"], rows[2]["chargeG"]), (1700000000, 1700000000))
         self.assertEqual(rows[2].get("diagnosticRetentionAgeS"), 300)
         self.assertFalse(rows[1].get("diagnosticPlansRetained"))
         capacity = int(re.search(r"char payload\[(\d+)\]", source[state_start:state_end])[1])
@@ -105,7 +135,12 @@ int main() {
             self.assertEqual(row["strategy"], "automatic")
             self.assertEqual(row["limitW"], 900)
             self.assertLess(len(json.dumps(row, separators=(",", ":"))), capacity)
-        self.assertEqual(rows[5], {"v": 1, "diagnosticError": "format"})
+        maximum=rows[5]
+        self.assertEqual(maximum["reason"], "reserve_grace_unavailable")
+        size=len(json.dumps(maximum,separators=(",", ":")).encode())
+        self.assertLess(size, capacity)
+        self.assertLessEqual(size+7+len("SolarLimiterTest/Planning/State"), 2304)
+        self.assertEqual(rows[6], {"v": 1, "diagnosticError": "format"})
 
     def test_runtime_counters_preserve_existing_fields_and_fit_uint32(self):
         source = (REPO / "src/runtime/RuntimeDiagnostics.h").read_text(encoding="utf-8")
@@ -284,6 +319,12 @@ int main() { Diagnostics d; std::cout << d.mqttPayload(Stats{}) << '\n'; }
         config_serializer = source[config_start:config_end]
         serializer = source[number_start:number_end] + config_serializer
         rows = compile_run(r'''
+#include "control/PlanLifecycleSettings.h"
+struct {
+ control::PlanLifecycleSettings values;
+ control::PlanLifecycleSettings snapshot() const { return values; }
+ bool usingDefaultsAfterInvalidLoad() const { return false; }
+} planSettings;
 struct Settings {
  bool valid=true, mosManualMode=true, inverterEnabled=true;
  float reserveOffSocPercent=2, reserveOnSocPercent=10;
@@ -298,15 +339,20 @@ struct { Setting maxOutput; } limiterSettings;
 int main() {
  for (int watts : {650, 1100, 1600, 0, INT32_MAX}) {
   limiterSettings.maxOutput.value=watts;
+  if (watts == INT32_MAX) planSettings.values.planMaxAgeS = 604800;
   std::cout << buildPlanningConfigPayload() << '\n';
  }
 }
-''')
+''', extra_flags=("-I", str(REPO / "src")))
         self.assertEqual([row["maxOutputW"] for row in rows], [650, 1100, 1600, 0, 2**31-1])
         for row in rows:
             self.assertTrue(row["valid"])
             self.assertEqual(row["v"], 1)
             self.assertAlmostEqual(row["fcPriceF"], .95)
+            self.assertEqual(row["planMaxAgeS"], 604800 if row["maxOutputW"] == 2**31-1 else 7200)
+            self.assertEqual(row["planRetentionS"], 300)
+            self.assertEqual(row["priceScheduleFreshnessS"], 180)
+            self.assertFalse(row["planSettingsInvalidAtBoot"])
             capacity = int(re.search(r"char payload\[(\d+)\]", config_serializer)[1])
             self.assertLess(len(json.dumps(row, separators=(",", ":"))), capacity)
 

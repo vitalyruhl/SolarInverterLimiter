@@ -5,6 +5,7 @@
 #include <cassert>
 #include <cstdio>
 #include <cstdint>
+#include <cstring>
 using std::max;
 template<class T> T constrain(T value,T low,T high) {return std::max(low,std::min(value,high));}
 // [MOCKED!] Only logging, hardware writes and transport setting are replaced.
@@ -31,12 +32,14 @@ int main() {
     control::ModeInputs in;in.metersValid=true;in.householdW=1000;in.correctionW=-130;in.maximumW=900;
     control::OperatingModePolicy policy;modeDecision=policy.update(cfg,in);
     applyModeDecision();assert(wire==870 && inverterCalculatedValue==870 && resets==1);
-    assert(currentDecisionAvailable && lastIssuedBaseCommandW==870 && lastIssuedCommandW==870);
+    assert(currentDecisionAvailable && lastIssuedCommandKnown && lastIssuedBaseCommandW==870 && lastIssuedCommandW==870);
+    assert(inverterSetValue==870 && !std::strcmp(lastTransportWriteStatus, "accepted"));
     in.metersValid=false;modeDecision=policy.update(cfg,in);applyModeDecision();assert(wire==0);
     in.metersValid=true;in.inverterEnabled=false;modeDecision=policy.update(cfg,in);applyModeDecision();assert(wire==0);
     modeDecision.handled=false;wire=777;applyModeDecision();assert(wire==777);
     kRs485MockTransport=true;modeDecision.handled=true;modeDecision.watts=100;applyModeDecision();
     assert(lastMockBaseCommandW==100 && lastMockCommandW==100 && wire==777);
+    assert(inverterSetValue==100 && !std::strcmp(lastTransportWriteStatus, "mock"));
     kRs485MockTransport=false;
     assert(control::parseOperatingMode("pv_follow",cfg.mode));
     in.inverterEnabled=true;in.metersValid=true;in.chargerValid=true;in.chargerW=1000;

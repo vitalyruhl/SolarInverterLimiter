@@ -290,21 +290,30 @@ def pv_snapshot(packets,now):
             'expiresAt':first['e'],'calibrationFactor':first['f']/1000}
 
 
-def charge_snapshot(plan,now,pv_revision,price_context=None):
-    """Accept only fresh valid DC intent bound to the same published PV snapshot."""
+def charge_snapshot(plan,now,pv_revision,price_context=None,plan_status=None):
+    """Bind diagnostic intent to its controller generation and the shared PV snapshot."""
     if any(type(plan.get(key)) is not int for key in ('v','g','r','pv','t','d','n')):return None
     if not isinstance(plan.get('w'),list):return None
-    if (plan.get('v')!=1 or plan.get('valid') is not True or not -120<=now-plan.get('g',0)<=180
+    if (plan.get('v')!=1 or plan.get('valid') is not True or plan['g']>now+120
         or plan.get('pv')!=pv_revision or plan.get('d')!=900 or plan.get('n')!=len(plan.get('w',[]))):return None
     context=price_context or {}
-    if (context.get('valid') is not True or type(context.get('g')) is not int
-        or not -120<=now-context['g']<=180
+    if (context.get('valid') is not True or type(context.get('g')) is not int or context['g']>now+120
         or any(type(context.get(key)) is not int or context[key]!=plan[key] for key in ('r','pv','t','d','n'))):return None
+    retained=False
+    if plan_status is not None and ('chargeG' in plan_status or 'dischargeG' in plan_status):
+        received=plan_status.get('received_at')
+        if (plan_status.get('diagnosticPlansAvailable') is not True or type(received) is not int
+            or not 0<=now-received<=180 or plan_status.get('chargeG')!=plan['g']
+            or plan_status.get('dischargeG')!=context['g']):return None
+        retained=plan_status.get('diagnosticPlansRetained') is True
+    elif now-plan['g']>180 or now-context['g']>180:
+        return None
+    if not plan['t']<=now<plan['t']+plan['n']*plan['d']:return None
     return {'start':plan['t'],'duration':900,'values':plan['w'],'generatedAt':plan['g'],
-            'priceRevision':plan['r'],'pvRevision':plan['pv']}
+            'priceRevision':plan['r'],'pvRevision':plan['pv'],'retained':retained}
 
 
-def future_energy(packets,production,test,now,production_context=None,test_context=None):
+def future_energy(packets,production,test,now,production_context=None,test_context=None,production_status=None,test_status=None):
     """Use a single common now-to-36h window for shared PV and both DC intents."""
     result={'start':now,'end':now+36*3600,'unit':'kWh DC','planned_not_measured':True}
     try:pv=pv_snapshot(packets,now)
@@ -313,10 +322,11 @@ def future_energy(packets,production,test,now,production_context=None,test_conte
     result.update(status='ready',pvRevision=pv['revision'],pvGeneratedAt=pv['generatedAt'],
                   pvExpiresAt=pv['expiresAt'],calibrationFactor=pv['calibrationFactor'])
     result['pv']=integrate_future(pv['start'],900,pv['values'],now,result['end'])
-    for name,plan,context in [('production',production,production_context),('test',test,test_context)]:
-        selected=charge_snapshot(plan,now,pv['revision'],context)
+    for name,plan,context,status in [('production',production,production_context,production_status),('test',test,test_context,test_status)]:
+        selected=charge_snapshot(plan,now,pv['revision'],context,status)
         result[name]=integrate_future(selected['start'],900,selected['values'],now,result['end']) if selected else None
         if selected:
-            result[name].update({key:selected[key] for key in ('generatedAt','priceRevision','pvRevision')})
-        result[name+'Reason']='current_own_price_and_shared_pv_cohort' if selected else 'invalid_stale_or_unbound_own_price_pv_cohort'
+            result[name].update({key:selected[key] for key in ('generatedAt','priceRevision','pvRevision','retained')})
+            result[name+'Reason']='held_own_price_and_shared_pv_cohort' if selected['retained'] else 'current_own_price_and_shared_pv_cohort'
+        else:result[name+'Reason']='invalid_stale_or_unbound_own_price_pv_cohort'
     return result

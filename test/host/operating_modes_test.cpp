@@ -70,7 +70,9 @@ int main() {
     in.automaticPvOnly=in.chargerValid=true; in.chargerW=300;
     assert(!p.update(cfg,in).handled);
     in.automaticPvQualified=true;
-    assert(p.update(cfg,in).automaticPvFallback && p.update(cfg,in).watts==270);
+    assert(p.update(cfg,in).watts==0);
+    in.automaticPvLimitW=173;
+    assert(p.update(cfg,in).automaticPvFallback && p.update(cfg,in).watts==173);
     in.chargerValid=false; assert(p.update(cfg,in).handled && !p.update(cfg,in).automaticPvFallback);
     in.chargerValid=true; in.chargerW=NAN; assert(p.update(cfg,in).handled);
     in.chargerW=-1; assert(p.update(cfg,in).handled);

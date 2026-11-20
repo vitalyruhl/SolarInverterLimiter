@@ -5,9 +5,15 @@ limit to a grid-tie inverter over RS485. It follows household demand from MQTT
 meter data, plans battery discharge against electricity prices and PV forecasts,
 and consumes BMS/MPPT telemetry from SolarBatteryTelemetry (SBT).
 
-Current firmware version: **5.10.0** (`VERSION` in `src/main.cpp`).
+Current firmware version: **5.11.0** (`VERSION` in `src/main.cpp`).
 
 ## Recent changes
+
+- **5.11.0**: The Plan settings page sets the maximum age of an executable
+  economic plan (7200 seconds by default). Automatic control can use a covered
+  slot after the price schedule becomes stale while current measurements and
+  protection gates qualify. MQTT replays keep the original generation time.
+  The optional PV forecast age limit preserves the producer's earlier expiry.
 
 - **5.10.0**: With `Limiter Enabled` off, request the configured MAX on every
   RS485 control tick independently of the operating mode and MQTT planning
@@ -163,6 +169,32 @@ The option's retention and any production use remain undecided.
 Optional defaults for WiFi/MQTT can be provided in `src/secret/secrets.h` (see
 `src/secret/secrets.example.h`). The web UI is Settings-only; Live views are
 compiled out (`CM_ENABLE_LIVE_UI=0`), runtime values are published via MQTT.
+
+### Plan settings
+
+The **Plan** page uses seconds for all eight settings. Apply changes the running
+controller. Save also stores the field for the next boot. Existing Limiter and
+MQTT settings retain their original category and storage keys.
+
+| Setting | Default | Range | Effect |
+| --- | ---: | --- | --- |
+| Plan Recalculation Interval | 900 | 60–3600 | Maximum time between eligible economic projections. A slot change or changed planning input can trigger an earlier rebuild. |
+| Plan Stale After | 1200 | 60–86400 | Marks the plan stale from its original generation time. |
+| Maximum Executable Plan Age | 7200 | 600–604800 | Bounds economic use of the current slot. Real-time measurements, reserve and protection still gate output. |
+| Plan History Retention | 86400 | 3600–604800 | Bounds history from the original generation time, subject to the active outage retention period. |
+| Price Schedule Freshness | 180 | 60–3600 | Maximum age of a price schedule revision used for fresh planning. |
+| PV Forecast Maximum Age | 0 | 0 or 300–86400 | Limits forecast age from its generation time. Zero uses the source expiry and coverage. |
+| Plan Outage Retention | 300 | 300–86400 | Keeps the last valid plan available from the first input outage. It can exceed the execution age. |
+| Plan Publication Interval | 60 | 30–600 | Sets the interval for periodic plan publications. |
+
+The recalculation interval must be at most the stale age, the stale age at
+most the maximum executable age, and the maximum executable age at most the
+history age. Raise the upper limit first when increasing dependent settings.
+Lower the lower limit first when reducing them. Bulk Apply and Save process
+each field separately. A rejected field can leave earlier valid changes in
+effect. An unreadable or inconsistent stored combination selects the complete
+default profile in RAM at boot and logs a warning. `Planning/Config` publishes
+all eight active values in seconds and `planSettingsInvalidAtBoot`.
 
 ## Control behavior
 

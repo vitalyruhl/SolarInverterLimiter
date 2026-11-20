@@ -4,6 +4,7 @@
 #include "control/OperatingModes.h"
 #include "control/OutputCorrection.h"
 #include "control/PlanCaptureContext.h"
+#include "control/PlanLifecycleSettings.h"
 
 #include <algorithm>
 #include <cstdint>
@@ -41,6 +42,9 @@ static struct {
     Setting<float> RS232PublishPeriod{1}, pidKp{0.45f}, pidKi{0.05f}, pidKd{0.02f};
     Setting<bool> enableController{false}, forceMinOnNegativePrice{false}, setZeroOnNegativePrice{true};
 } limiterSettings;
+static struct {
+    control::PlanLifecycleSettings snapshot() const { return {}; }
+} planSettings;
 
 namespace control {
 // [MOCKED!] A received-value boundary; no MQTT broker or network is opened.
@@ -67,6 +71,7 @@ struct SourceSnapshot {
     bool batteryDischargeIntentAvailable = false;
     float soc = 0, batteryW = 0, chargerW = 0, chargerVoltageV = 0, batteryVoltageV = 0;
     float fullCapacityAh = NAN;
+    uint32_t bmsSampleAgeMs = UINT32_MAX;
     uint32_t bmsSequence = 0, chargerSequence = 0;
 };
 static struct {
@@ -171,6 +176,7 @@ static void provideHealthyInputs() {
     telemetryAge.readings[control::TelemetryAge::Price] = {0.4f, true};
     auto &source = sbtInputs.snapshot;
     source.bmsValid = source.chargerValid = true;
+    source.bmsSampleAgeMs = 0;
     source.sourcesWithinGrace = source.bmsWithinGrace = true;
     source.batteryDischargeIntentAvailable = source.batteryPathAvailable = true;
     source.batteryChargeAvailable = source.batteryChargeConfirmed = source.batteryChargeStateKnown = true;
@@ -201,7 +207,7 @@ static bool expectPower(const char *name, unsigned expected, unsigned ticks = 2)
             }
             continue;
         }
-        if (Serial2.frames.size() != before + 1 || Serial2.frames.back().size() != 8) {
+        if (!lastIssuedCommandKnown || Serial2.frames.size() != before + 1 || Serial2.frames.back().size() != 8) {
             std::printf("FAIL %s tick %u: expected one RS485 frame, received %zu\n",
                         name, tick + 1, Serial2.frames.size() - before);
             passed = false;
@@ -371,9 +377,14 @@ static bool transportDiagnosticRecovery() {
         return true;
     }
     resetFixture(control::OperatingMode::Automatic);
+    Serial2.driverInstalled = false;
+    processRS485Tick();
+    bool passed = expectPlanningPayload("driver error diagnostic", "limiter_disabled_max", "write_failed", 900);
+    if (!Serial2.frames.empty()) passed = false;
+    Serial2.driverInstalled = true;
     Serial2.writeLimit = 3;
     processRS485Tick();
-    bool passed = expectPlanningPayload("short write diagnostic", "limiter_disabled_max", "write_failed", 900);
+    if (!expectPlanningPayload("short write diagnostic", "limiter_disabled_max", "write_failed", 900)) passed = false;
     Serial2.writeLimit = std::numeric_limits<size_t>::max();
     if (!expectPower("local transport recovery", 900, 1)) passed = false;
     if (!expectPlanningPayload("recovered write diagnostic", "limiter_disabled_max", "accepted", 900)) passed = false;

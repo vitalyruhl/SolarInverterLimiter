@@ -61,10 +61,16 @@ static struct LogBoundary {
 } lmg;
 
 static unsigned clearCalls = 0, saveCalls = 0, restartCalls = 0;
+static unsigned detachCalls = 0;
+static bool detachedBeforeClear = false;
+[[maybe_unused]] static struct TelemetryBoundary { void detach() { ++detachCalls; } } telemetryAge;
 static struct ConfigBoundary {
     struct WiFiBoundary { void update() { ++wifiUpdateCalls; } } wifi;
     WiFiBoundary &getWiFiManager() { return wifi; }
-    void clearAllFromPrefs() { ++clearCalls; }
+    void clearAllFromPrefs() {
+        detachedBeforeClear = detachCalls == 1;
+        ++clearCalls;
+    }
     void saveAll() { ++saveCalls; }
     void startAccessPoint(const char *, const char *) {}
 } ConfigManager;
@@ -144,16 +150,18 @@ static void checkSuccessfulStartup() {
 }
 
 static void checkFactoryReset() {
-    clearCalls = saveCalls = restartCalls = 0;
+    detachCalls = clearCalls = saveCalls = restartCalls = 0;
+    detachedBeforeClear = false;
     ioManager.resetOnStartup = {};
     registerIOBindings();
+    check(bool(ioManager.resetOnStartup), "reset button has a startup callback");
     if (ioManager.resetOnStartup) ioManager.resetOnStartup();
 #if defined(SIL_PLANNER_SHADOW) && SIL_PLANNER_SHADOW
-    check(clearCalls == 0 && saveCalls == 0 && restartCalls == 0,
-          "shadow reset-button startup does not clear or save settings");
+    check(detachCalls == 0 && !detachedBeforeClear && clearCalls == 0 && saveCalls == 0 && restartCalls == 0,
+          "shadow reset button preserves telemetry and settings");
 #else
-    check(clearCalls == 1 && saveCalls == 1 && restartCalls == 1,
-          "normal reset-button startup preserves factory-reset behavior");
+    check(detachCalls == 1 && detachedBeforeClear && clearCalls == 1 && saveCalls == 1 && restartCalls == 1,
+          "normal reset button detaches telemetry before restoring defaults");
 #endif
 }
 
