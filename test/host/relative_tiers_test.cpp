@@ -285,21 +285,23 @@ static void relativePlanLifecycle() {
     solar(forecast, 0, 500);
     load(pvTriggers, schedule);
     cfg = config();
-    cfg.replanMinimumIntervalS = 10;
+    cfg.replanMinimumIntervalS = 60;
     cfg.replanPvDeviationW = 100;
-    cfg.replanPvDeviationDurationS = 10;
+    cfg.replanPvDeviationDurationS = 60;
     auto measured = [&](unsigned s, float power, bool valid = true) {
         pvTriggers.setProjectionTiming(PlanLifecycleSettings{}, 1, true, true, false, valid);
         return pvTriggers.plan(at+s, s*1000U, cfg, true, 50, 0, 100, 1, true, .4f, false,
             1, 900, &forecast, 1200, &trace, power);
     };
-    assert(measured(0, 500).valid && measured(1, 700).valid);
-    assert(measured(5, 700, false).valid); // Loss of qualification restarts the observation.
-    assert(measured(6, 700).valid && measured(15, 700).valid && pvTriggers.planningBuilds()==1);
-    assert(measured(16, 700).valid && pvTriggers.planningBuilds()==2);
-    assert(measured(26, 700).valid && pvTriggers.planningBuilds()==2); // One rebuild per sustained deviation.
-    assert(measured(27, 500).valid && measured(28, 300).valid);
-    assert(measured(38, 300).valid && pvTriggers.planningBuilds()==3);
+    assert(measured(0, 500).valid && measured(1, 600).valid);
+    assert(measured(5, 600, false).valid); // Loss of qualification restarts the observation.
+    for (unsigned s = 6; s < 66; ++s)
+        assert(measured(s, 600).valid && pvTriggers.planningBuilds() == 1);
+    assert(measured(66, 600).valid && pvTriggers.planningBuilds() == 2);
+    assert(measured(67, 600).valid && pvTriggers.planningBuilds() == 2);
+    for (unsigned s = 68; s < 128; ++s)
+        assert(measured(s, 400).valid && pvTriggers.planningBuilds() == 2);
+    assert(measured(128, 400).valid && pvTriggers.planningBuilds() == 3);
 }
 int main(){
  relativePlanLifecycle();

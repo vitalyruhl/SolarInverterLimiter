@@ -5,9 +5,14 @@ limit to a grid-tie inverter over RS485. It follows household demand from MQTT
 meter data, plans battery discharge against electricity prices and PV forecasts,
 and consumes BMS/MPPT telemetry from SolarBatteryTelemetry (SBT).
 
-Current firmware version: **5.11.0** (`VERSION` in `src/main.cpp`).
+Current firmware version: **5.11.2** (`VERSION` in `src/main.cpp`).
 
 ## Recent changes
+
+- **5.11.2**: In production and shadow builds, the planner rebuilds after a change of
+  1 SOC percentage point or 50 Wh of available energy since its last projection, or when measured
+  PV stays at least 100 W above or below the forecast for 60 seconds. These
+  triggers share a minimum interval of 60 seconds between projections.
 
 - **5.11.0**: The Plan settings page sets the maximum age of an executable
   economic plan (7200 seconds by default). Automatic control can use a covered

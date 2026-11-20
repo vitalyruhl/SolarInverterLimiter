@@ -25,6 +25,11 @@ struct ApplicationDefaults {
 inline PreparedSettings applicationDefaultSettings() {
     PreparedSettings c;
     c.relativeTimePolicy=kRelativeTimePolicy;
+    c.replanSocDeltaPct = 1.0f;
+    c.replanEnergyDeltaWh = 50.0f;
+    c.replanMinimumIntervalS = 60;
+    c.replanPvDeviationW = 100.0f;
+    c.replanPvDeviationDurationS = 60;
     c.cheapTimePct=ApplicationDefaults::cheapTimePct;c.veryExpensiveTimePct=ApplicationDefaults::veryExpensiveTimePct;
     c.additionalExpensiveTimePct=ApplicationDefaults::additionalExpensiveTimePct;
     c.storageMinimumNetAdvantageEurKwh=ApplicationDefaults::storageMinimumNetAdvantageEurKwh;

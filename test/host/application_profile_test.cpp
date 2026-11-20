@@ -25,6 +25,11 @@ int main(){
  assert(ApplicationDefaults::pidKp==.45f&&ApplicationDefaults::pidKi==.05f&&ApplicationDefaults::pidKd==.02f&&ApplicationDefaults::rs485PeriodS==1);
  assert(ApplicationDefaults::setZeroNegative&&!ApplicationDefaults::forceMinNegative&&ApplicationDefaults::sourceTimeoutS==180);
  assert(kPriceInputVersion==2&&priceInputRequiredForMode(true));
+ assert(c.replanSocDeltaPct == 1.0f);
+ assert(c.replanEnergyDeltaWh == 50.0f);
+ assert(c.replanMinimumIntervalS == 60u);
+ assert(c.replanPvDeviationW == 100.0f);
+ assert(c.replanPvDeviationDurationS == 60u);
 #if defined(SIL_PLANNER_SHADOW) && SIL_PLANNER_SHADOW
  assert(kPlannerShadowProfile&&priceInputRequiredForMode(false));
  assert(!std::strcmp(kDefaultPriceScheduleTopic,"SolarLimiterTest/Input/PriceSchedule"));
